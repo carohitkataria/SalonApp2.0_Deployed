@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 26 — P0/P2 bug-fix verification (issues 1-9b except 9a deferred). Backend 17/17 targeted tests PASS (2 skipped where an unrelated endpoint doesn't exist / N/A). Frontend spot-checks confirm: OTPLoginPage NO LONGER auto-redirects and purges stale auth on mount; admin/salon123 login works and lands on /salon/dashboard; multi-user login returns full admin perms + correct salon_id for both 'admin' and phone identifier; Queue endpoints accept date_from/date_to (both salon-wide and per-barber); Reports /prefs GET+PUT, /targets PUT and /snapshot?view=month all return 200; snapshot returns 13 cards with window={view:month,start:2026-01-01,end:2026-01-31,previous:...}; /reports/{sales,payments-gst,pnl,clients,marketing,inventory}?view=month all 200; /services/bulk-toggle validates empty and returns 200 for real IDs; supplier_products fixture purge confirmed (customer shop API returns 0 products). UI: all 5 Reports drawers portalled to <body>; ribbon-help-btn present on dashboard; ServicesModule bulk selection UI complete (12 svc-bulk-checkbox, bulk-select-group-*, floating services-bulk-bar with enable/disable/delete/clear). ONE FRONTEND BUG FOUND: /salon/dashboard?tab=shop renders ShopModule.js (not SalonShopTab.js), so the 'shop-empty-state' testid and 'No products added yet' copy from the review-fix are NOT visible on the actual salon-dashboard Shop tab — instead the user sees ShopModule's older empty state 'No products found.' with no data-testid. The fix in /pages/salon-tabs/SalonShopTab.js is dead code on this route.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Salon-dashboard Shop tab (ShopModule.js:181-182)",
+        "issue": "Empty-state fix applied to /pages/salon-tabs/SalonShopTab.js but /salon/dashboard?tab=shop imports /components/ops/ShopModule.js which still shows 'No products found.' and has NO data-testid='shop-empty-state'. Verified live: [data-testid='shop-empty-state'] is not present on tab=shop route.",
+        "selector": "[data-testid='shop-empty-state']",
+        "priority": "HIGH"
+      },
+      {
+        "component": "ReportsModule drawers CSS specificity",
+        "issue": "Drawers portal to <body> correctly, but computed z-index on <aside class='shv2-drawer'> resolves to 70 (not the 9999 declared in reportsTheme.css). Functionally the drawer still appears on top and is clickable, but this indicates some other stylesheet is winning specificity. Confirm by clicking configure/targets/add entry and ensuring nothing bleeds behind.",
+        "selector": "[data-testid='reports-config-drawer']",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter26_p0_p2_bugs.py",
+    "/app/test_reports/pytest/iter26.xml"
+  ],
+  "action_items": [
+    "Apply the 'No products added yet' + data-testid='shop-empty-state' empty state to /app/frontend/src/components/ops/ShopModule.js (around line 181-182). The fix that was applied to /pages/salon-tabs/SalonShopTab.js does NOT reach the salon-dashboard Shop tab because that route imports ShopModule, not SalonShopTab.",
+    "(Optional/low) Investigate why .shv2-drawer computes z-index=70 in production instead of the declared 9999 — some ancestor / global CSS rule is winning specificity. Currently the drawer is still visually on top so this is non-blocking, but if any future overlay lands >70 it will break the reports drawers."
+  ],
+  "critical_code_review_comments": [
+    "OTPLoginPage.js useEffect (line 53-57) correctly and unconditionally purges salon_admin_token/salon_user_auth/salon_id/salon_active_tab + calls clearSession() + broadcasts salon-auth-changed. 'I run a salon' will now always render a fresh login form. Verified live via localStorage injection + reload.",
+    "server.py bulk-toggle (line 5090) correctly gates on services.update permission, splits salon-owned vs global services, uses upsert for global overrides. Good.",
+    "Reports snapshot returns exactly 13 cards for view=month with the correct 1-31 Jan window and previous window populated — matches spec.",
+    "The Drawer wrapper (ReportsModule.js:545-547) uses createPortal(children, document.body) — verified in browser: drawer's parentElement.tagName === 'BODY'. This is the correct fix for the 'drawers appear dead' P0.",
+    "supplier_products fixture purge on startup_event (server.py:18583) targets fixture IDs and logs count — customer shop API confirms products list is now empty.",
+    "ShopModule.js was NOT updated to match the review's spec (see high-priority bug above). This is the only functional miss in this iteration."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter26_p0_p2_bugs.py (new)"
+  ],
+  "success_rate": {"backend": "17/17 targeted tests PASS (100%); 2 non-applicable tests skipped", "frontend": "6/7 UI spot-checks PASS; 1 fail on Shop empty state"},
+  "test_credentials": "admin / salon123 via /api/salon/users/login (or phone 7503070727). Legacy: +917503070727 / salon123 via /api/salon/password-login.",
+  "seed_data_creation": "None — read-only queries + a PUT of existing prefs/targets back to themselves, and a services bulk-toggle disable→enable round-trip. No stale state left behind.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Skip #9a (category migration). All 9 remaining review items verified except: (a) salon-dashboard Shop tab still uses ShopModule.js, not SalonShopTab.js, so the empty-state fix + testid must be re-applied to ShopModule.js at ~line 181-182. After that, re-run only the shop tab UI check ([data-testid='shop-empty-state'] present + 'No products added yet' text) and everything else should stay green. Backend test file /app/backend/tests/test_iter26_p0_p2_bugs.py is regression-ready — REACT_APP_BACKEND_URL env must be exported when running pytest from CLI.",
+  "rca of the issue": "Shop empty-state miss: two components exist — /pages/salon-tabs/SalonShopTab.js (customer-facing shop) and /components/ops/ShopModule.js (salon-dashboard shop tab). EnhancedSalonDashboard.js:22 imports ShopModule, so any /salon/dashboard?tab=shop viewer never renders SalonShopTab. The review-request fix was applied only to SalonShopTab.js. Mitigation: mirror the copy + data-testid to ShopModule.js:181-182 inside the `filtered.length === 0` branch."
+}

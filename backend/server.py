@@ -3455,6 +3455,58 @@ async def initialize_data():
     else:
         salon = await db.salons.find_one({}, {"_id": 0})
         salon_id = salon["id"]
+
+    # Feb 2026 — Idempotent admin user bootstrap.
+    # Ensures that for every salon (new or pre-existing) a `salon_users` record
+    # with `login_id="admin"` + password "salon123" exists with full admin
+    # rights. Fixes the regression where existing salons had no admin user
+    # (Settings + admin-only tabs would silently hide).
+    try:
+        salons_needing_admin = await db.salons.find(
+            {}, {"_id": 0, "id": 1, "phone": 1}
+        ).to_list(500)
+        for _s in salons_needing_admin:
+            existing = await db.salon_users.find_one({
+                "salon_id": _s["id"], "login_id": "admin"
+            }, {"_id": 0, "id": 1})
+            admin_perms = {
+                "can_edit_salon": True,
+                "can_access_analytics": True,
+                "can_access_financials": True,
+                "can_delete_salon": True,
+                "can_access_services": True,
+                "can_access_gallery": True,
+                "can_access_staff": True,
+                "can_view_all_staff": True,
+                "can_access_marketing": True,
+            }
+            if not existing:
+                await db.salon_users.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "salon_id": _s["id"],
+                    "name": "Admin",
+                    "login_id": "admin",
+                    "mobile": _s.get("phone") or "+917503070727",
+                    "password_hash": pwd_context.hash("salon123"),
+                    "role": "admin",
+                    "status": "active",
+                    "permissions": admin_perms,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                })
+                logger.info(f"[STARTUP] Seeded admin user for salon {_s['id']}")
+            else:
+                # Ensure admin has full permissions + is active (guards against
+                # accidental permission stripping by tests or migrations).
+                await db.salon_users.update_one(
+                    {"id": existing["id"]},
+                    {"$set": {
+                        "role": "admin",
+                        "status": "active",
+                        "permissions": admin_perms,
+                    }},
+                )
+    except Exception as _e:
+        logger.error(f"[STARTUP] admin bootstrap failed: {_e}")
     
     # Initialize services (Jul 2026 — only starter "General" services)
     service_count = await db.services.count_documents({})
@@ -5032,6 +5084,59 @@ async def bulk_delete_salon_services(
         "hard_deleted": (hard_res.deleted_count if hard_res else 0),
         "disabled_for_salon": (disabled_res.modified_count if disabled_res else 0),
         "barber_links_removed": bs_res.deleted_count,
+    }
+
+
+@api_router.post("/salons/{salon_id}/services/bulk-toggle")
+async def bulk_toggle_salon_services(
+    salon_id: str,
+    body: dict,
+    current_user=Depends(get_current_salon_user),
+):
+    """Enable/disable many services in one call.
+
+    Body: {"service_ids": ["..."], "is_enabled": true|false}
+    Handles both salon-owned services (direct field update) and global
+    services (via salon_services override doc). Returns counts updated.
+    """
+    if not has_module_permission(current_user, "services", "update"):
+        raise HTTPException(status_code=403, detail="Permission denied: services.update")
+    ids = list((body or {}).get("service_ids") or [])
+    is_enabled = bool((body or {}).get("is_enabled"))
+    if not ids:
+        raise HTTPException(status_code=400, detail="service_ids is required")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    services_docs = await db.services.find(
+        {"id": {"$in": ids}}, {"_id": 0, "id": 1, "salon_id": 1}
+    ).to_list(length=None)
+    salon_owned = [s["id"] for s in services_docs if s.get("salon_id") == salon_id]
+    global_ids = [s["id"] for s in services_docs if not s.get("salon_id")]
+
+    owned_updated = 0
+    if salon_owned:
+        r = await db.services.update_many(
+            {"id": {"$in": salon_owned}, "salon_id": salon_id},
+            {"$set": {"is_enabled": is_enabled, "updated_at": now_iso}},
+        )
+        owned_updated = r.modified_count
+
+    global_updated = 0
+    if global_ids:
+        for sid in global_ids:
+            await db.salon_services.update_one(
+                {"salon_id": salon_id, "service_id": sid},
+                {"$set": {"salon_id": salon_id, "service_id": sid,
+                          "is_enabled": is_enabled, "updated_at": now_iso}},
+                upsert=True,
+            )
+            global_updated += 1
+
+    return {
+        "ok": True,
+        "owned_updated": owned_updated,
+        "global_overrides_updated": global_updated,
+        "is_enabled": is_enabled,
     }
 
 @api_router.get("/services/categories")
@@ -10671,45 +10776,61 @@ async def get_barber_queue(
     salon_id: str,
     barber_id: str,
     date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     status: Optional[str] = None,
     branch_id: Optional[str] = None,
 ):
-    """Get queue for specific barber"""
-    if not date:
-        date = datetime.now(timezone.utc).date().isoformat()
-    
-    query = {"salon_id": salon_id, "barber_id": barber_id, "date": date}
+    """Get queue for specific barber. Feb 2026 — accepts date range."""
+    query: Dict[str, Any] = {"salon_id": salon_id, "barber_id": barber_id}
+    if date_from and date_to:
+        query["date"] = {"$gte": date_from, "$lte": date_to}
+    else:
+        if not date:
+            date = datetime.now(timezone.utc).date().isoformat()
+        query["date"] = date
+
     if status:
         query["status"] = status
     if branch_id:
         query["branch_id"] = branch_id
-    
-    tokens = await db.tokens.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+
+    tokens = await db.tokens.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
     return tokens
 
 @api_router.get("/salons/{salon_id}/queue", response_model=List[TokenModel])
 async def get_salon_queue(
     salon_id: str,
     date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     status: Optional[str] = None,
     branch_id: Optional[str] = None,
     current_user: Optional[dict] = Depends(get_current_salon_user_optional),
 ):
-    """Get entire salon queue (all barbers)"""
-    if not date:
-        date = datetime.now(timezone.utc).date().isoformat()
-    
+    """Get entire salon queue (all barbers).
+    Feb 2026 — supports both single-day (`date=YYYY-MM-DD`) and range
+    (`date_from` + `date_to`) filtering so the Queue tab's Range mode works.
+    Range mode wins if both `date_from` and `date_to` are supplied.
+    """
     # Branch-manager scoping
     if current_user and is_branch_manager(current_user):
         branch_id = enforce_branch_for_manager(current_user, branch_id)
-    
-    query = {"salon_id": salon_id, "date": date}
+
+    query: Dict[str, Any] = {"salon_id": salon_id}
+    if date_from and date_to:
+        query["date"] = {"$gte": date_from, "$lte": date_to}
+    else:
+        if not date:
+            date = datetime.now(timezone.utc).date().isoformat()
+        query["date"] = date
+
     if status:
         query["status"] = status
     if branch_id:
         query["branch_id"] = branch_id
-    
-    tokens = await db.tokens.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+
+    tokens = await db.tokens.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
     return tokens
 
 @api_router.post("/salons/{salon_id}/barbers/{barber_id}/call-next")
@@ -18455,68 +18576,24 @@ async def startup_event():
         logger.info(f"[STARTUP] Seeded {n} supplier product samples")
     except Exception as e:
         logger.error(f"[STARTUP] product samples seed failed: {e}")
-    # Also seed a minimal set of live supplier_products so the salon-store
-    # Shop tab has real product cards to browse (idempotent).
+    # Feb 2026 — Removed the sample-Shop seed. The Shop tab now shows only
+    # products that real suppliers create through their supplier portal.
+    # We keep the supplier ACCOUNT rows above (product_samples_seed) so the
+    # marketplace vendor directory continues to work, but no synthetic
+    # supplier_products are inserted here. Also purge any previously-seeded
+    # fixture products so the Shop empty state renders correctly.
     try:
-        from seed_store_fixtures import SUPPLIER_FIXTURES, _now_iso
-        from passlib.context import CryptContext as _CC
-        _pwd = _CC(schemes=["bcrypt"], deprecated="auto")
-        seeded_p = 0
-        for sup in SUPPLIER_FIXTURES:
-            await db.suppliers.update_one(
-                {"id": sup["id"]},
-                {"$set": {
-                    "id": sup["id"],
-                    "business_name": sup["business_name"],
-                    "owner_name": sup["owner_name"],
-                    "phone": sup["phone"],
-                    "mobile": sup["phone"],
-                    "email": sup["email"],
-                    "city": sup["city"],
-                    "state": sup["state"],
-                    "country": "India",
-                    "rating_avg": sup["rating_avg"],
-                    "rating_count": sup["rating_count"],
-                    "status": "active",
-                    "approved_at": _now_iso(),
-                    "password_hash": _pwd.hash("supplier123"),
-                    "login_id": sup["phone"],
-                    "created_at": _now_iso(),
-                    "updated_at": _now_iso(),
-                }},
-                upsert=True,
-            )
-            for p in sup["products"]:
-                pid = f"{sup['id']}::{p['name']}".replace(" ", "_")[:80]
-                await db.supplier_products.update_one(
-                    {"id": pid},
-                    {"$set": {
-                        "id": pid,
-                        "supplier_id": sup["id"],
-                        "name": p["name"],
-                        "brand": p["brand"],
-                        "category": p["category"],
-                        "description": f"Sample product from {sup['business_name']} — {p['name']}.",
-                        "images": [],
-                        "selling_price": p["selling_price"],
-                        "mrp": p["mrp"],
-                        "gst_percent": p["gst_percent"],
-                        "inventory_available": p["inventory_available"],
-                        "inventory_reserved": 0,
-                        "min_order_qty": 1,
-                        "pack_size": None,
-                        "unit": p["unit"],
-                        "is_active": True,
-                        "is_deleted": False,
-                        "created_at": _now_iso(),
-                        "updated_at": _now_iso(),
-                    }},
-                    upsert=True,
-                )
-                seeded_p += 1
-        logger.info(f"[STARTUP] Seeded {seeded_p} live supplier products for Shop")
+        from seed_store_fixtures import SUPPLIER_FIXTURES as _FIX
+        fixture_ids = []
+        for _sup in _FIX:
+            for _p in _sup.get("products", []):
+                fixture_ids.append(f"{_sup['id']}::{_p['name']}".replace(" ", "_")[:80])
+        if fixture_ids:
+            purge = await db.supplier_products.delete_many({"id": {"$in": fixture_ids}})
+            if purge.deleted_count:
+                logger.info(f"[STARTUP] Purged {purge.deleted_count} fixture supplier_products (Shop now supplier-driven only)")
     except Exception as e:
-        logger.error(f"[STARTUP] live supplier products seed failed: {e}")
+        logger.error(f"[STARTUP] fixture purge failed: {e}")
     scheduler.start()
     # Register marketing scheduler jobs (M6 automations daily + M5 scheduled campaigns every 5m)
     try:

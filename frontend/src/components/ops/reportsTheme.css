@@ -54,9 +54,9 @@
 .shv2 .refresh a{color:var(--primary);font-weight:700;cursor:pointer}
 
 /* SNAPSHOT SPLIT */
-.shv2 .snap{display:grid;grid-template-columns:320px 1fr;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;min-height:560px}
+.shv2 .snap{display:grid;grid-template-columns:320px 1fr !important;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;min-height:560px}
 .shv2 .snap-l{border-right:1px solid var(--line);background:#FBFCFE;padding:12px;overflow:auto;max-height:calc(100vh - 210px)}
-.shv2 .kgrid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.shv2 .kgrid{display:grid;grid-template-columns:1fr 1fr !important;gap:9px}
 .shv2 .kcard{border:1px solid transparent;border-radius:14px;padding:12px 13px 13px;cursor:pointer;transition:transform .16s,box-shadow .16s;position:relative;text-align:left;overflow:hidden;box-shadow:0 2px 8px rgba(20,28,46,.05)}
 .shv2 .kcard:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(20,28,46,.13)}
 .shv2 .kcard.on{box-shadow:0 0 0 2px var(--surface),0 0 0 4px rgba(27,84,199,.55),0 8px 20px rgba(20,28,46,.14)}
@@ -128,7 +128,7 @@
 .shv2 .sec{display:none}
 .shv2 .sec.on{display:block;animation:shv2SecFade .22s}
 @keyframes shv2SecFade{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
-.shv2 .strip{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:14px}
+.shv2 .strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
 .shv2 .sc{background:var(--surface);border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow);padding:14px}
 .shv2 .sc .ci{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;margin-bottom:9px}
 .shv2 .sc .ci svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2}
@@ -166,8 +166,8 @@
 .shv2 .empty{padding:36px 16px;text-align:center;color:var(--muted);font-size:13px;font-weight:600}
 
 /* DRAWER */
-.shv2-ov{position:fixed;inset:0;background:rgba(20,28,46,.44);opacity:1;visibility:visible;transition:.28s;z-index:60}
-.shv2-drawer{position:fixed;top:0;right:0;bottom:0;width:min(720px,96vw);background:#fff;z-index:70;box-shadow:-20px 0 60px rgba(20,28,46,.22);display:flex;flex-direction:column;font-family:'Inter',sans-serif}
+.shv2-ov{position:fixed;inset:0;background:rgba(20,28,46,.44);opacity:1;visibility:visible;transition:.28s;z-index:9998}
+.shv2-drawer{position:fixed;top:0;right:0;bottom:0;width:min(720px,96vw);background:#fff;z-index:9999;box-shadow:-20px 0 60px rgba(20,28,46,.22);display:flex;flex-direction:column;font-family:'Inter',sans-serif}
 .shv2-drawer.narrow{width:min(460px,95vw)}
 .shv2-drawer h3{font-family:'Plus Jakarta Sans';font-size:18px;font-weight:800}
 .shv2-drawer .dh{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--line, #E6EBF4)}
@@ -194,17 +194,17 @@
 .shv2 .field input,.shv2 .field select,.shv2 .field textarea{font-size:13.5px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;outline:none;width:100%;color:var(--ink);background:#fff}
 .shv2 .field input:focus,.shv2 .field select:focus,.shv2 .field textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-050)}
 
-/* responsive */
+/* Also handle narrow embedding: when parent shell (dashboard sidebar +
+   ribbon) squeezes the reports area under 900px, we can't fit the split
+   layout so we collapse to stacked. */
 @media(max-width:1200px){
   .shv2 .dbody{grid-template-columns:1fr}
-  .shv2 .strip{grid-template-columns:repeat(3,1fr)}
 }
 @media(max-width:1000px){
-  .shv2 .snap{grid-template-columns:1fr}
+  .shv2 .snap{grid-template-columns:1fr !important}
   .shv2 .snap-l{border-right:none;border-bottom:1px solid var(--line);max-height:none}
   .shv2 .g2{grid-template-columns:1fr}
 }
 @media(max-width:700px){
-  .shv2 .strip{grid-template-columns:1fr 1fr}
-  .shv2 .kgrid{grid-template-columns:1fr}
+  .shv2 .kgrid{grid-template-columns:1fr !important}
 }

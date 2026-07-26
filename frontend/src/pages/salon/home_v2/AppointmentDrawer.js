@@ -602,22 +602,23 @@ export default function AppointmentDrawer({
               )}
             </div>
 
-            {/* Guest */}
+            {/* Guest — title + search + + New guest, all in one row (Feb 2026) */}
             <div className="block guest">
               <div className="guest-lbl">
                 <span>Guest</span>
-                <button className="inline-add" onClick={openNewGuest}>+ New guest</button>
-              </div>
-              <div className="guest-field">
-                <input
-                  className={errors.customer ? 'err' : ''}
-                  value={custSearch}
-                  onChange={(e) => onGuestInputChange(e.target.value)}
-                  onFocus={() => setShowSug(true)}
-                  onBlur={() => setTimeout(() => setShowSug(false), 200)}
-                  placeholder="Search by name or phone"
-                  autoComplete="off"
-                />
+                <div className="guest-field">
+                  <input
+                    className={errors.customer ? 'err' : ''}
+                    value={custSearch}
+                    onChange={(e) => onGuestInputChange(e.target.value)}
+                    onFocus={() => setShowSug(true)}
+                    onBlur={() => setTimeout(() => setShowSug(false), 200)}
+                    placeholder="Search by name or phone"
+                    autoComplete="off"
+                    data-testid="new-appt-guest-search"
+                  />
+                </div>
+                <button className="inline-add" onClick={openNewGuest} data-testid="new-appt-new-guest">+ New guest</button>
               </div>
               {showSug && custSuggestions.length > 0 && (
                 <div className="autosug show">
@@ -631,16 +632,16 @@ export default function AppointmentDrawer({
               {errors.customer && <span className="msg show" style={{ display: 'block', marginTop: 4 }}>{errors.customer}</span>}
             </div>
 
-            {/* Services & membership */}
+            {/* Services & membership — title + search in one row (Feb 2026) */}
             <div className="block">
-              <div className="fs-title">
+              <div className="fs-title" style={{ margin: '2px 0 10px' }}>
                 <span className="dot" style={{ ['--sc']: '#6C4FE0' }} />
-                Services &amp; membership <span className="req">*</span>
+                <span>Services &amp; membership <span className="req">*</span></span>
+                <div className="cat-search" style={{ flex: 1, margin: 0, minWidth: 0 }}>
+                  <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search services, memberships or products" autoComplete="off" data-testid="new-appt-svc-search" />
+                </div>
                 <span className="count">{selectedSvc.length} picked</span>
-              </div>
-              <div className="cat-search">
-                <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search services, memberships or products" autoComplete="off" />
               </div>
               <div className="cat-bullets">
                 {categories.map((c) => {

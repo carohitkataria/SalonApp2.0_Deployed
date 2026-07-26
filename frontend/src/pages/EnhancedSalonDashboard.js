@@ -332,7 +332,7 @@ export default function EnhancedSalonDashboard() {
     };
   }, [filter, selectedBarber]);
 
-  // Polling fallback: every 20s re-fetch tokens + daily sales so the dashboard
+  // Polling fallback: every 10s re-fetch tokens + daily sales so the dashboard
   // stays in sync even if a websocket event is missed (network blip, mobile lock, etc.)
   useEffect(() => {
     const storedSalonId = localStorage.getItem('salon_id');
@@ -343,7 +343,9 @@ export default function EnhancedSalonDashboard() {
       fetchTokens(storedSalonId);
       fetchDailySales(storedSalonId);
     };
-    const id = setInterval(tick, 20000);
+    // Kick immediately so range/date changes are reflected without waiting.
+    tick();
+    const id = setInterval(tick, 10000);
     // Also refresh immediately when the tab becomes visible again.
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
@@ -357,7 +359,7 @@ export default function EnhancedSalonDashboard() {
       document.removeEventListener('visibilitychange', onVisible);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter, selectedBarber, dateMode]);
+  }, [filter, selectedBarber, dateMode, dateFrom, dateTo]);
 
   // Re-fetch tokens when date mode (today/tomorrow) toggles
   useEffect(() => {
@@ -470,10 +472,18 @@ export default function EnhancedSalonDashboard() {
   const fetchTokens = async (id) => {
     try {
       let url;
+      // Feb 2026 — Range date support. When user selects "Range" and picks a
+      // date_from/date_to, send both to backend so /queue can return tokens
+      // spanning multiple days (previously ignored).
+      const isRange = dateMode === 'range' && dateFrom && dateTo;
       if (selectedBarber === 'all') {
-        url = `${API}/salons/${id}/queue?date=${date}`;
+        url = isRange
+          ? `${API}/salons/${id}/queue?date_from=${dateFrom}&date_to=${dateTo}`
+          : `${API}/salons/${id}/queue?date=${date}`;
       } else {
-        url = `${API}/salons/${id}/barbers/${selectedBarber}/queue?date=${date}`;
+        url = isRange
+          ? `${API}/salons/${id}/barbers/${selectedBarber}/queue?date_from=${dateFrom}&date_to=${dateTo}`
+          : `${API}/salons/${id}/barbers/${selectedBarber}/queue?date=${date}`;
       }
       if (filter !== 'all') {
         url += `&status=${filter}`;
@@ -481,7 +491,7 @@ export default function EnhancedSalonDashboard() {
       if (selectedBranchId) {
         url += `&branch_id=${selectedBranchId}`;
       }
-      
+
       const response = await axios.get(url);
       setTokens(response.data);
     } catch (error) {

@@ -436,7 +436,10 @@ export default function SalonShopTab({ salonId }) {
       {loading ? (
         <div className="text-center py-12"><Loader2 className="w-6 h-6 animate-spin mx-auto" /></div>
       ) : products.length === 0 ? (
-        <div className="text-center py-12 text-muted-foreground">No products yet.</div>
+        <div className="text-center py-16 text-muted-foreground" data-testid="shop-empty-state">
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>No products added yet</div>
+          <div style={{ fontSize: 13 }}>Products will appear here as suppliers add them.</div>
+        </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3" data-testid="shop-product-grid">
           {products.map(p => (

@@ -45,12 +45,16 @@ export default function OTPLoginPage() {
   const [countdown, setCountdown] = useState(0);
   const [canResend, setCanResend] = useState(false);
 
-  // Check for existing session on mount
+  // Check for existing session on mount — DO NOT auto-forward.
+  // Users who navigate here explicitly (from "I run a salon" or the Landing
+  // page CTA) may be trying to switch accounts. Silently redirecting to the
+  // dashboard whenever any stale session exists prevented account switching.
+  // Also purge stale auth so the login form starts clean.
   useEffect(() => {
-    if (isSessionValid()) {
-      try { const a = JSON.parse(localStorage.getItem('salon_user_auth')||'null'); navigate(a && a.role === 'staff' ? '/salon/staff-portal' : '/salon/dashboard'); } catch { navigate('/salon/dashboard'); }
-    }
-  }, [navigate]);
+    purgeAllSalonAuthData();
+    broadcastAuthChange();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Countdown timer for resend
   React.useEffect(() => {

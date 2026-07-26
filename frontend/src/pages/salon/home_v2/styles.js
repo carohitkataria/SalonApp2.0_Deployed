@@ -624,8 +624,16 @@ export const HOME_V2_CSS = `
 .shv2-drawer.newapt .book-left{overflow-y:auto;padding:16px 14px;background:#FFF;border-right:1px solid var(--line)}
 .shv2-drawer.newapt .book-mid{overflow:hidden;display:flex;flex-direction:column;background:var(--pink-bg);border-right:1px solid var(--pink-100)}
 .shv2-drawer.newapt .book-right{overflow-y:auto;padding:16px 18px;background:#FAFAFF}
+
+/* Feb 2026 — shrink the drawer header so the booking area gets more space */
+.shv2-drawer.newapt .drawer__h{padding:10px 20px !important}
+.shv2-drawer.newapt .drawer__h .ic{width:32px !important;height:32px !important;border-radius:9px !important}
+.shv2-drawer.newapt .drawer__h .ic svg{width:16px !important;height:16px !important}
+.shv2-drawer.newapt .drawer__h h3{font-size:15px !important}
+.shv2-drawer.newapt .drawer__h p{font-size:11.5px !important;margin-top:1px !important}
 .shv2-drawer.newapt .block{margin-bottom:15px}
-.shv2-drawer.newapt .fs-title{font-size:11.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--muted-2);margin:2px 0 10px;display:flex;align-items:center;gap:7px}
+.shv2-drawer.newapt .fs-title{font-size:11.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--muted-2);margin:2px 0 10px;display:flex;align-items:center;gap:10px;flex-wrap:nowrap}
+.shv2-drawer.newapt .fs-title>span:first-of-type{white-space:nowrap;flex:none}
 .shv2-drawer.newapt .fs-title .dot{width:8px;height:8px;border-radius:50%;background:var(--sc,var(--muted-2));flex:none}
 .shv2-drawer.newapt .fs-title .req{color:var(--rose)}
 .shv2-drawer.newapt .fs-title .count{margin-left:auto;font-size:10.5px;font-weight:800;color:var(--primary);background:var(--primary-050);padding:2px 8px;border-radius:20px;letter-spacing:.2px}
@@ -655,11 +663,12 @@ export const HOME_V2_CSS = `
 
 /* guest */
 .shv2-drawer.newapt .guest{position:relative}
-.shv2-drawer.newapt .guest-lbl{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px}
-.shv2-drawer.newapt .guest-lbl span{font-size:12.5px;font-weight:700;color:var(--ink-soft)}
-.shv2-drawer.newapt .inline-add{font-size:12px;font-weight:800;color:var(--primary);background:none;border:none;cursor:pointer}
-.shv2-drawer.newapt .guest-field{position:relative}
-.shv2-drawer.newapt .guest-field input{width:100%;font-size:13.5px;font-weight:600;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:11px 13px;outline:none;transition:.15s;background:#FFF;font-family:inherit}
+/* Feb 2026 — put title, search box and +New guest all on one row */
+.shv2-drawer.newapt .guest-lbl{display:flex;align-items:center;gap:10px;margin-bottom:0;flex-wrap:nowrap}
+.shv2-drawer.newapt .guest-lbl span{font-size:12.5px;font-weight:700;color:var(--ink-soft);flex:none}
+.shv2-drawer.newapt .inline-add{font-size:12px;font-weight:800;color:var(--primary);background:none;border:none;cursor:pointer;flex:none;white-space:nowrap;margin-left:auto}
+.shv2-drawer.newapt .guest-field{position:relative;flex:1;min-width:0}
+.shv2-drawer.newapt .guest-field input{width:100%;font-size:13.5px;font-weight:600;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:8px 13px;outline:none;transition:.15s;background:#FFF;font-family:inherit}
 .shv2-drawer.newapt .guest-field input:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-050)}
 .shv2-drawer.newapt .guest-field input.err{border-color:var(--rose);box-shadow:0 0 0 3px var(--rose-bg)}
 .shv2-drawer.newapt .autosug{position:absolute;top:100%;left:0;right:0;background:#FFF;border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(30,32,50,.12);z-index:6;margin-top:4px;overflow:hidden;display:none}
@@ -672,10 +681,13 @@ export const HOME_V2_CSS = `
 /* catalog search + bullets */
 .shv2-drawer.newapt .cat-search{position:relative;margin-bottom:10px}
 .shv2-drawer.newapt .cat-search svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);width:15px;height:15px;color:var(--muted-2);fill:none;stroke:currentColor;stroke-width:2}
-.shv2-drawer.newapt .cat-search input{width:100%;font-size:12.5px;font-weight:600;border:1px solid var(--line);border-radius:10px;padding:9px 12px 9px 34px;outline:none;transition:.15s;background:#FFF;font-family:inherit;color:var(--ink)}
+.shv2-drawer.newapt .cat-search input{width:100%;font-size:12.5px;font-weight:600;border:1px solid var(--line);border-radius:10px;padding:7px 12px 7px 34px;outline:none;transition:.15s;background:#FFF;font-family:inherit;color:var(--ink);text-transform:none;letter-spacing:normal}
 .shv2-drawer.newapt .cat-search input:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-050)}
-.shv2-drawer.newapt .cat-bullets{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:11px}
-.shv2-drawer.newapt .cat-bullets button{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;padding:6px 11px 6px 9px;border-radius:20px;border:1px solid var(--line);background:#FFF;color:var(--muted);transition:.15s;cursor:pointer;font-family:inherit}
+/* Feb 2026 — category chips scroll horizontally on a single line */
+.shv2-drawer.newapt .cat-bullets{display:flex;gap:5px;margin-bottom:11px;flex-wrap:nowrap !important;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:thin;padding-bottom:4px}
+.shv2-drawer.newapt .cat-bullets::-webkit-scrollbar{height:5px}
+.shv2-drawer.newapt .cat-bullets::-webkit-scrollbar-thumb{background:var(--line);border-radius:20px}
+.shv2-drawer.newapt .cat-bullets button{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;padding:6px 11px 6px 9px;border-radius:20px;border:1px solid var(--line);background:#FFF;color:var(--muted);transition:.15s;cursor:pointer;font-family:inherit;flex:none;white-space:nowrap}
 .shv2-drawer.newapt .cat-bullets .bd{width:8px;height:8px;border-radius:50%;background:var(--cc,var(--muted-2));flex:none}
 .shv2-drawer.newapt .cat-bullets button.on{border-color:var(--cc,var(--primary));color:var(--cc,var(--primary));background:var(--ccbg,var(--primary-050))}
 

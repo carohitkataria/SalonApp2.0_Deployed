@@ -65,6 +65,22 @@ export default function ServicesModule({ salonId, getAuthHeaders }) {
   // Metrics detail drawer
   const [metricsFor, setMetricsFor] = useState(null); // service being viewed
 
+  // Feb 2026 — bulk selection state (Set of service ids). Enables the
+  // floating action bar for Delete / Enable / Disable across many services.
+  const [bulkSelected, setBulkSelected] = useState(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const toggleBulk = (id) => setBulkSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const selectAllInList = (list) => setBulkSelected((prev) => {
+    const next = new Set(prev);
+    list.forEach((s) => next.add(s.id));
+    return next;
+  });
+  const clearBulk = () => setBulkSelected(new Set());
+
   const authHeadersRef = useRef(getAuthHeaders);
   useEffect(() => { authHeadersRef.current = getAuthHeaders; }, [getAuthHeaders]);
 
@@ -276,6 +292,41 @@ export default function ServicesModule({ salonId, getAuthHeaders }) {
     }
   };
 
+  // ---- Bulk actions ------------------------------------------------------
+  const bulkDelete = async () => {
+    const ids = Array.from(bulkSelected);
+    if (!ids.length) return;
+    if (!window.confirm(`Delete ${ids.length} service(s)? Salon-owned services are removed permanently; global services are hidden from your menu only.`)) return;
+    setBulkBusy(true);
+    try {
+      await axios.post(`${API}/salons/${salonId}/services/bulk-delete`,
+        { service_ids: ids }, { headers: authHeadersRef.current() });
+      // Refetch to reflect hard-delete + global disable in one hit.
+      const res = await axios.get(`${API}/salons/${salonId}/services/all`, { headers: authHeadersRef.current() });
+      setServices(Array.isArray(res.data) ? res.data : (res.data?.services || []));
+      loadMetrics();
+      clearBulk();
+      toast.success(`Removed ${ids.length} service(s)`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Bulk delete failed');
+    } finally { setBulkBusy(false); }
+  };
+  const bulkSetEnabled = async (isEnabled) => {
+    const ids = Array.from(bulkSelected);
+    if (!ids.length) return;
+    setBulkBusy(true);
+    try {
+      await axios.post(`${API}/salons/${salonId}/services/bulk-toggle`,
+        { service_ids: ids, is_enabled: isEnabled }, { headers: authHeadersRef.current() });
+      // Locally patch is_enabled so UI updates instantly.
+      setServices((s) => s.map((x) => (bulkSelected.has(x.id) ? { ...x, is_enabled: isEnabled } : x)));
+      clearBulk();
+      toast.success(`${isEnabled ? 'Enabled' : 'Disabled'} ${ids.length} service(s)`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Bulk toggle failed');
+    } finally { setBulkBusy(false); }
+  };
+
   // ---- KPI cards ---------------------------------------------------------
   const kpi = overview || {
     total_menu: services.length,
@@ -297,6 +348,56 @@ export default function ServicesModule({ salonId, getAuthHeaders }) {
 
   return (
     <div className="zen">
+      {/* Feb 2026 — Bulk action bar (appears when 1+ services are selected) */}
+      {bulkSelected.size > 0 && (
+        <div
+          data-testid="services-bulk-bar"
+          style={{
+            position: 'sticky', top: 0, zIndex: 20,
+            display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+            padding: '10px 14px', background: '#141C2E', color: '#fff',
+            borderRadius: 12, margin: '0 auto 12px', maxWidth: 1200,
+            boxShadow: '0 8px 30px rgba(20,28,46,.24)',
+          }}
+        >
+          <span style={{ fontWeight: 800 }}>{bulkSelected.size} selected</span>
+          <button
+            className="z-btn z-btn--ghost z-btn--sm"
+            style={{ background: 'rgba(255,255,255,.12)', border: 'none', color: '#fff' }}
+            onClick={() => bulkSetEnabled(true)}
+            disabled={bulkBusy}
+            data-testid="services-bulk-enable"
+          >
+            Enable
+          </button>
+          <button
+            className="z-btn z-btn--ghost z-btn--sm"
+            style={{ background: 'rgba(255,255,255,.12)', border: 'none', color: '#fff' }}
+            onClick={() => bulkSetEnabled(false)}
+            disabled={bulkBusy}
+            data-testid="services-bulk-disable"
+          >
+            Disable
+          </button>
+          <button
+            className="z-btn z-btn--sm"
+            style={{ background: '#E5484D', color: '#fff', border: 'none' }}
+            onClick={bulkDelete}
+            disabled={bulkBusy}
+            data-testid="services-bulk-delete"
+          >
+            Delete
+          </button>
+          <button
+            className="z-btn z-btn--ghost z-btn--sm"
+            style={{ marginLeft: 'auto', background: 'transparent', border: '1px solid rgba(255,255,255,.3)', color: '#fff' }}
+            onClick={clearBulk}
+            data-testid="services-bulk-clear"
+          >
+            Clear
+          </button>
+        </div>
+      )}
       <div className="z-wrap">
         {/* ================= Page head ================= */}
         <div className="z-phead">
@@ -478,6 +579,14 @@ export default function ServicesModule({ salonId, getAuthHeaders }) {
                   <div className="z-group-h">
                     <h3>{subName}</h3>
                     <span className="cnt">{list.length} service{list.length === 1 ? '' : 's'}</span>
+                    <button
+                      className="z-btn z-btn--ghost z-btn--sm"
+                      style={{ marginLeft: 'auto' }}
+                      onClick={() => selectAllInList(list)}
+                      data-testid={`bulk-select-group-${subName}`}
+                    >
+                      Select all
+                    </button>
                   </div>
                   <div className="z-svc-grid">
                     {list.map((svc) => (
@@ -489,6 +598,8 @@ export default function ServicesModule({ salonId, getAuthHeaders }) {
                         onDelete={(e) => { e.stopPropagation(); deleteSvc(svc); }}
                         onToggleFav={(e) => { e.stopPropagation(); toggleFav(svc); }}
                         onClick={() => setMetricsFor(svc)}
+                        bulkChecked={bulkSelected.has(svc.id)}
+                        onToggleBulk={(e) => { e.stopPropagation(); toggleBulk(svc.id); }}
                       />
                     ))}
                   </div>
@@ -577,10 +688,29 @@ function TrendPill({ pct }) {
   );
 }
 
-function ServiceCard({ svc, metrics, onEdit, onDelete, onToggleFav, onClick }) {
+function ServiceCard({ svc, metrics, onEdit, onDelete, onToggleFav, onClick, bulkChecked, onToggleBulk }) {
   const emoji = (svc.category === 'Packages') ? '🎁' : '✂️';
   return (
-    <div className="z-svc-card" onClick={onClick} data-testid={`service-card-${svc.id}`}>
+    <div className={`z-svc-card ${bulkChecked ? 'z-svc-card--picked' : ''}`} onClick={onClick} data-testid={`service-card-${svc.id}`}>
+      {/* Bulk-select checkbox (Feb 2026) */}
+      <label
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: 'absolute', top: 10, left: 10, zIndex: 3,
+          background: 'rgba(255,255,255,.92)', borderRadius: 6, padding: 3,
+          border: '1px solid var(--z-line, #E6EBF4)',
+          display: 'inline-flex', alignItems: 'center', cursor: 'pointer',
+        }}
+        data-testid={`svc-bulk-checkbox-label-${svc.id}`}
+      >
+        <input
+          type="checkbox"
+          checked={!!bulkChecked}
+          onChange={onToggleBulk}
+          data-testid={`svc-bulk-checkbox-${svc.id}`}
+          style={{ margin: 0, cursor: 'pointer', width: 15, height: 15 }}
+        />
+      </label>
       <div className="z-svc-main">
         <div className="z-svc-thumb">
           {svc.thumbnail_url ? <img src={svc.thumbnail_url} alt="" /> : <span>{emoji}</span>}

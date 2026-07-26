@@ -8,6 +8,7 @@
  * Marketing/Inventory tabs, plus the new Staff → Overview sub-tab.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { Icon, rupee, injectZenCss } from './opsTheme';
@@ -537,7 +538,14 @@ function SnapshotDetail({ card, salonId, view, date, branchId, getAuthHeaders, o
 /* -----------------------------------------------------------------------
  * DRAWERS — Config / Targets / MetricDrill / TargetEdit / AddEntry
  * -----------------------------------------------------------------------
+ * All drawers are portalled to <body> so they cannot be trapped behind the
+ * salon-dashboard sidebar / ribbon stacking contexts and always render on
+ * top of the app shell.
  */
+function Drawer({ children }) {
+  return createPortal(children, document.body);
+}
+
 function ConfigDrawer({ salonId, getAuthHeaders, onClose }) {
   const [prefs, setPrefs] = useState({ all_cards: [], cards: [], order: [] });
   const [busy, setBusy] = useState(false);
@@ -590,7 +598,7 @@ function ConfigDrawer({ salonId, getAuthHeaders, onClose }) {
   }, [prefs]);
 
   return (
-    <>
+    <Drawer>
       <div className="shv2-ov" onClick={onClose} />
       <aside className="shv2-drawer" data-testid="reports-config-drawer">
         <div className="dh">
@@ -624,7 +632,7 @@ function ConfigDrawer({ salonId, getAuthHeaders, onClose }) {
           </button>
         </div>
       </aside>
-    </>
+    </Drawer>
   );
 }
 
@@ -658,7 +666,7 @@ function TargetsDrawer({ salonId, view, date, getAuthHeaders, onClose }) {
   };
 
   return (
-    <>
+    <Drawer>
       <div className="shv2-ov" onClick={onClose} />
       <aside className="shv2-drawer" data-testid="reports-targets-drawer">
         <div className="dh">
@@ -686,7 +694,7 @@ function TargetsDrawer({ salonId, view, date, getAuthHeaders, onClose }) {
           ))}
         </div>
       </aside>
-    </>
+    </Drawer>
   );
 }
 
@@ -705,7 +713,7 @@ function TargetEditDrawer({ card, salonId, view, getAuthHeaders, onClose, onSave
     finally { setBusy(false); }
   };
   return (
-    <>
+    <Drawer>
       <div className="shv2-ov" onClick={onClose} />
       <aside className="shv2-drawer narrow" data-testid="reports-target-edit-drawer">
         <div className="dh">
@@ -729,7 +737,7 @@ function TargetEditDrawer({ card, salonId, view, getAuthHeaders, onClose, onSave
           </button>
         </div>
       </aside>
-    </>
+    </Drawer>
   );
 }
 
@@ -752,7 +760,7 @@ function MetricDrillDrawer({ card, salonId, view, date, branchId, getAuthHeaders
   const totalV = rows.reduce((s, r) => s + Number(r.value || 0), 0) || 1;
 
   return (
-    <>
+    <Drawer>
       <div className="shv2-ov" onClick={onClose} />
       <aside className="shv2-drawer" data-testid="reports-drill-drawer">
         <div className="dh">
@@ -793,7 +801,7 @@ function MetricDrillDrawer({ card, salonId, view, date, branchId, getAuthHeaders
           </div>
         </div>
       </aside>
-    </>
+    </Drawer>
   );
 }
 
@@ -822,7 +830,7 @@ function AddEntryDrawer({ salonId, getAuthHeaders, onClose }) {
     } finally { setBusy(false); }
   };
   return (
-    <>
+    <Drawer>
       <div className="shv2-ov" onClick={onClose} />
       <aside className="shv2-drawer narrow" data-testid="reports-add-entry-drawer">
         <div className="dh">
@@ -867,7 +875,7 @@ function AddEntryDrawer({ salonId, getAuthHeaders, onClose }) {
           </button>
         </div>
       </aside>
-    </>
+    </Drawer>
   );
 }
 

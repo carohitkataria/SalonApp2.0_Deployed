@@ -435,7 +435,13 @@ export default function SalonHomeV2({ salon, salonId, tokens = [], barbers = [],
           )}
         </button>
         <div className="ribbon__sep" />
-        <button className="ribbon__btn" data-tip="Help"><I.help /></button>
+        <button className="ribbon__btn" data-tip="Help" data-testid="ribbon-help-btn"
+                onClick={() => {
+                  const msg = encodeURIComponent("Hi, I need help with SalonHub.");
+                  window.open(`https://wa.me/917503070727?text=${msg}`, '_blank', 'noopener,noreferrer');
+                }}>
+          <I.help />
+        </button>
       </aside>
 
       {/* ===== MAIN ===== */}
