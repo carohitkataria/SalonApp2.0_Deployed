@@ -294,8 +294,17 @@ export default function SinglePageBooking() {
   const [recentServices, setRecentServices] = useState([]);
   const [availablePackages, setAvailablePackages] = useState({ public: [], customer: [] });
   const [useWallet, setUseWallet] = useState(false);
-  const [paymentMode, setPaymentMode] = useState(''); // cash/upi/wallet/pay_later
+  const [paymentMode, setPaymentMode] = useState(''); // online | wallet | pay_at_salon
+  const [inAppPayEnabled, setInAppPayEnabled] = useState(false); // salon has completed Cashfree KYC
+  const [onlinePayLoading, setOnlinePayLoading] = useState(false);
   const [couponCode, setCouponCode] = useState('');
+  const [availableCoupons, setAvailableCoupons] = useState([]);
+  const [appliedCoupon, setAppliedCoupon] = useState(null);
+  const [couponDiscount, setCouponDiscount] = useState(0);
+  const [couponError, setCouponError] = useState('');
+  const [couponBusy, setCouponBusy] = useState(false);
+  const [customerPoints, setCustomerPoints] = useState(null);
+  const [usePoints, setUsePoints] = useState(false);
   const [upiAppOpened, setUpiAppOpened] = useState(false);
   const [barberServices, setBarberServices] = useState([]);
   const [shifts, setShifts] = useState([]);
@@ -398,7 +407,14 @@ export default function SinglePageBooking() {
         }));
         setFastestAvailable(!data.barber_id || data.barber_id === 'any');
         if (typeof data.booking_for_self === 'boolean') setBookingForSelf(data.booking_for_self);
-        if (data.payment_mode) setPaymentMode(data.payment_mode);
+        if (data.payment_mode) {
+          // Map legacy modes → new consolidated modes.
+          const legacy = data.payment_mode;
+          const mapped = legacy === 'cash' || legacy === 'upi' || legacy === 'pay_later'
+            ? 'pay_at_salon'
+            : legacy; // 'wallet' | 'online' | already-new
+          setPaymentMode(mapped);
+        }
         toast.info(`Modifying booking #${data.token_number}`);
       } catch (err) {
         toast.error(err?.response?.data?.detail || 'Could not load booking to reschedule.');
@@ -455,6 +471,82 @@ export default function SinglePageBooking() {
     calculateTotal();
   }, [formData.selectedServices, barberServices, salonServices, selectedPackage]);
 
+  // Fetch coupons the salon chose to show customers (show_to_customer=true)
+  useEffect(() => {
+    if (!salonId) return;
+    axios.get(`${API}/public/salons/${salonId}/coupons`)
+      .then(r => setAvailableCoupons(Array.isArray(r.data?.coupons) ? r.data.coupons : []))
+      .catch(() => setAvailableCoupons([]));
+  }, [salonId]);
+
+  // Fetch the logged-in customer's loyalty points (for redeem-at-checkout)
+  useEffect(() => {
+    const ph = customer?.phone;
+    if (!salonId || !ph) { setCustomerPoints(null); return; }
+    axios.get(`${API}/salons/${salonId}/customers/${ph}/loyalty-points`)
+      .then(r => setCustomerPoints(r.data))
+      .catch(() => setCustomerPoints(null));
+  }, [salonId, customer]);
+
+  // Re-validate / clear coupon when the cart total changes
+  useEffect(() => {
+    if (appliedCoupon) { setAppliedCoupon(null); setCouponDiscount(0); setCouponError('Cart changed — re-apply coupon'); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [totalAmount]);
+
+  const applyCustomerCoupon = async (codeArg) => {
+    const code = (codeArg || couponCode || '').trim().toUpperCase();
+    if (!code) { setCouponError('Please enter a coupon code'); return; }
+    setCouponCode(code);
+    setCouponBusy(true);
+    setCouponError('');
+    try {
+      const { data } = await axios.post(`${API}/salons/${salonId}/coupons/validate`, {
+        code,
+        bill_amount: totalAmount,
+        service_ids: formData.selectedServices,
+        customer_phone: formData.customerPhone || null,
+        branch_id: branchId || null,
+      });
+      if (data?.valid) {
+        setAppliedCoupon(data.coupon || { code });
+        setCouponDiscount(Math.round(Number(data.discount_amount) || 0));
+        setCouponError('');
+        toast.success(`Coupon applied · you save ₹${Math.round(Number(data.discount_amount) || 0)}`);
+      } else {
+        setAppliedCoupon(null); setCouponDiscount(0);
+        setCouponError(data?.reason || 'Invalid coupon code');
+      }
+    } catch (err) {
+      setAppliedCoupon(null); setCouponDiscount(0);
+      setCouponError(err?.response?.data?.detail || 'Invalid coupon code');
+    } finally {
+      setCouponBusy(false);
+    }
+  };
+
+  // Discount membership: flat % off services, auto-applied (mirrors backend order)
+  const membershipDiscountPct = (customerMembership?.has_membership && customerMembership?.plan_type === 'discount')
+    ? Number(customerMembership.discount_percent || 0) : 0;
+  const membershipDiscount = membershipDiscountPct > 0
+    ? Math.round(Number(totalAmount) * membershipDiscountPct / 100) : 0;
+  const baseAfterMembership = Math.max(0, Number(totalAmount) - membershipDiscount);
+  // Recompute coupon on the post-membership base so it matches backend stacking
+  const effCouponDiscount = (() => {
+    if (!appliedCoupon || !couponDiscount) return 0;
+    const c = appliedCoupon;
+    if (c.type == null || c.value == null) return Math.min(Number(couponDiscount || 0), baseAfterMembership);
+    let d = c.type === 'percent' ? baseAfterMembership * Number(c.value || 0) / 100 : Number(c.value || 0);
+    if (c.max_discount_amount != null) d = Math.min(d, Number(c.max_discount_amount));
+    return Math.max(0, Math.min(Math.round(d), baseAfterMembership));
+  })();
+  // Amount the guest actually pays (after membership + coupon)
+  const payableAfterCoupon = Math.max(0, baseAfterMembership - effCouponDiscount);
+  const pointsDiscount = (usePoints && customerPoints?.can_redeem)
+    ? Math.min(Number(customerPoints.redeemable_value || 0), payableAfterCoupon)
+    : 0;
+  const payableAmount = Math.max(0, payableAfterCoupon - pointsDiscount);
+
   // Initialize open categories
   useEffect(() => {
     const services = (fastestAvailable || formData.barberId === 'any') ? salonServices : barberServices;
@@ -492,6 +584,13 @@ export default function SinglePageBooking() {
         axios.get(`${API}/services/categories`)
       ]);
       setSalon(salonRes.data);
+
+      // Is this salon set up to accept in-app UPI/card payment (Cashfree KYC done)?
+      // Non-blocking — failure just leaves online-pay hidden; wallet / pay-at-salon still work.
+      axios
+        .get(`${API}/service-payments/salon/${salonId}/available`)
+        .then((r) => setInAppPayEnabled(!!r.data?.in_app_payment_enabled))
+        .catch(() => setInAppPayEnabled(false));
       setBarbers(barbersRes.data);
       setSalonServices(servicesRes.data);
       
@@ -827,10 +926,10 @@ export default function SinglePageBooking() {
     });
   })();
 
-  // Auto-switch to pay_later when an onwards service is selected and another mode was active
+  // Auto-switch to pay_at_salon when an onwards service is selected and another mode was active
   useEffect(() => {
-    if (hasOnwardsSelected && paymentMode && paymentMode !== 'pay_later') {
-      setPaymentMode('pay_later');
+    if (hasOnwardsSelected && paymentMode && paymentMode !== 'pay_at_salon') {
+      setPaymentMode('pay_at_salon');
       setUpiAppOpened(false);
       toast.info("'Pay at Salon' is the only option because you selected a service with price 'Onwards'.");
     }
@@ -905,8 +1004,8 @@ export default function SinglePageBooking() {
     // Wallet balance check
     if (paymentMode === 'wallet') {
       const walletBalance = customerMembership?.wallet_balance || 0;
-      if (walletBalance < totalAmount) {
-        toast.error(`Insufficient wallet balance. Available: ₹${walletBalance}, Required: ₹${totalAmount}`);
+      if (walletBalance < payableAmount) {
+        toast.error(`Insufficient wallet balance. Available: ₹${walletBalance}, Required: ₹${payableAmount}`);
         return;
       }
     }
@@ -950,6 +1049,8 @@ export default function SinglePageBooking() {
         booking_for_self: bookingForSelf,
         customer_gender: bookingForSelf ? (customer.gender || guestGender || 'Men') : otherPersonGender,
         is_guest: !isUserLoggedIn && bookingMode === 'guest',
+        coupon_code: appliedCoupon?.code || null,
+        points_redeem: (usePoints && customerPoints?.can_redeem) ? customerPoints.points : 0,
         payment_mode: paymentMode
       };
 
@@ -980,13 +1081,105 @@ export default function SinglePageBooking() {
   // Add bookingStep state
   const [bookingStep, setBookingStep] = useState('services'); // 'services' | 'payment' | 'success'
 
+  // In-app gateway payment (Cashfree Easy Split). Creates the booking first so
+  // we have a token to attach the payment to, then opens the hosted checkout.
+  // The webhook flips the token to paid; the callback page confirms to the customer.
+  const handleOnlinePay = async () => {
+    if (!formData.shift) { toast.error('Please select a time slot'); return; }
+    if (formData.selectedServices.length === 0) { toast.error('Please select at least one service'); return; }
+
+    setOnlinePayLoading(true);
+    try {
+      // 1) Ensure a customer record, then create the booking (pending payment).
+      let tokenId = modifyTokenId;
+      if (modifyTokenId) {
+        const body = {
+          selected_services: formData.selectedServices,
+          barber_id: fastestAvailable ? 'any' : formData.barberId,
+          date: formData.date,
+          shift: formData.shift,
+          payment_mode: 'online',
+        };
+        const resp = await axios.put(`${API}/tokens/${modifyTokenId}/customer-reschedule`, body);
+        tokenId = resp.data?.token?.id || modifyTokenId;
+      } else {
+        const customer = await ensureCustomer();
+        if (!customer) { setOnlinePayLoading(false); return; }
+        const bookingData = {
+          salon_id: salonId,
+          branch_id: branchId || undefined,
+          user_id: customer.id,
+          customer_name: bookingForSelf ? customer.name : otherPersonName,
+          phone: bookingForSelf ? customer.phone : otherPersonPhone,
+          date: formData.date,
+          shift: formData.shift,
+          barber_id: fastestAvailable ? 'any' : formData.barberId,
+          selected_services: formData.selectedServices,
+          source: source,
+          booking_type: formData.bookingType,
+          booking_for_self: bookingForSelf,
+          customer_gender: bookingForSelf ? (customer.gender || guestGender || 'Men') : otherPersonGender,
+          is_guest: !isUserLoggedIn && bookingMode === 'guest',
+        coupon_code: appliedCoupon?.code || null,
+        points_redeem: (usePoints && customerPoints?.can_redeem) ? customerPoints.points : 0,
+          payment_mode: 'online',
+        };
+        const resp = await axios.post(`${API}/bookings`, bookingData);
+        setBookedToken(resp.data);
+        tokenId = resp.data?.id;
+      }
+
+      if (!tokenId) { toast.error('Could not create booking. Please try again.'); setOnlinePayLoading(false); return; }
+
+      // 2) Create the split order.
+      let orderRes;
+      try {
+        orderRes = await axios.post(`${API}/service-payments/create-order`, { token_id: tokenId });
+      } catch (err) {
+        // 409 → salon KYC not complete. Fall back gracefully.
+        if (err?.response?.status === 409) {
+          setInAppPayEnabled(false);
+          setPaymentMode('pay_at_salon');
+          toast.error('Online payment unavailable for this salon. Please choose Wallet or Pay at Salon.');
+          setOnlinePayLoading(false);
+          return;
+        }
+        throw err;
+      }
+
+      const { payment_session_id, order_id, cashfree_env } = orderRes.data || {};
+      if (!payment_session_id) { toast.error('Could not initiate payment. Please try again.'); setOnlinePayLoading(false); return; }
+
+      // Marker so the callback page can verify.
+      try {
+        localStorage.setItem('salonhub_pending_service_payment', JSON.stringify({ order_id, token_id: tokenId, salon_id: salonId, ts: Date.now() }));
+      } catch (_) { /* noop */ }
+
+      // eslint-disable-next-line no-undef
+      if (typeof Cashfree === 'undefined') { toast.error('Payment SDK not loaded. Please refresh and retry.'); setOnlinePayLoading(false); return; }
+      // eslint-disable-next-line no-undef
+      const cashfree = Cashfree({ mode: (cashfree_env || 'TEST').toLowerCase() === 'prod' ? 'production' : 'sandbox' });
+      cashfree.checkout({
+        paymentSessionId: payment_session_id,
+        redirectTarget: '_self',
+        returnUrl: `${window.location.origin}/pay/callback?order_id=${encodeURIComponent(order_id)}`,
+      });
+      // Browser navigates away after redirectTarget=_self.
+    } catch (err) {
+      console.error('Online pay error', err);
+      const detail = err?.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : (err.message || 'Payment could not be started'));
+      setOnlinePayLoading(false);
+    }
+  };
+
   // UPI intent handler
   const handleUpiIntent = () => {
     if (!salon?.upi_id) {
       toast.error('Salon UPI ID not configured');
       return;
     }
-    const upiUrl = `upi://pay?pa=${salon.upi_id}&pn=${encodeURIComponent(salon.salon_name)}&am=${totalAmount}&cu=INR&tn=Booking_${salonId.slice(0,8)}`;
+    const upiUrl = `upi://pay?pa=${salon.upi_id}&pn=${encodeURIComponent(salon.salon_name)}&am=${payableAmount}&cu=INR&tn=Booking_${salonId.slice(0,8)}`;
     window.location.href = upiUrl;
     // Mark that UPI app was opened
     setUpiAppOpened(true);
@@ -1034,6 +1227,8 @@ export default function SinglePageBooking() {
         booking_for_self: bookingForSelf,
         customer_gender: bookingForSelf ? (customer.gender || guestGender || 'Men') : otherPersonGender,
         is_guest: !isUserLoggedIn && bookingMode === 'guest',
+        coupon_code: appliedCoupon?.code || null,
+        points_redeem: (usePoints && customerPoints?.can_redeem) ? customerPoints.points : 0,
         payment_mode: 'upi'
       };
 
@@ -1070,13 +1265,13 @@ export default function SinglePageBooking() {
     // If user isn't logged in AND guest details not filled, route through payment step
     // so the existing guest-details UI can capture name + phone first.
     if (!isUserLoggedIn && bookingMode !== 'guest') {
-      // Pre-set pay_later as the chosen mode for package bookings
-      setPaymentMode('pay_later');
+      // Pre-set pay_at_salon as the chosen mode for package bookings
+      setPaymentMode('pay_at_salon');
       setBookingStep('payment');
       return;
     }
     if (!isUserLoggedIn && bookingMode === 'guest' && (!guestPhone || !guestName)) {
-      setPaymentMode('pay_later');
+      setPaymentMode('pay_at_salon');
       setBookingStep('payment');
       return;
     }
@@ -1100,7 +1295,9 @@ export default function SinglePageBooking() {
         booking_for_self: bookingForSelf,
         customer_gender: bookingForSelf ? (customer.gender || guestGender || 'Men') : otherPersonGender,
         is_guest: !isUserLoggedIn && bookingMode === 'guest',
-        payment_mode: 'pay_later',
+        coupon_code: appliedCoupon?.code || null,
+        points_redeem: (usePoints && customerPoints?.can_redeem) ? customerPoints.points : 0,
+        payment_mode: 'pay_at_salon',
       };
       const response = await axios.post(`${API}/bookings`, bookingData);
       setBookedToken({ ...response.data, _is_package_booking: true });
@@ -1257,7 +1454,7 @@ export default function SinglePageBooking() {
   if (bookingStep === 'payment') {
     const walletBalance = customerMembership?.wallet_balance || 0;
     const hasWallet = !!customerMembership && walletBalance > 0;
-    const walletSufficient = hasWallet && walletBalance >= totalAmount;
+    const walletSufficient = hasWallet && walletBalance >= payableAmount;
 
     return (
       <div className="min-h-screen bg-background pb-32">
@@ -1288,155 +1485,114 @@ export default function SinglePageBooking() {
                 ) : null;
               })}
               <div className="flex justify-between pt-2 border-t border-border">
-                <span className="font-bold text-foreground">Total</span>
-                <span className="text-xl font-bold text-gold">₹{totalAmount}</span>
+                <span className="font-medium text-foreground">Subtotal</span>
+                <span className="font-medium text-foreground">₹{totalAmount}</span>
+              </div>
+              {membershipDiscount > 0 && (
+                <div className="flex justify-between text-sm text-green-600 dark:text-green-400 font-medium" data-testid="summary-membership-discount">
+                  <span>Membership {customerMembership?.membership_name ? `(${customerMembership.membership_name})` : ''} — {membershipDiscountPct}% off</span>
+                  <span>− ₹{membershipDiscount}</span>
+                </div>
+              )}
+              {effCouponDiscount > 0 && (
+                <div className="flex justify-between text-sm text-green-600 dark:text-green-400 font-medium" data-testid="summary-coupon-discount">
+                  <span>Coupon {appliedCoupon?.code ? `(${appliedCoupon.code})` : ''}</span>
+                  <span>− ₹{effCouponDiscount}</span>
+                </div>
+              )}
+              {pointsDiscount > 0 && (
+                <div className="flex justify-between text-sm text-green-600 dark:text-green-400 font-medium" data-testid="summary-points-discount">
+                  <span>Loyalty points</span>
+                  <span>− ₹{pointsDiscount}</span>
+                </div>
+              )}
+              <div className="flex justify-between pt-2 border-t border-border">
+                <span className="font-bold text-foreground">Total payable</span>
+                <span className="text-xl font-bold text-gold" data-testid="summary-payable">₹{payableAmount}</span>
               </div>
             </div>
           </div>
 
-          {/* Guest vs Login choice — shown only when NOT signed in.
-              - 'guest': show name/mobile/gender form (no OTP). The booking is
-                tagged is_otp_verified_at_booking=false.
-              - 'login': open CustomerAuthModal (Password / OTP / Sign up).
-              Once `isUserLoggedIn` becomes true, this section disappears. */}
-          {!isUserLoggedIn && !bookingMode && (
-            <div className="bg-card border border-border rounded-xl p-4 space-y-3" data-testid="booking-mode-chooser">
-              <h3 className="text-sm font-semibold text-foreground">How would you like to book?</h3>
-              <motion.button
-                whileHover={{ scale: 1.01 }}
-                whileTap={{ scale: 0.99 }}
-                onClick={() => setBookingMode('guest')}
-                className="w-full p-4 rounded-xl border-2 border-border hover:border-gold bg-background text-left transition-all"
-                data-testid="book-as-guest-btn"
-              >
-                <div className="flex items-start gap-3">
-                  <div className="p-2.5 bg-purple-500/10 rounded-full">
-                    <Smartphone className="w-5 h-5 text-purple-600" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="font-bold text-foreground">Book as Guest</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">Quick booking with mobile, name & gender. No OTP needed.</p>
-                  </div>
-                </div>
-              </motion.button>
-              <motion.button
-                whileHover={{ scale: 1.01 }}
-                whileTap={{ scale: 0.99 }}
-                onClick={() => { setBookingMode('login'); setShowAuthModal(true); }}
-                className="w-full p-4 rounded-xl border-2 border-border hover:border-gold bg-background text-left transition-all"
-                data-testid="login-to-book-btn"
-              >
-                <div className="flex items-start gap-3">
-                  <div className="p-2.5 bg-gold/10 rounded-full">
-                    <User className="w-5 h-5 text-gold" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="font-bold text-foreground">Login to Book</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">Access booking history, wallet & member benefits.</p>
-                  </div>
-                </div>
-              </motion.button>
-            </div>
-          )}
-
-          {/* Guest identity form — only when 'guest' mode is selected. */}
-          {!isUserLoggedIn && bookingMode === 'guest' && (
-            <div className="bg-card border border-border rounded-xl p-4 space-y-3" data-testid="guest-identity-card">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <h3 className="text-sm font-medium text-foreground">Your details</h3>
-                <button
-                  type="button"
-                  onClick={() => setBookingMode(null)}
-                  className="text-xs text-gold hover:underline"
-                  data-testid="guest-change-mode-btn"
-                >
-                  Change
-                </button>
-              </div>
-              <p className="text-xs text-muted-foreground -mt-1">
-                We only need a few details to confirm your slot. No OTP required to book.
-              </p>
-              <Input
-                value={guestName}
-                onChange={(e) => setGuestName(e.target.value)}
-                placeholder="Full name"
-                className="h-10"
-                data-testid="guest-name-input"
-              />
-              <div className="flex gap-2">
-                <span className="inline-flex items-center px-3 h-10 rounded-lg border border-border bg-background text-sm text-muted-foreground">+91</span>
-                <Input
-                  value={guestPhone}
-                  onChange={(e) => setGuestPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
-                  placeholder="10-digit mobile"
-                  inputMode="numeric"
-                  className="h-10 flex-1"
-                  data-testid="guest-phone-input"
-                />
-              </div>
-              <div className="flex gap-2 flex-wrap">
-                {['Men', 'Women', 'Other'].map((g) => (
-                  <button
-                    key={g}
-                    type="button"
-                    onClick={() => setGuestGender(g)}
-                    className={`px-4 py-2 rounded-full border-2 text-sm font-medium transition-all ${
-                      guestGender === g
-                        ? 'bg-gold text-black border-gold'
-                        : 'bg-background text-foreground border-border hover:border-gold/50'
-                    }`}
-                    data-testid={`guest-gender-${g.toLowerCase()}`}
-                  >
-                    {g}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Login modal trigger — when 'login' mode but modal closed. */}
-          {!isUserLoggedIn && bookingMode === 'login' && !showAuthModal && (
-            <div className="bg-card border border-border rounded-xl p-4 flex items-center justify-between gap-3" data-testid="login-pending-card">
-              <div>
-                <p className="text-sm font-medium text-foreground">Login required to continue</p>
-                <p className="text-xs text-muted-foreground mt-0.5">Reopen the login window or switch to guest checkout.</p>
-              </div>
-              <div className="flex gap-2 flex-shrink-0">
-                <Button size="sm" variant="outline" onClick={() => setBookingMode(null)} data-testid="login-switch-to-guest-btn">
-                  Use guest
-                </Button>
-                <Button size="sm" onClick={() => setShowAuthModal(true)} data-testid="login-reopen-btn">
-                  Open login
-                </Button>
-              </div>
-            </div>
-          )}
+          {/* Login/Guest choice is now shown as a bottom-sheet AFTER the user
+              taps "Confirm Booking" (see BookingIdentitySheet below).
+              The inline chooser + guest form + login-pending helper card that
+              used to live here have been removed on purpose so the payment
+              page stays clean — the sheet is now the single source of truth. */}
 
           {/* Coupon Code */}
-          <div className="bg-card border border-border rounded-xl p-4">
+          <div className="bg-card border border-border rounded-xl p-4" data-testid="customer-coupon-card">
+            {availableCoupons.length > 0 && (
+              <div className="mb-3">
+                <p className="text-xs font-medium text-muted-foreground mb-2">Available offers</p>
+                <div className="flex flex-wrap gap-2">
+                  {availableCoupons.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => applyCustomerCoupon(c.code)}
+                      data-testid={`customer-coupon-chip-${c.code}`}
+                      className={`px-3 py-1.5 rounded-full border text-xs font-semibold transition-colors ${appliedCoupon?.code === c.code ? 'border-gold bg-gold/15 text-gold' : 'border-dashed border-gold/60 text-gold hover:bg-gold/10'}`}
+                      title={c.description || c.title}
+                    >
+                      {c.code} · {c.type === 'percent' ? `${c.value}% off` : `₹${c.value} off`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <input
                   type="text"
                   value={couponCode}
-                  onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                  onChange={(e) => { setCouponCode(e.target.value.toUpperCase()); if (couponError) setCouponError(''); }}
                   placeholder="Enter coupon code"
+                  data-testid="customer-coupon-input"
                   className="w-full h-10 px-3 rounded-lg border border-border bg-background text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-gold/50"
                 />
               </div>
               <Button
                 type="button"
                 variant="outline"
+                disabled={couponBusy}
+                data-testid="customer-coupon-apply"
                 className="border-gold text-gold hover:bg-gold/10"
-                onClick={() => {
-                  if (couponCode) toast.info('Coupon feature coming soon!');
-                  else toast.error('Please enter a coupon code');
-                }}
+                onClick={() => applyCustomerCoupon()}
               >
-                Apply
+                {couponBusy ? '…' : (appliedCoupon ? 'Re-apply' : 'Apply')}
               </Button>
             </div>
+            {appliedCoupon && (
+              <div className="mt-2 flex items-center justify-between text-sm text-green-600 dark:text-green-400 font-medium" data-testid="customer-coupon-applied">
+                <span>Coupon <b>{appliedCoupon.code}</b> applied — you save ₹{couponDiscount}</span>
+                <button type="button" className="text-xs underline text-muted-foreground" onClick={() => { setAppliedCoupon(null); setCouponDiscount(0); setCouponCode(''); }} data-testid="customer-coupon-remove">Remove</button>
+              </div>
+            )}
+            {couponError && !appliedCoupon && (
+              <div className="mt-2 text-sm font-medium text-red-500" data-testid="customer-coupon-error">{couponError}</div>
+            )}
           </div>
+
+          {/* Loyalty points redeem */}
+          {customerPoints && customerPoints.config?.points_enabled && customerPoints.points > 0 && (
+            <label className="bg-card border border-gold/40 rounded-xl p-4 flex items-center justify-between gap-3 cursor-pointer" data-testid="loyalty-redeem-checkout">
+              <div>
+                <p className="text-sm font-semibold text-foreground">Use loyalty points</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  You have <b className="text-gold">{customerPoints.points} pts</b> (₹{customerPoints.redeemable_value})
+                  {!customerPoints.can_redeem && ` · need ${customerPoints.config.points_min_redeem} pts to redeem`}
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={usePoints}
+                disabled={!customerPoints.can_redeem}
+                onChange={(e) => setUsePoints(e.target.checked)}
+                data-testid="loyalty-redeem-toggle"
+                className="w-5 h-5 accent-gold"
+              />
+            </label>
+          )}
 
           {/* Payment Options */}
           <div>
@@ -1447,51 +1603,29 @@ export default function SinglePageBooking() {
               </div>
             )}
             <div className="space-y-3">
-              {/* Cash */}
-              {!hasOnwardsSelected && (
+              {/* Pay Online (Cashfree Easy Split) — only when the salon has completed KYC */}
+              {!hasOnwardsSelected && inAppPayEnabled && (
               <motion.button
                 type="button"
                 whileHover={{ scale: 1.01 }}
                 whileTap={{ scale: 0.99 }}
-                onClick={() => { setPaymentMode('cash'); setUpiAppOpened(false); }}
+                onClick={() => { setPaymentMode('online'); setUpiAppOpened(false); }}
                 className={`w-full p-4 rounded-xl border-2 transition-all text-left flex items-center gap-4 ${
-                  paymentMode === 'cash' ? 'bg-gold/10 border-gold shadow-md' : 'bg-card border-border hover:border-gold/40'
+                  paymentMode === 'online' ? 'bg-gold/10 border-gold shadow-md' : 'bg-card border-border hover:border-gold/40'
                 }`}
-              >
-                <div className="p-3 bg-green-500/10 rounded-full">
-                  <Banknote className="w-6 h-6 text-green-600" />
-                </div>
-                <div className="flex-1">
-                  <p className="font-bold text-foreground">Cash</p>
-                  <p className="text-xs text-muted-foreground">Pay at the salon</p>
-                </div>
-                {paymentMode === 'cash' && (
-                  <div className="w-6 h-6 bg-gold rounded-full flex items-center justify-center">
-                    <Check className="w-4 h-4 text-black" />
-                  </div>
-                )}
-              </motion.button>
-              )}
-
-              {/* UPI */}
-              {!hasOnwardsSelected && (
-              <motion.button
-                type="button"
-                whileHover={{ scale: 1.01 }}
-                whileTap={{ scale: 0.99 }}
-                onClick={() => { setPaymentMode('upi'); setUpiAppOpened(false); }}
-                className={`w-full p-4 rounded-xl border-2 transition-all text-left flex items-center gap-4 ${
-                  paymentMode === 'upi' ? 'bg-gold/10 border-gold shadow-md' : 'bg-card border-border hover:border-gold/40'
-                }`}
+                data-testid="payment-mode-online"
               >
                 <div className="p-3 bg-blue-500/10 rounded-full">
                   <Smartphone className="w-6 h-6 text-blue-600" />
                 </div>
                 <div className="flex-1">
-                  <p className="font-bold text-foreground">UPI</p>
-                  <p className="text-xs text-muted-foreground">Pay via UPI app (GPay, PhonePe, etc.)</p>
+                  <div className="flex items-center gap-1.5">
+                    <p className="font-bold text-foreground">Pay Online</p>
+                    <span className="text-[10px] font-bold text-blue-600 bg-blue-500/10 px-1.5 py-0.5 rounded uppercase tracking-wide">UPI first</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">UPI · Card · Netbanking · secured by Cashfree</p>
                 </div>
-                {paymentMode === 'upi' && (
+                {paymentMode === 'online' && (
                   <div className="w-6 h-6 bg-gold rounded-full flex items-center justify-center">
                     <Check className="w-4 h-4 text-black" />
                   </div>
@@ -1508,7 +1642,7 @@ export default function SinglePageBooking() {
                 onClick={() => {
                   if (!hasWallet) return;
                   if (!walletSufficient) {
-                    toast.error(`Insufficient balance. Available: ₹${walletBalance}, Required: ₹${totalAmount}`);
+                    toast.error(`Insufficient balance. Available: ₹${walletBalance}, Required: ₹${payableAmount}`);
                     return;
                   }
                   // Require OTP verification for wallet payment
@@ -1529,6 +1663,7 @@ export default function SinglePageBooking() {
                     ? 'bg-red-50 dark:bg-red-500/5 border-red-200 dark:border-red-500/30'
                     : 'bg-card border-border hover:border-gold/40'
                 }`}
+                data-testid="payment-mode-wallet"
               >
                 <div className="p-3 bg-gold/10 rounded-full">
                   <Wallet className="w-6 h-6 text-gold" />
@@ -1558,24 +1693,25 @@ export default function SinglePageBooking() {
               </motion.button>
               )}
 
-              {/* Pay later at Salon */}
+              {/* Pay at Salon — cash or UPI at the counter, not through the platform */}
               <motion.button
                 type="button"
                 whileHover={{ scale: 1.01 }}
                 whileTap={{ scale: 0.99 }}
-                onClick={() => { setPaymentMode('pay_later'); setUpiAppOpened(false); }}
+                onClick={() => { setPaymentMode('pay_at_salon'); setUpiAppOpened(false); }}
                 className={`w-full p-4 rounded-xl border-2 transition-all text-left flex items-center gap-4 ${
-                  paymentMode === 'pay_later' ? 'bg-gold/10 border-gold shadow-md' : 'bg-card border-border hover:border-gold/40'
+                  paymentMode === 'pay_at_salon' ? 'bg-gold/10 border-gold shadow-md' : 'bg-card border-border hover:border-gold/40'
                 }`}
+                data-testid="payment-mode-pay-at-salon"
               >
                 <div className="p-3 bg-purple-500/10 rounded-full">
-                  <Clock className="w-6 h-6 text-purple-600" />
+                  <Banknote className="w-6 h-6 text-purple-600" />
                 </div>
                 <div className="flex-1">
-                  <p className="font-bold text-foreground">Pay later at Salon</p>
-                  <p className="text-xs text-muted-foreground">Pay after your service is done</p>
+                  <p className="font-bold text-foreground">Pay at Salon</p>
+                  <p className="text-xs text-muted-foreground">Cash or UPI at the salon counter after your service</p>
                 </div>
-                {paymentMode === 'pay_later' && (
+                {paymentMode === 'pay_at_salon' && (
                   <div className="w-6 h-6 bg-gold rounded-full flex items-center justify-center">
                     <Check className="w-4 h-4 text-black" />
                   </div>
@@ -1593,78 +1729,55 @@ export default function SinglePageBooking() {
               </div>
               <div className="flex justify-between items-center mt-1">
                 <span className="text-sm text-foreground">Booking Amount</span>
-                <span className="font-bold text-red-500">- ₹{totalAmount}</span>
+                <span className="font-bold text-red-500">- ₹{payableAmount}</span>
               </div>
               <div className="flex justify-between items-center mt-2 pt-2 border-t border-gold/20">
                 <span className="text-sm font-medium text-foreground">Balance After</span>
-                <span className="font-bold text-gold">₹{walletBalance - totalAmount}</span>
+                <span className="font-bold text-gold">₹{walletBalance - payableAmount}</span>
               </div>
             </div>
           )}
 
-          {/* UPI Info */}
-          {paymentMode === 'upi' && salon?.upi_id && (
+          {/* Pay-Online info */}
+          {paymentMode === 'online' && (
             <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-xl">
-              <p className="text-xs text-muted-foreground">UPI ID: <span className="font-mono font-bold text-foreground">{salon.upi_id}</span></p>
-              {upiAppOpened && (
-                <p className="text-xs text-green-600 mt-2 font-medium">
-                  ✓ UPI app opened. After completing payment, tap the confirm button below.
-                </p>
-              )}
-            </div>
-          )}
-          {paymentMode === 'upi' && !salon?.upi_id && (
-            <div className="p-3 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 rounded-xl">
-              <p className="text-xs text-red-500">Salon UPI ID not configured. Please choose another payment method.</p>
+              <p className="text-xs text-foreground">
+                <span className="font-bold">Secure checkout</span> — pay by UPI, card or netbanking.
+                Your booking will be confirmed the moment payment succeeds.
+              </p>
             </div>
           )}
         </div>
 
-        {/* Sticky Footer - Single Button that changes based on UPI state */}
+        {/* Sticky Footer - Single Button that changes based on payment mode */}
         <div className="fixed bottom-0 left-0 right-0 bg-background border-t border-border p-4 z-30">
           <div className="max-w-2xl mx-auto">
             <div className="flex items-center justify-between mb-3">
               <span className="text-muted-foreground text-sm">{formData.selectedServices.length} service(s)</span>
-              <span className="text-2xl font-bold text-gold">₹{totalAmount}</span>
+              <span className="text-2xl font-bold text-gold">₹{payableAmount}</span>
             </div>
-            {paymentMode === 'upi' ? (
-              !upiAppOpened ? (
-                <Button
-                  type="button"
-                  onClick={handleUpiIntent}
-                  disabled={!salon?.upi_id}
-                  className="w-full bg-blue-600 text-white hover:bg-blue-700 py-5 text-base font-bold rounded-xl disabled:opacity-50"
-                >
-                  <Smartphone className="w-5 h-5 mr-2" />
-                  Open UPI App to Pay ₹{totalAmount}
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  onClick={handleUpiConfirm}
-                  disabled={loading}
-                  className="w-full bg-green-600 text-white hover:bg-green-700 py-5 text-base font-bold rounded-xl disabled:opacity-50"
-                >
-                  {loading ? 'Confirming...' : (
-                    <>
-                      <CheckCircle className="w-5 h-5 mr-2" />
-                      I've Paid — Confirm Booking
-                    </>
-                  )}
-                </Button>
-              )
+            {paymentMode === 'online' ? (
+              <Button
+                type="button"
+                onClick={handleOnlinePay}
+                disabled={onlinePayLoading}
+                className="w-full bg-blue-600 text-white hover:bg-blue-700 py-5 text-base font-bold rounded-xl disabled:opacity-50"
+                data-testid="online-pay-btn"
+              >
+                {onlinePayLoading ? 'Starting secure payment…' : (
+                  <>
+                    <Smartphone className="w-5 h-5 mr-2" />
+                    Pay ₹{payableAmount} Securely
+                  </>
+                )}
+              </Button>
             ) : (
               <Button
                 type="button"
                 onClick={() => {
-                  // Item 10 — When user isn't logged in and hasn't completed guest details,
-                  // open the polished bottom sheet instead of relying on the inline cards.
-                  const guestReady =
-                    (guestName || '').trim().length >= 2 &&
-                    (guestPhone || '').length === 10 &&
-                    !!guestGender;
+                  // Logged-in users go straight through. Everyone else sees
+                  // the identity sheet with "Send OTP" or "Continue as Guest".
                   if (isUserLoggedIn) { handleSubmit(); return; }
-                  if (bookingMode === 'guest' && guestReady) { handleSubmit(); return; }
                   setShowIdentitySheet(true);
                 }}
                 disabled={loading || !paymentMode || (paymentMode === 'wallet' && !walletSufficient)}
@@ -1673,7 +1786,7 @@ export default function SinglePageBooking() {
               >
                 {(() => {
                   if (loading) return 'Booking...';
-                  if (paymentMode === 'wallet') return `Pay ₹${totalAmount} from Wallet`;
+                  if (paymentMode === 'wallet') return `Pay ₹${payableAmount} from Wallet`;
                   return 'Confirm Booking';
                 })()}
               </Button>

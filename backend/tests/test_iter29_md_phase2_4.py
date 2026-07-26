@@ -8,7 +8,7 @@ Coverage:
 """
 import os, csv, io, uuid, requests, pytest
 
-BASE_URL = (os.environ.get("REACT_APP_BACKEND_URL") or "https://twilio-messaging-2.preview.emergentagent.com").rstrip("/")
+BASE_URL = (os.environ.get("REACT_APP_BACKEND_URL") or "https://md-revisions.preview.emergentagent.com").rstrip("/")
 SALON_ID = "58db26fa-f807-4305-9c86-313d3f1b35f3"
 
 

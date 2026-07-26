@@ -26,7 +26,9 @@ const getAuthHeaders = () => {
 const fmtDate = (iso) => {
   if (!iso) return '-';
   try {
-    return new Date(iso).toLocaleDateString('en-IN', {
+    const d = new Date(iso);
+    if (d.getFullYear() >= 2100) return 'Unlimited';
+    return d.toLocaleDateString('en-IN', {
       day: '2-digit',
       month: 'short',
       year: 'numeric',

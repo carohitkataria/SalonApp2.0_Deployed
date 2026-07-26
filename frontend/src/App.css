@@ -54,8 +54,15 @@
   scrollbar-width: none;
 }
 
-/* Prevent horizontal overflow globally */
+/* Prevent horizontal overflow globally + ensure app fills viewport at any zoom */
 html, body, #root {
   overflow-x: hidden;
+  min-height: 100vh;
+  width: 100%;
+  min-width: 100%;
   max-width: 100vw;
+}
+#root {
+  display: flex;
+  flex-direction: column;
 }

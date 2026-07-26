@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useWebSocket } from '@/contexts/WebSocketContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -15,17 +15,30 @@ import BarberManagement from '@/components/BarberManagement';
 import StaffCheckInWidget from '@/components/StaffCheckInWidget';
 import BranchManagement from '@/components/BranchManagement';
 import BranchSelector from '@/components/BranchSelector';
-import CustomerMaster from '@/components/CustomerMaster';
 import OfferingsModule from '@/components/OfferingsModule';
 import FinancialsModule from '@/components/FinancialsModule';
+import ServicesModule from '@/components/ops/ServicesModule';
+import InventoryModule from '@/components/ops/InventoryModule';
+import ShopModule from '@/components/ops/ShopModule';
+import ReportsModule from '@/components/ops/ReportsModule';
+import { OpsProvider, useOps } from '@/components/ops/OpsContext';
 import MyProfile from '@/components/MyProfile';
+import PaymentVendorSetup from '@/components/PaymentVendorSetup';
 import SalonNotificationSettings from '@/components/SalonNotificationSettings';
 import OperationalHoursModule from '@/components/OperationalHoursModule';
 import Analytics from '@/components/Analytics';
 import SubscriptionPaywallModal from '@/components/SubscriptionPaywallModal';
 import SubscriptionBadge from '@/components/SubscriptionBadge';
-import StaffSettingsContent from '@/components/staff/StaffSettingsContent';
 import { InventoryView } from '@/pages/salon/SalonInventoryPage';
+import SalonHomeNew from '@/pages/salon/SalonHomeNew';
+import SalonHomeV2 from '@/pages/salon/SalonHomeV2';
+import HomeV2Shell from '@/pages/salon/home_v2/HomeV2Shell';
+import SalonStaffV3 from '@/pages/salon/redesign/SalonStaffV3';
+import SalonSettingsV3 from '@/pages/salon/redesign/SalonSettingsV3';
+import TabHeaderV3 from '@/pages/salon/redesign/TabHeaderV3';
+import QueueTabV2 from '@/pages/salon/home_v2/QueueTabV2';
+import MarketingV2 from '@/pages/salon/v2_pages/MarketingV2';
+import CustomersV2 from '@/pages/salon/v2_pages/CustomersV2';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SubscriptionProvider } from '@/contexts/SubscriptionContext';
 import { getSession, clearSession } from '@/utils/sessionManager';
@@ -40,7 +53,7 @@ import {
   Clock, User, Phone, Bell, MapPin, Settings, CheckCircle, Calendar,
   Users, ArrowLeft, FileText, Download, Plus, X, TrendingUp, Menu,
   Shield, DollarSign, Database, Pin, PinOff, Edit, CreditCard, Banknote, Smartphone,
-  LayoutDashboard, Activity, Zap, Wallet, Search, Building2, ShoppingBag, Boxes
+  LayoutDashboard, Activity, Zap, Wallet, Search, Building2, ShoppingBag, Boxes, Megaphone
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -93,6 +106,7 @@ export default function EnhancedSalonDashboard() {
       'staff': isAdmin || isBM || hasPermission('can_access_staff'),
       'services': isAdmin || isBM || hasPermission('can_access_services'),
       'gallery': isAdmin || isBM || hasPermission('can_access_gallery'),
+      'marketing': isAdmin || isBM || hasPermission('can_access_gallery') || hasPermission('can_access_marketing'),
       'financials': isAdmin || isBM || hasPermission('can_access_financials'),
       'analytics': isAdmin || isBM || hasPermission('can_access_analytics'),
       'salon': isAdmin || hasPermission('can_edit_salon'),
@@ -163,6 +177,14 @@ export default function EnhancedSalonDashboard() {
       setSearchParams({ tab: id });
     }
   };
+  // Listen for programmatic navigation events emitted by Ops modules
+  useEffect(() => {
+    const onNav = (e) => {
+      if (e?.detail?.tab) goToTab(e.detail.tab);
+    };
+    window.addEventListener('ops:navigate', onNav);
+    return () => window.removeEventListener('ops:navigate', onNav);
+  }, []); // eslint-disable-line
   const [salonId, setSalonId] = useState(null);
   const [salon, setSalon] = useState(null);
   const [barbers, setBarbers] = useState([]);
@@ -179,8 +201,10 @@ export default function EnhancedSalonDashboard() {
     const shifted = new Date(Date.UTC(y, m - 1, d + daysOffset));
     return fmt.format(shifted);
   };
-  const [dateMode, setDateMode] = useState('today'); // 'today' | 'tomorrow'
-  const date = dateMode === 'today' ? getISTDateOffset(0) : getISTDateOffset(1);
+  const [dateMode, setDateMode] = useState('today'); // 'today' | 'yesterday' | 'range'
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const date = dateMode === 'yesterday' ? getISTDateOffset(-1) : getISTDateOffset(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPinned, setMenuPinned] = useState(() => {
     return localStorage.getItem('menu_pinned') === 'true';
@@ -250,6 +274,24 @@ export default function EnhancedSalonDashboard() {
     if (!storedSalonId || (!legacyToken && !salonUserAuth)) {
       navigate('/salon/login');
       return;
+    }
+
+    // A staff-role user with no module permissions belongs on the Staff Portal,
+    // not the admin dashboard (which would render an empty/broken view for them).
+    if (salonUserAuth) {
+      try {
+        const a = JSON.parse(salonUserAuth);
+        if (a?.role === 'staff') {
+          const p = a.permissions || {};
+          const flatOn = Object.keys(p).some((k) => k !== 'modules' && p[k] === true);
+          const mods = p.modules || {};
+          const modOn = Object.values(mods).some((acts) => acts && Object.values(acts).some(Boolean));
+          if (!flatOn && !modOn) {
+            navigate('/salon/staff-portal');
+            return;
+          }
+        }
+      } catch { /* ignore */ }
     }
 
     setSalonId(storedSalonId);
@@ -388,7 +430,7 @@ export default function EnhancedSalonDashboard() {
     return () => clearInterval(interval);
   }, [salonId]);
 
-  const getAuthHeaders = () => {
+  const getAuthHeaders = useCallback(() => {
     // Try new multi-user auth first, fall back to legacy
     const salonUserAuth = localStorage.getItem('salon_user_auth');
     if (salonUserAuth) {
@@ -402,7 +444,7 @@ export default function EnhancedSalonDashboard() {
     
     const legacyToken = localStorage.getItem('salon_admin_token');
     return { Authorization: `Bearer ${legacyToken}` };
-  };
+  }, []);
 
   const fetchSalonData = async (id) => {
     try {
@@ -1008,6 +1050,7 @@ export default function EnhancedSalonDashboard() {
     setBookingMode('existing');
     setCustomerSearchQuery('');
     setSelectedCustomer(null);
+    setWalletInfo(null);
     setManualSelectedCategory('All');
     setManualBookingForm({
       customer_name: '',
@@ -1056,7 +1099,7 @@ export default function EnhancedSalonDashboard() {
     }
   };
 
-  const handleCustomerSelection = (customer) => {
+  const handleCustomerSelection = async (customer) => {
     setSelectedCustomer(customer);
     setManualBookingForm(prev => ({
       ...prev,
@@ -1064,6 +1107,19 @@ export default function EnhancedSalonDashboard() {
       phone: customer.phone,
       gender: customer.gender || 'Men'
     }));
+    // Pre-fetch wallet balance so the Wallet payment button shows the amount
+    // and gets enabled/disabled correctly.
+    try {
+      const phoneQ = String(customer.phone || '').replace(/^\+91/, '').replace(/\D/g, '');
+      if (phoneQ) {
+        const res = await axios.get(`${API}/salons/${salonId}/customers/${phoneQ}/wallet`);
+        setWalletInfo(res.data || null);
+      } else {
+        setWalletInfo(null);
+      }
+    } catch (err) {
+      setWalletInfo(null);
+    }
   };
 
   const toggleManualServiceSelection = (serviceId) => {
@@ -1146,13 +1202,13 @@ export default function EnhancedSalonDashboard() {
     { id: 'home', label: 'Home', icon: LayoutDashboard, show: true },
     { id: 'queue', label: 'Token Queue', icon: Calendar, show: true },
     { id: 'staff', label: 'Staff Management', icon: Users, show: checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_access_staff') },
-    { id: 'services', label: 'Services & Offerings', icon: Scissors, show: checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_access_services') },
-    { id: 'financials', label: 'Financials', icon: DollarSign, show: checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_access_financials') },
-    { id: 'customer-master', label: 'Customer Master', icon: Database, show: true },
-    { id: 'analytics', label: 'Analytics', icon: TrendingUp, show: checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_access_analytics') },
+    { id: 'services', label: 'Services', icon: Scissors, show: checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_access_services') },
+    { id: 'reports', label: 'Reports', icon: TrendingUp, show: checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_access_financials') || checkHasPermission('can_access_analytics') },
+    { id: 'customer-master', label: 'Guests', icon: Database, show: true },
     { id: 'marketplace', label: 'Marketplace', icon: ShoppingBag, show: checkIsAdmin(), route: '/salon/marketplace' },
     { id: 'inventory', label: 'Inventory', icon: Boxes, show: checkIsAdmin() || checkIsBranchManager() },
-    { id: 'gallery', label: 'Gallery', icon: FileText, show: checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_access_gallery') },
+    { id: 'shop', label: 'Shop', icon: ShoppingBag, show: checkIsAdmin() || checkIsBranchManager() },
+    { id: 'marketing', label: 'Marketing', icon: Megaphone, show: checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_access_gallery') || checkHasPermission('can_access_marketing') },
     { id: 'salon', label: 'Salon Settings', icon: Settings, show: checkIsAdmin() || checkHasPermission('can_edit_salon') }
   ].filter(item => item.show);
 
@@ -1180,1082 +1236,117 @@ export default function EnhancedSalonDashboard() {
 
   return (
     <SubscriptionProvider salonId={salonId}>
-    <div className="min-h-screen bg-background relative overflow-hidden">
-      {/* Background Image with Overlay */}
-      <div className="fixed inset-0 z-0">
-        <div 
-          className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-20"
-          style={{
-            backgroundImage: `url('https://images.pexels.com/photos/3993293/pexels-photo-3993293.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940')`
-          }}
-        />
-        <div className="absolute inset-0 bg-gradient-to-br from-background/95 via-background/90 to-gold/10" />
-      </div>
+    {/* Home tab uses its own full-viewport shell (rail + ribbon). Render outside
+        the legacy header/max-w-7xl wrapper so the new design isn't constrained. */}
+    {activeTab === 'home' ? (
+      <SalonHomeV2
+        salon={salon}
+        salonId={salonId}
+        tokens={tokens}
+        barbers={barbers}
+        goToTab={goToTab}
+        getAuthHeaders={getAuthHeaders}
+        handleCallToken={handleCallToken}
+        handleCompleteToken={handleCompleteToken}
+      />
+    ) : (
+    <HomeV2Shell
+      salon={salon}
+      salonId={salonId}
+      getAuthHeaders={getAuthHeaders}
+      activeTab={activeTab}
+      unreadNotifCount={unreadNotifCount}
+      onLogout={handleLogout}
+      onSaved={() => { try { fetchTokens?.(); fetchBarbers?.(); } catch (_) {} }}
+    >
+    <div className="min-h-screen bg-background text-foreground">
+      <div className="w-full px-3 md:px-5 py-4">
 
-      {/* Content */}
-      <div className="relative z-10">
-        {/* Header */}
-        <div className="backdrop-blur-xl bg-background/80 border-b border-gold/20 p-3 md:p-4 shadow-lg">
-          <div className="max-w-7xl mx-auto flex items-center justify-between gap-2">
-            <div className="flex items-center space-x-2 md:space-x-4 min-w-0">
-              {/* Hamburger Menu Button */}
-              <button
-                onClick={() => setMenuOpen(!menuOpen)}
-                className="p-2 hover:bg-gold/10 rounded-lg transition-colors flex-shrink-0"
-              >
-                <Menu className="w-6 h-6 text-gold" />
-              </button>
-              
-              <div 
-                className="hidden sm:block p-3 bg-gradient-to-br from-gold/20 to-gold/5 rounded-xl border border-gold/30 flex-shrink-0 cursor-pointer hover:bg-gold/30 transition-colors overflow-hidden"
-                onClick={() => goToTab('home')}
-                title="Go to Home"
-              >
-                {salon?.logo_url ? (
-                  <img src={salon.logo_url} alt="Salon Logo" className="w-8 h-8 object-cover rounded" />
-                ) : (
-                  <Scissors className="w-8 h-8 text-gold" />
-                )}
-              </div>
-              <div className="min-w-0">
-                <h1 className="text-lg md:text-2xl font-playfair font-bold text-foreground truncate">Salon Dashboard</h1>
-                <p className="text-xs md:text-sm text-gold truncate">{salon?.salon_name || 'Loading...'}</p>
-              </div>
-            </div>
-            <div className="flex items-center space-x-2 md:space-x-3 flex-shrink-0">
-              <BranchSelector compact />
-              <button
-                onClick={() => {
-                  goToTab('notifications');
-                  if (!menuPinned) setMenuOpen(false);
-                }}
-                className="relative p-2 hover:bg-gold/10 rounded-lg transition-colors"
-                title="Notifications"
-              >
-                <Bell className="w-5 h-5 text-gold" />
-                {unreadNotifCount > 0 && (
-                  <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
-                    {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
-                  </span>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Hamburger Menu Sidebar */}
-        <AnimatePresence>
-          {(menuOpen || menuPinned) && (
-            <>
-              {/* Backdrop - only show if not pinned */}
-              {!menuPinned && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  onClick={() => setMenuOpen(false)}
-                  className="fixed inset-0 bg-black/50 z-40"
-                />
-              )}
-              
-              {/* Sidebar */}
-              <motion.div
-                initial={{ x: -300 }}
-                animate={{ x: 0 }}
-                exit={{ x: -300 }}
-                transition={{ type: 'spring', damping: 20 }}
-                className={`fixed left-0 top-0 bottom-0 w-64 md:w-72 bg-card border-r border-border shadow-2xl z-50 overflow-y-auto ${
-                  menuPinned ? 'sticky' : ''
-                }`}
-              >
-                <div className="p-4 border-b border-border">
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-semibold">Menu</h2>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => {
-                          const newPinned = !menuPinned;
-                          setMenuPinned(newPinned);
-                          localStorage.setItem('menu_pinned', newPinned);
-                          if (newPinned) setMenuOpen(true);
-                        }}
-                        className={`p-2 rounded-lg transition-colors ${
-                          menuPinned 
-                            ? 'bg-gold/20 text-gold hover:bg-gold/30' 
-                            : 'hover:bg-muted'
-                        }`}
-                        title={menuPinned ? 'Unpin menu' : 'Pin menu'}
-                      >
-                        {menuPinned ? <Pin className="w-5 h-5" /> : <PinOff className="w-5 h-5" />}
-                      </button>
-                      {!menuPinned && (
-                        <button
-                          onClick={() => setMenuOpen(false)}
-                          className="p-2 hover:bg-muted rounded-lg"
-                        >
-                          <X className="w-5 h-5" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    {salonUser?.role === 'admin' ? 'Admin Access' : 'Staff Access'}
-                  </p>
-                </div>
-
-                <div className="p-2">
-                  {menuItems.map((item) => {
-                    const Icon = item.icon;
-                    return (
-                      <button
-                        key={item.id}
-                        data-testid={`nav-${item.id}`}
-                        onClick={() => {
-                          if (item.route) {
-                            // External-route menu items (e.g. Marketplace) — navigate
-                            // to a separate page rather than switching tabs.
-                            if (!menuPinned) setMenuOpen(false);
-                            navigate(item.route);
-                            return;
-                          }
-                          goToTab(item.id);
-                          if (!menuPinned) setMenuOpen(false);
-                        }}
-                        className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-all ${
-                          activeTab === item.id
-                            ? 'bg-gold text-black font-semibold'
-                            : 'text-foreground hover:bg-muted'
-                        }`}
-                      >
-                        <Icon className="w-5 h-5" />
-                        <span>{item.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                
-                {/* Bottom section: Theme toggle and Logout */}
-                <div className="border-t border-border p-2 mt-2">
-                  <div className="flex items-center justify-between px-4 py-3">
-                    <span className="text-sm text-muted-foreground">Theme</span>
-                    <ThemeToggle />
-                  </div>
-                  <button
-                    onClick={handleLogout}
-                    className="w-full flex items-center space-x-3 px-4 py-3 rounded-lg text-red-500 hover:bg-red-500/10 transition-all"
-                  >
-                    <LogOut className="w-5 h-5" />
-                    <span>Logout</span>
-                  </button>
-                </div>
-              </motion.div>
-            </>
-          )}
-        </AnimatePresence>
-
-        <div className="max-w-7xl mx-auto p-4">
-
-        {/* ===== HOME DASHBOARD ===== */}
-        {activeTab === 'home' && (
-          <div className="space-y-6">
-            {/* Welcome Header */}
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div>
-                <h2 className="text-2xl font-playfair font-bold text-foreground">{salon?.salon_name || salon?.name || 'Salon'}</h2>
-                <p className="text-sm text-muted-foreground">{new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
-              </div>
-              <div className="flex items-center gap-3">
-                {/* Today / Tomorrow Toggle */}
-                <div className="inline-flex rounded-lg border border-border bg-card p-1">
-                  <button
-                    onClick={() => setDateMode('today')}
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-                      dateMode === 'today' ? 'bg-gold text-black' : 'text-foreground hover:bg-muted'
-                    }`}
-                  >
-                    Today
-                  </button>
-                  <button
-                    onClick={() => setDateMode('tomorrow')}
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-                      dateMode === 'tomorrow' ? 'bg-gold text-black' : 'text-foreground hover:bg-muted'
-                    }`}
-                  >
-                    Tomorrow
-                  </button>
-                </div>
-                {/* Manual Toggle Status Badge */}
-                {salon?.manual_toggle?.is_overridden && (() => {
-                  const mt = salon.manual_toggle;
-                  const isOnlineOnly = !mt.is_open && mt.closed_mode === 'online_only';
-                  const isFullClosed = !mt.is_open && (mt.closed_mode === 'full' || !mt.closed_mode);
-                  const isOpen = mt.is_open;
-                  const cls = isOpen
-                    ? 'bg-green-500/10 border-green-500/30 text-green-600 dark:text-green-400'
-                    : isOnlineOnly
-                      ? 'bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-400'
-                      : 'bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400';
-                  const dot = isOpen ? 'bg-green-500 animate-pulse' : isOnlineOnly ? 'bg-amber-500' : 'bg-red-500';
-                  const label = isOpen
-                    ? 'MANUALLY OPEN'
-                    : isOnlineOnly
-                      ? 'CLOSED ONLINE'
-                      : 'MANUALLY CLOSED';
-                  return (
-                    <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${cls}`}>
-                      <span className={`w-2 h-2 rounded-full ${dot}`}></span>
-                      <span className="text-xs font-bold">{label}</span>
-                    </div>
-                  );
-                })()}
-                <div className="flex items-center gap-2">
-                  <Activity className="w-4 h-4 text-green-500 animate-pulse" />
-                  <span className="text-xs text-green-500 font-medium">Live</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Staff self check-in (only in geo_checkin mode + linked staff) */}
-            {(() => {
-              let su = salonUser;
-              if (!su?.staffId) {
-                try {
-                  const raw = localStorage.getItem('salon_user_auth');
-                  if (raw) su = JSON.parse(raw);
-                } catch (e) { /* noop */ }
-              }
-              const staffId = su?.staffId || su?.staff_id || null;
-              if (!staffId || !salonId) return null;
-              return (
-                <StaffCheckInWidget
-                  salonId={salonId}
-                  staffId={staffId}
-                  getAuthHeaders={getAuthHeaders}
-                />
-              );
-            })()}
-
-            {/* Summary Cards */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div 
-                className="bg-card border border-border rounded-xl p-4 hover:border-gold/30 transition-colors cursor-pointer"
-                onClick={() => goToTab('queue')}
-                title="View Queue"
-              >
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="p-2 rounded-lg bg-blue-500/10"><Calendar className="w-5 h-5 text-blue-500" /></div>
-                </div>
-                <p className="text-2xl font-bold text-foreground">{tokens.length}</p>
-                <p className="text-xs text-muted-foreground">Total Tokens {dateMode === 'today' ? 'Today' : 'Tomorrow'}</p>
-              </div>
-              <div 
-                className="bg-card border border-border rounded-xl p-4 hover:border-gold/30 transition-colors cursor-pointer"
-                onClick={() => {
-                  setFilter('waiting');
-                  goToTab('queue');
-                }}
-                title="View Waiting Tokens"
-              >
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="p-2 rounded-lg bg-yellow-500/10"><Clock className="w-5 h-5 text-yellow-500" /></div>
-                </div>
-                <p className="text-2xl font-bold text-yellow-500">{tokens.filter(t => t.status === 'waiting' || t.status === 'called').length}</p>
-                <p className="text-xs text-muted-foreground">Waiting / In Queue</p>
-              </div>
-              <div 
-                className="bg-card border border-border rounded-xl p-4 hover:border-gold/30 transition-colors cursor-pointer"
-                onClick={() => {
-                  setFilter('completed');
-                  goToTab('queue');
-                }}
-                title="View Completed Tokens"
-              >
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="p-2 rounded-lg bg-green-500/10"><CheckCircle className="w-5 h-5 text-green-500" /></div>
-                </div>
-                <p className="text-2xl font-bold text-green-500">{tokens.filter(t => t.status === 'completed').length}</p>
-                <p className="text-xs text-muted-foreground">Served / Completed</p>
-              </div>
-              <div 
-                className="bg-card border border-border rounded-xl p-4 hover:border-gold/30 transition-colors cursor-pointer"
-                onClick={() => goToTab('analytics')}
-                title="View Analytics"
-              >
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="p-2 rounded-lg bg-gold/10"><DollarSign className="w-5 h-5 text-gold" /></div>
-                </div>
-                <p className="text-2xl font-bold text-gold">₹{dailySales.toLocaleString('en-IN')}</p>
-                <p className="text-xs text-muted-foreground">Today's Sales</p>
-              </div>
-            </div>
-
-            {/* Upcoming Bookings */}
-            <div className="bg-card border border-border rounded-xl p-5">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-bold flex items-center gap-2">
-                  <Zap className="w-5 h-5 text-gold" /> Upcoming Queue
-                </h3>
-                <select
-                  value={homeBarberFilter}
-                  onChange={(e) => setHomeBarberFilter(e.target.value)}
-                  className="h-8 px-3 rounded-lg border border-border bg-background text-xs focus:outline-none focus:ring-2 focus:ring-gold/50"
-                >
-                  <option value="all">All Barbers</option>
-                  {barbers.map(b => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-              </div>
-              {(() => {
-                const upcoming = tokens
-                  .filter(t => (t.status === 'waiting' || t.status === 'called'))
-                  .filter(t => homeBarberFilter === 'all' || t.barber_id === homeBarberFilter)
-                  .slice(0, 5);
-                return upcoming.length > 0 ? (
-                  <div className="space-y-2">
-                    {upcoming.map((token, idx) => (
-                      <div key={token.id} className={`flex items-center gap-3 p-3 rounded-lg border transition-all ${
-                        token.status === 'called' ? 'border-blue-500/50 bg-blue-500/5' : 'border-border hover:border-gold/30'
-                      }`}>
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
-                          token.status === 'called' ? 'bg-blue-500 text-white' : 'bg-gold/10 text-gold'
-                        }`}>
-                          {idx + 1}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold text-sm">{token.customer_name}</span>
-                            <span className="text-xs text-gold font-mono">{token.token_number}</span>
-                            {token.status === 'called' && (
-                              <span className="px-1.5 py-0.5 text-[10px] bg-blue-500/20 text-blue-500 rounded font-medium">IN SERVICE</span>
-                            )}
-                          </div>
-                          <p className="text-xs text-muted-foreground truncate">
-                            {token.barber_name} • {token.selected_services?.length || 0} services • ₹{token.total_amount}
-                          </p>
-                        </div>
-                        <span className={`text-xs font-medium px-2 py-1 rounded ${
-                          token.payment_confirmed ? 'bg-green-500/10 text-green-500' : 'bg-yellow-500/10 text-yellow-500'
-                        }`}>
-                          {token.payment_confirmed ? `✓ ${(token.payment_mode || '').toUpperCase()}` : '⏳ Unpaid'}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-center py-8">
-                    <CheckCircle className="w-12 h-12 text-green-500/30 mx-auto mb-2" />
-                    <p className="text-sm text-muted-foreground">No upcoming bookings — queue is clear!</p>
-                  </div>
-                );
-              })()}
-              {tokens.filter(t => t.status === 'waiting' || t.status === 'called').length > 5 && (
-                <button
-                  onClick={() => goToTab('queue')}
-                  className="w-full mt-3 py-2 text-xs text-gold hover:text-gold/80 font-medium transition-colors"
-                >
-                  View all {tokens.filter(t => t.status === 'waiting' || t.status === 'called').length} in queue →
-                </button>
-              )}
-            </div>
-
-            {/* Quick Navigation */}
-            <div>
-              <h3 className="text-lg font-bold mb-3">Quick Actions</h3>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {[
-                  { id: 'queue', label: 'Token Queue', icon: Calendar, color: 'bg-blue-500/10 text-blue-500', desc: 'Manage live queue', show: true },
-                  { id: 'customer-master', label: 'Customers', icon: Database, color: 'bg-purple-500/10 text-purple-500', desc: 'Customer records', show: true },
-                  { id: 'services', label: 'Services', icon: Scissors, color: 'bg-emerald-500/10 text-emerald-500', desc: 'Offerings & memberships', show: checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_access_services') },
-                  { id: 'staff', label: 'Staff', icon: Users, color: 'bg-orange-500/10 text-orange-500', desc: 'Manage barbers', show: checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_access_staff') },
-                  { id: 'financials', label: 'Financials', icon: DollarSign, color: 'bg-gold/10 text-gold', desc: 'Cash flow & reports', show: checkIsAdmin() || checkHasPermission('can_access_financials') },
-                  { id: 'analytics', label: 'Analytics', icon: TrendingUp, color: 'bg-cyan-500/10 text-cyan-500', desc: 'Performance stats', show: checkIsAdmin() || checkHasPermission('can_access_analytics') },
-                  { id: 'inventory', label: 'Inventory', icon: Boxes, color: 'bg-pink-500/10 text-pink-500', desc: 'Stock & orders', show: checkIsAdmin() || checkIsBranchManager() },
-                  { id: 'salon', label: 'Settings', icon: Settings, color: 'bg-gray-500/10 text-gray-400', desc: 'Salon profile', show: checkIsAdmin() || checkHasPermission('can_edit_salon') },
-                ].filter(item => item.show).map(item => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => {
-                        if (item.route) {
-                          navigate(item.route);
-                        } else {
-                          goToTab(item.id);
-                          if (!menuPinned) setMenuOpen(false);
-                        }
-                      }}
-                      data-testid={`quick-action-${item.id}`}
-                      className="p-4 bg-card border border-border rounded-xl hover:border-gold/40 transition-all text-left group"
-                    >
-                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center mb-2 ${item.color}`}>
-                        <Icon className="w-5 h-5" />
-                      </div>
-                      <p className="font-semibold text-sm group-hover:text-gold transition-colors">{item.label}</p>
-                      <p className="text-[11px] text-muted-foreground">{item.desc}</p>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
+        {/* ===== HOME DASHBOARD (rendered separately outside this wrapper) ===== */}
 
         {activeTab === 'queue' && (
-          <div className="space-y-6">
-            {/* Date Toggle: Today / Tomorrow */}
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div className="inline-flex rounded-lg border border-border bg-card p-1">
-                <button
-                  onClick={() => setDateMode('today')}
-                  className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-colors ${
-                    dateMode === 'today' ? 'bg-gold text-black' : 'text-foreground hover:bg-muted'
-                  }`}
-                >
-                  Today
-                </button>
-                <button
-                  onClick={() => setDateMode('tomorrow')}
-                  className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-colors ${
-                    dateMode === 'tomorrow' ? 'bg-gold text-black' : 'text-foreground hover:bg-muted'
-                  }`}
-                >
-                  Tomorrow
-                </button>
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Viewing bookings for <span className="font-semibold text-foreground">{new Date(date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
-              </div>
-            </div>
-            {/* Barber Filter */}
-            <div className="flex items-center space-x-2 overflow-x-auto pb-2 scrollbar-hide">
-              <button
-                onClick={() => setSelectedBarber('all')}
-                className={`px-3 md:px-4 py-1.5 md:py-2 rounded-lg whitespace-nowrap text-sm ${
-                  selectedBarber === 'all'
-                    ? 'bg-gold text-black'
-                    : 'bg-card border border-border text-foreground'
-                }`}
-              >
-                All Barbers
-              </button>
-              {barbers.map(barber => (
-                <button
-                  key={barber.id}
-                  onClick={() => setSelectedBarber(barber.id)}
-                  className={`px-3 md:px-4 py-1.5 md:py-2 rounded-lg whitespace-nowrap text-sm ${
-                    selectedBarber === barber.id
-                      ? 'bg-gold text-black'
-                      : 'bg-card border border-border text-foreground'
-                  }`}
-                >
-                  {barber.name}
-                </button>
-              ))}
-            </div>
-
-            {/* Single Call Next Button Based on Selected Barber */}
-            <div className="flex flex-row gap-2">
-              <Button
-                onClick={() => handleCallNext(selectedBarber === 'all' ? null : selectedBarber)}
-                className="bg-gold text-black hover:bg-gold/90 px-3 md:px-8 py-3 text-xs md:text-lg w-[60%] md:flex-1"
-                disabled={!tokens.some(t => t.status === 'waiting')}
-              >
-                <ChevronRight className="mr-1 md:mr-2 w-4 md:w-5 h-4 md:h-5" /> 
-                Call Next {selectedBarber !== 'all' && `(${barbers.find(b => b.id === selectedBarber)?.name})`}
-              </Button>
-              <Button
-                onClick={handleOpenManualBooking}
-                variant="outline"
-                className="border-gold text-gold hover:bg-gold/10 px-3 md:px-6 py-3 text-xs md:text-lg w-[40%] md:flex-none"
-              >
-                <Plus className="mr-1 md:mr-2 w-4 md:w-5 h-4 md:h-5" />
-                <span className="hidden md:inline">Add Booking</span>
-                <span className="md:hidden">Add</span>
-              </Button>
-            </div>
-
-            {/* Status Filters */}
-            <div className="flex space-x-2 overflow-x-auto pb-1 scrollbar-hide">
-              {['all', 'waiting', 'called', 'completed', 'skipped', 'cancelled'].map((f) => (
-                <button
-                  key={f}
-                  onClick={() => setFilter(f)}
-                  className={`px-3 md:px-4 py-1.5 md:py-2 rounded uppercase text-xs md:text-sm font-bold whitespace-nowrap ${
-                    filter === f
-                      ? 'bg-gold text-black'
-                      : 'bg-card border border-border text-foreground'
-                  }`}
-                >
-                  {f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1)}
-                </button>
-              ))}
-            </div>
-
-            {/* Token List */}
-            <div className="space-y-3">
-              {tokens.map((token, index) => (
-                <motion.div
-                  key={token.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.05 }}
-                  className={`bg-card/90 backdrop-blur-sm border-2 ${getStatusColor(token.status)} rounded-xl p-3 md:p-4 hover:shadow-xl transition-all`}
-                >
-                  {/* Token Info Row */}
-                  <div className="flex items-start gap-3">
-                    <div className="text-2xl md:text-3xl font-bebas text-gold min-w-[48px] md:min-w-[60px] text-center bg-gold/10 rounded-lg p-1.5 md:p-2 border border-gold/30 flex-shrink-0">
-                      {token.token_number || 'TBA'}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-foreground font-bold flex items-center space-x-2 text-sm md:text-base">
-                        <User className="w-3 h-3 flex-shrink-0" />
-                        <span className="truncate">{token.customer_name}</span>
-                      </p>
-                      <p className="text-muted-foreground text-xs flex items-center space-x-2">
-                        <Phone className="w-3 h-3 flex-shrink-0" />
-                        <a href={`tel:${token.phone}`} className="hover:text-gold">
-                          {token.phone}
-                        </a>
-                      </p>
-                      <p className="text-muted-foreground text-xs truncate">
-                        {token.barber_name} • {token.shift || token.time_slot} • ₹{token.total_amount}
-                        {token.payment_confirmed && <span className="text-green-500 ml-1">• ✓ {(token.payment_mode || 'paid').toUpperCase()}</span>}
-                        {!token.payment_confirmed && token.status !== 'completed' && <span className="text-yellow-500 ml-1">• ⏳ Unpaid</span>}
-                      </p>
-                      <p className="text-muted-foreground text-xs flex items-center space-x-1 mt-0.5">
-                        <Calendar className="w-3 h-3 flex-shrink-0" />
-                        <span className="truncate">{new Date(token.date).toLocaleDateString('en-IN')} at {token.created_at ? new Date(token.created_at).toLocaleTimeString('en-IN', {hour: '2-digit', minute: '2-digit'}) : token.shift || token.time_slot}</span>
-                      </p>
-                    </div>
-                    {/* Status Badge - always visible */}
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                      {/* Direct-dial call button (#4a) — opens the phone
-                          dialer with the customer's number pre-filled so the
-                          salon can call them from the dashboard in one tap. */}
-                      {token.phone && (
-                        <a
-                          href={`tel:${token.phone}`}
-                          onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-green-500/15 border border-green-500/40 text-green-600 hover:bg-green-500 hover:text-white transition-colors"
-                          title={`Call ${token.customer_name || 'customer'} — ${token.phone}`}
-                          data-testid={`token-call-customer-${token.id}`}
-                        >
-                          <Phone className="w-4 h-4" />
-                        </a>
-                      )}
-                      <div className={`flex items-center space-x-1 px-2 md:px-3 py-1 rounded-full ${
-                      token.status === 'called' ? 'bg-blue-500/20 border border-blue-500' :
-                      token.status === 'completed' ? 'bg-green-500/20 border border-green-500' :
-                      token.status === 'skipped' ? 'bg-red-500/20 border border-red-500' :
-                      'bg-muted border border-border'
-                    }`}>
-                      {getStatusIcon(token.status)}
-                      <span className="text-xs uppercase font-bold">
-                        {token.status === 'called' ? 'Called' : 
-                         token.status === 'waiting' ? 'Waiting' :
-                         token.status === 'completed' ? 'Done' :
-                         token.status === 'skipped' ? 'Skip' : token.status}
-                      </span>
-                      {token.recall_count > 0 && (
-                        <span className="text-xs text-muted-foreground">
-                          ({token.recall_count}x)
-                        </span>
-                      )}
-                      </div>
-                    </div>
-                  </div>
-                    
-                  {/* Action Buttons - Below info, wrap on mobile */}
-                  <div className="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-border/50">
-                      {/* Waiting Status Actions */}
-                      {token.status === 'waiting' && (
-                        <>
-                          <Button 
-                            size="sm" 
-                            onClick={() => handleCallToken(token.id)} 
-                            className="bg-blue-600 hover:bg-blue-700 h-8 text-xs px-2.5"
-                            title="Call this customer now"
-                          >
-                            <ChevronRight className="w-3 h-3 mr-1" />
-                            Call
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            onClick={() => handleOpenAddServices(token)} 
-                            className="bg-purple-600 hover:bg-purple-700 h-8 text-xs px-2.5"
-                            title="Modify booking"
-                          >
-                            <Edit className="w-3 h-3 mr-1" />
-                            Modify
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            onClick={() => handleSendNotification(token.id)} 
-                            className="bg-gray-600 hover:bg-gray-700 h-8 text-xs px-2"
-                            title="Send notification"
-                          >
-                            <Bell className="w-3 h-3" />
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            onClick={() => handleSkipToken(token.id)} 
-                            className="bg-orange-600 hover:bg-orange-700 text-white h-8 text-xs px-2"
-                            title="Skip this customer"
-                          >
-                            <SkipForward className="w-3 h-3" />
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            onClick={() => handleCancelToken(token.id)} 
-                            variant="outline"
-                            className="border-red-500 text-red-500 hover:bg-red-500 hover:text-white h-8 text-xs px-2"
-                            title="Cancel token"
-                          >
-                            <XCircle className="w-3 h-3" />
-                          </Button>
-                        </>
-                      )}
-                      
-                      {/* Called Status Actions */}
-                      {token.status === 'called' && (
-                        <>
-                          <Button 
-                            size="sm" 
-                            onClick={() => handleCompleteToken(token.id)} 
-                            className="bg-green-600 hover:bg-green-700 text-white h-8 text-xs px-2.5"
-                            title="Mark as completed"
-                          >
-                            <CheckCircle className="w-3 h-3 mr-1" />
-                            Complete
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            onClick={() => handleOpenAddServices(token)} 
-                            className="bg-purple-600 hover:bg-purple-700 text-white h-8 text-xs px-2.5"
-                            title="Modify booking"
-                          >
-                            <Edit className="w-3 h-3 mr-1" />
-                            Modify
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            onClick={() => handleRecallToken(token.id)} 
-                            className="bg-blue-600 hover:bg-blue-700 text-white h-8 text-xs px-2.5"
-                            title="Re-call customer"
-                          >
-                            <RotateCcw className="w-3 h-3 mr-1" />
-                            Re-call
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            onClick={() => handleSkipToken(token.id)} 
-                            className="bg-red-600 hover:bg-red-700 text-white h-8 text-xs px-2"
-                            title="Skip customer"
-                          >
-                            <SkipForward className="w-3 h-3" />
-                          </Button>
-                        </>
-                      )}
-                      
-                      {/* Skipped Status Actions */}
-                      {token.status === 'skipped' && (
-                        <>
-                          <Button 
-                            size="sm" 
-                            onClick={() => handleRecallToken(token.id)} 
-                            className="bg-blue-600 hover:bg-blue-700 h-8 text-xs px-2.5"
-                            title="Recall this customer"
-                          >
-                            <RotateCcw className="w-3 h-3 mr-1" />
-                            Recall
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            onClick={() => handleCancelToken(token.id)} 
-                            className="bg-red-600 hover:bg-red-700 text-white h-8 text-xs px-2.5"
-                            title="Cancel this booking"
-                          >
-                            <XCircle className="w-3 h-3 mr-1" />
-                            Cancel
-                          </Button>
-                        </>
-                      )}
-                      
-                      {/* Completed Status Actions */}
-                      {token.status === 'completed' && token.invoice_id && (
-                        <>
-                          <Button 
-                            size="sm" 
-                            onClick={() => window.open(`${API}/invoices/${token.invoice_id}/view`, '_blank')} 
-                            className="bg-purple-600 hover:bg-purple-700 text-white h-8 text-xs px-2.5"
-                            title="View invoice"
-                          >
-                            <FileText className="w-3 h-3 mr-1" />
-                            Invoice
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            onClick={() => {
-                              const link = document.createElement('a');
-                              link.href = `${API}/invoices/${token.invoice_id}/download`;
-                              link.download = `invoice_${token.token_number}.pdf`;
-                              link.click();
-                            }}
-                            className="bg-green-600 hover:bg-green-700 text-white h-8 text-xs px-2.5"
-                            title="Download invoice"
-                          >
-                            <Download className="w-3 h-3 mr-1" />
-                            Download
-                          </Button>
-                        </>
-                      )}
-
-                      {/* No actions for cancelled/future */}
-                      {['cancelled', 'future'].includes(token.status) && (
-                        <span className="text-xs text-muted-foreground italic px-1">No actions</span>
-                      )}
-                  </div>
-                </motion.div>
-              ))}
-
-              {tokens.length === 0 && (
-                <div className="text-center py-12 bg-card border border-border rounded-lg">
-                  <Clock className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
-                  <p className="text-muted-foreground">No tokens found</p>
-                </div>
-              )}
-            </div>
+          <div className="tab-pad-legacy tab-hdr-scope">
+            <TabHeaderV3
+              icon="queue"
+              title="Live Queue"
+              accent="sky"
+            />
+            <QueueTabV2
+              date={date}
+              dateMode={dateMode}
+              setDateMode={setDateMode}
+              dateFrom={dateFrom}
+              setDateFrom={setDateFrom}
+              dateTo={dateTo}
+              setDateTo={setDateTo}
+              barbers={barbers}
+              selectedBarber={selectedBarber}
+              setSelectedBarber={setSelectedBarber}
+              tokens={tokens}
+              filter={filter}
+              setFilter={setFilter}
+              handleCallNext={handleCallNext}
+              handleCallToken={handleCallToken}
+              handleCompleteToken={handleCompleteToken}
+              handleRecallToken={handleRecallToken}
+              handleSkipToken={handleSkipToken}
+              handleCancelToken={handleCancelToken}
+              handleSendNotification={handleSendNotification}
+              handleOpenAddServices={handleOpenAddServices}
+              API={API}
+              navigate={navigate}
+            />
           </div>
         )}
 
-        {activeTab === 'staff' && salonId && (() => {
-          // Determine whether this user can see ALL staff or only their own profile.
-          let su = salonUser;
-          try {
-            const raw = localStorage.getItem('salon_user_auth');
-            if (raw) su = JSON.parse(raw);
-          } catch (e) { /* noop */ }
-          const elevated = checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_view_all_staff');
-          const ownStaffId = su?.staffId || su?.staff_id || null;
-          const restrictedToOwn = !elevated; // has can_access_staff but not view-all
-
-          return (
-            <div className="space-y-6">
-              {!restrictedToOwn && (
-                <div className="flex items-center justify-end">
-                  <button
-                    onClick={() => navigate('/salon/staff/settings')}
-                    data-testid="staff-settings-link"
-                    className="inline-flex items-center gap-1.5 text-sm font-medium text-gold hover:text-gold/80 underline underline-offset-4 decoration-gold/40 hover:decoration-gold transition-colors"
-                  >
-                    <Settings className="w-4 h-4" /> Open Staff Settings
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              )}
-              {restrictedToOwn && !ownStaffId ? (
-                <div className="bg-card border border-border rounded-lg p-8 text-center text-muted-foreground">
-                  Your account is not linked to a staff profile yet. Please ask your admin to link it.
-                </div>
-              ) : (
-                <BarberManagement
-                  salonId={salonId}
-                  getAuthHeaders={getAuthHeaders}
-                  restrictToBarberId={restrictedToOwn ? ownStaffId : null}
-                />
-              )}
-            </div>
-          );
-        })()}
+        {activeTab === 'staff' && salonId && (
+          <SalonStaffV3 salonId={salonId} getAuthHeaders={getAuthHeaders} />
+        )}
 
         {activeTab === 'customer-master' && (
-          <CustomerMaster salonId={salonId} getAuthHeaders={getAuthHeaders} />
+          <div className="tab-pad-legacy tab-hue-teal">
+            <CustomersV2 salonId={salonId} getAuthHeaders={getAuthHeaders} salon={salon} />
+          </div>
         )}
 
         {activeTab === 'financials' && salonId && (
-          <FinancialsModule salonId={salonId} getAuthHeaders={getAuthHeaders} />
+          <ReportsModule salonId={salonId} getAuthHeaders={getAuthHeaders} canManageFinancials={checkIsAdmin() || checkHasPermission('can_access_financials')} />
         )}
 
-        {activeTab === 'customer-master' && (
-          <div className="bg-card border border-border rounded-lg p-8 text-center">
-            <Database className="w-16 h-16 text-gold mx-auto mb-4" />
-            <h3 className="text-2xl font-bold mb-2">Customer Master</h3>
-            <p className="text-muted-foreground">
-              Customer database, history, and preferences management coming soon.
-            </p>
+        {activeTab === 'reports' && salonId && (
+          <ReportsModule salonId={salonId} getAuthHeaders={getAuthHeaders} canManageFinancials={checkIsAdmin() || checkHasPermission('can_access_financials')} />
+        )}
+
+        {activeTab === 'shop' && salonId && (
+          <OpsProvider>
+            <ShopModule salonId={salonId} salonProfile={salon} getAuthHeaders={getAuthHeaders} />
+          </OpsProvider>
+        )}
+
+        {/* Legacy customer-master placeholder removed — replaced by CustomersV2 above */}
+
+        {activeTab === 'services' && salonId && (
+          <ServicesModule salonId={salonId} getAuthHeaders={getAuthHeaders} />
+        )}
+
+        {activeTab === 'marketing' && (
+          <div className="tab-pad-legacy tab-hue-violet">
+            <MarketingV2 salonId={salonId} getAuthHeaders={getAuthHeaders} salon={salon} />
           </div>
         )}
 
-        {activeTab === 'services' && (
-          <OfferingsModule 
-            salonId={salonId} 
-            token={(() => {
-              // Prefer multi-user token, fall back to legacy admin token
-              try {
-                const raw = localStorage.getItem('salon_user_auth');
-                if (raw) {
-                  const parsed = JSON.parse(raw);
-                  if (parsed?.token) return parsed.token;
-                }
-              } catch (e) { /* ignore */ }
-              return localStorage.getItem('salon_admin_token');
-            })()}
-          />
+        {activeTab === 'analytics' && salonId && (
+          <ReportsModule salonId={salonId} getAuthHeaders={getAuthHeaders} canManageFinancials={checkIsAdmin() || checkHasPermission('can_access_financials')} />
         )}
 
-        {activeTab === 'gallery' && (
-          <div className="space-y-6">
-            <div className="bg-card/50 backdrop-blur-sm border border-gold/20 rounded-2xl p-6 shadow-xl">
-              <h2 className="text-2xl font-playfair font-bold text-foreground mb-4 flex items-center">
-                <FileText className="w-6 h-6 mr-3 text-gold" />
-                Salon Photo Gallery
-              </h2>
-              <p className="text-muted-foreground mb-6">
-                Showcase your salon's ambiance, services, and style. Upload photos to attract more customers.
-              </p>
-
-              {/* Upload Section */}
-              <div className="mb-6 p-4 bg-background/50 rounded-lg border border-border">
-                <Label className="mb-2 block font-semibold">Add Photos &amp; Videos</Label>
-                <Input
-                  type="file"
-                  accept="image/*,video/*"
-                  multiple
-                  onChange={async (e) => {
-                    const files = Array.from(e.target.files);
-                    if (files.length === 0) return;
-                    
-                    const PHOTO_MAX = 5 * 1024 * 1024;   // 5 MB
-                    const VIDEO_MAX = 25 * 1024 * 1024;  // 25 MB
-                    
-                    const newPhotos = [];
-                    for (const file of files) {
-                      const isVideo = (file.type || '').startsWith('video/');
-                      const limit = isVideo ? VIDEO_MAX : PHOTO_MAX;
-                      const limitLabel = isVideo ? '25MB (video)' : '5MB (photo)';
-                      if (file.size > limit) {
-                        toast.error(`${file.name} is too large (max ${limitLabel})`);
-                        continue;
-                      }
-                      const reader = new FileReader();
-                      await new Promise((resolve) => {
-                        reader.onloadend = () => {
-                          newPhotos.push(reader.result);
-                          resolve();
-                        };
-                        reader.readAsDataURL(file);
-                      });
-                    }
-                    
-                    if (newPhotos.length > 0) {
-                      const updatedGallery = [...(salon.photo_gallery || []), ...newPhotos];
-                      try {
-                        await axios.put(
-                          `${API}/salons/${salonId}`,
-                          { photo_gallery: updatedGallery },
-                          { headers: getAuthHeaders() }
-                        );
-                        setSalon({ ...salon, photo_gallery: updatedGallery });
-                        toast.success(`${newPhotos.length} file(s) added!`);
-                      } catch (error) {
-                        toast.error('Failed to upload media');
-                      }
-                    }
-                    // Reset input so the same file can be re-selected
-                    try { e.target.value = ''; } catch (err) { /* ignore */ }
-                  }}
-                  className="mb-2"
-                />
-                <p className="text-xs text-muted-foreground">Photos up to 5MB each • Videos up to 25MB each</p>
-              </div>
-
-              {/* Social Media Integration (Coming Soon) */}
-              <div className="mb-6 p-4 bg-gradient-to-br from-purple-500/5 via-pink-500/5 to-amber-500/5 rounded-lg border border-gold/20">
-                <div className="flex items-start justify-between flex-wrap gap-2 mb-3">
-                  <div>
-                    <Label className="font-semibold flex items-center gap-2">
-                      Connect Social Media
-                      <span className="text-[10px] uppercase tracking-wide bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full font-bold">
-                        Coming Soon
-                      </span>
-                    </Label>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Auto-import posts from your Instagram, YouTube and Facebook into your gallery.
-                    </p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  {[
-                    { name: 'Instagram', color: 'from-pink-500 to-purple-600', emoji: '\uD83D\uDCF8', hint: 'Pull latest posts &amp; reels' },
-                    { name: 'YouTube',   color: 'from-red-500 to-red-700',     emoji: '\u25B6',     hint: 'Embed channel videos' },
-                    { name: 'Facebook',  color: 'from-blue-500 to-blue-700',   emoji: '\uD83D\uDC4D', hint: 'Sync page posts' },
-                    { name: 'TikTok',    color: 'from-gray-700 to-black',      emoji: '\uD83C\uDFB5', hint: 'Bring TikTok videos' },
-                  ].map((sm) => (
-                    <button
-                      key={sm.name}
-                      type="button"
-                      disabled
-                      title={`${sm.name} integration — Coming Soon`}
-                      onClick={() => toast.info(`${sm.name} integration is coming soon!`)}
-                      className={`group relative overflow-hidden rounded-xl p-3 text-left bg-gradient-to-br ${sm.color} text-white shadow-md opacity-80 cursor-not-allowed border border-white/10`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="text-xl">{sm.emoji}</span>
-                        <span className="font-bold text-sm">{sm.name}</span>
-                      </div>
-                      <p className="text-[10px] mt-1 opacity-90 leading-tight">{sm.hint}</p>
-                      <span className="absolute top-1 right-1 text-[8px] uppercase font-bold bg-black/40 px-1.5 py-0.5 rounded">
-                        Soon
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Gallery Grid */}
-              {salon?.photo_gallery && salon.photo_gallery.length > 0 ? (
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                  {salon.photo_gallery.map((url, index) => {
-                    const isVideo = typeof url === 'string' && (url.startsWith('data:video') || /\.(mp4|webm|mov|ogg)(\?|$)/i.test(url));
-                    return (
-                    <motion.div
-                      key={`${url}-${index}`}
-                      initial={{ opacity: 0, scale: 0.9 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      transition={{ delay: index * 0.05 }}
-                      className="relative group aspect-square rounded-lg overflow-hidden border border-gold/20 shadow-lg hover:shadow-2xl transition-all bg-black"
-                    >
-                      {isVideo ? (
-                        <video
-                          src={url}
-                          className="w-full h-full object-cover"
-                          muted
-                          playsInline
-                          controls
-                          preload="metadata"
-                        />
-                      ) : (
-                        <img 
-                          src={url} 
-                          alt={`Gallery ${index + 1}`} 
-                          className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
-                        />
-                      )}
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
-                      <button
-                        onClick={async () => {
-                          const updatedGallery = salon.photo_gallery.filter((_, i) => i !== index);
-                          try {
-                            await axios.put(
-                              `${API}/salons/${salonId}`,
-                              { photo_gallery: updatedGallery },
-                              { headers: getAuthHeaders() }
-                            );
-                            setSalon({ ...salon, photo_gallery: updatedGallery });
-                            toast.success('Item removed');
-                          } catch (error) {
-                            toast.error('Failed to remove item');
-                          }
-                        }}
-                        className="absolute top-2 right-2 p-2 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 shadow-lg z-10"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                      <div className="absolute bottom-2 left-2 right-2 text-white text-xs font-semibold opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                        {isVideo ? `Video ${index + 1}` : `Photo ${index + 1}`}
-                      </div>
-                    </motion.div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="text-center py-12 bg-background/50 rounded-lg border border-dashed border-gold/30">
-                  <FileText className="w-16 h-16 text-gold/50 mx-auto mb-4" />
-                  <p className="text-muted-foreground mb-2">No photos or videos yet</p>
-                  <p className="text-sm text-muted-foreground">Upload media to showcase your salon!</p>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'analytics' && (
-          <Analytics 
+        {activeTab === 'salon' && salonId && (
+          <SalonSettingsV3
             salonId={salonId}
+            salon={salon}
+            setSalon={setSalon}
             getAuthHeaders={getAuthHeaders}
-            isAdmin={checkIsAdmin()}
+            onDeleteSalon={handleLogout}
           />
-        )}
-
-        {activeTab === 'salon' && (
-          <div className="space-y-4">
-            {checkIsAdmin() && salonId && (
-              <SubscriptionBadge salonId={salonId} />
-            )}
-            <Tabs defaultValue="profile" className="w-full">
-              <TabsList className="w-full grid grid-cols-2 sm:grid-cols-5 h-auto bg-muted/40 p-1 rounded-xl">
-                <TabsTrigger value="profile" className="flex items-center gap-2 data-[state=active]:bg-gold data-[state=active]:text-black py-2.5">
-                  <User className="w-4 h-4" />
-                  <span className="text-xs sm:text-sm font-semibold">Profile</span>
-                </TabsTrigger>
-                <TabsTrigger value="staff-settings-link" className="flex items-center gap-2 data-[state=active]:bg-gold data-[state=active]:text-black py-2.5" data-testid="settings-tab-staff-settings">
-                  <Users className="w-4 h-4" />
-                  <span className="text-xs sm:text-sm font-semibold">Staff</span>
-                </TabsTrigger>
-                <TabsTrigger value="operations" className="flex items-center gap-2 data-[state=active]:bg-gold data-[state=active]:text-black py-2.5">
-                  <Clock className="w-4 h-4" />
-                  <span className="text-xs sm:text-sm font-semibold">Operations</span>
-                </TabsTrigger>
-                {(checkIsAdmin() || checkIsBranchManager()) && (
-                  <TabsTrigger value="branch" className="flex items-center gap-2 data-[state=active]:bg-gold data-[state=active]:text-black py-2.5">
-                    <Building2 className="w-4 h-4" />
-                    <span className="text-xs sm:text-sm font-semibold">Branch</span>
-                  </TabsTrigger>
-                )}
-                <TabsTrigger value="notifications-cfg" className="flex items-center gap-2 data-[state=active]:bg-gold data-[state=active]:text-black py-2.5">
-                  <Bell className="w-4 h-4" />
-                  <span className="text-xs sm:text-sm font-semibold">Notification</span>
-                </TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="profile" className="mt-4">
-                <MyProfile
-                  salon={salon}
-                  onUpdate={(updatedSalon) => setSalon(updatedSalon)}
-                  getAuthHeaders={getAuthHeaders}
-                  onDeleteSalon={handleLogout}
-                />
-              </TabsContent>
-
-              <TabsContent value="staff-settings-link" className="mt-4">
-                <StaffSettingsContent
-                  salonId={salonId}
-                  getAuthHeaders={getAuthHeaders}
-                  isAdmin={checkIsAdmin()}
-                  useUrlTab={false}
-                  defaultTab="incentives"
-                />
-              </TabsContent>
-
-              <TabsContent value="operations" className="mt-4">
-                <OperationalHoursModule salonId={salonId} />
-              </TabsContent>
-
-              {(checkIsAdmin() || checkIsBranchManager()) && (
-                <TabsContent value="branch" className="mt-4">
-                  <BranchManagement salonId={salonId} />
-                </TabsContent>
-              )}
-
-              <TabsContent value="notifications-cfg" className="mt-4">
-                <SalonNotificationSettings
-                  salonId={salonId}
-                  getAuthHeaders={getAuthHeaders}
-                />
-              </TabsContent>
-            </Tabs>
-          </div>
         )}
 
         {activeTab === 'branches' && salonId && checkIsAdmin() && (
@@ -2263,7 +1354,7 @@ export default function EnhancedSalonDashboard() {
         )}
 
         {activeTab === 'inventory' && salonId && (checkIsAdmin() || checkIsBranchManager()) && (
-          <InventoryView embedded />
+          <InventoryModule salonId={salonId} getAuthHeaders={getAuthHeaders} />
         )}
 
         {activeTab === 'notifications' && salonId && (
@@ -2277,21 +1368,59 @@ export default function EnhancedSalonDashboard() {
         )}
       </div>
 
-      {/* Modify Booking Dialog */}
-      <Dialog open={addServicesDialog} onOpenChange={setAddServicesDialog}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-hidden flex flex-col" data-testid="modify-booking-dialog">
-          <DialogHeader>
-            <DialogTitle className="text-lg">Modify Booking</DialogTitle>
-          </DialogHeader>
-
+      {/* Modify Booking Drawer (right-side, matches Queue theme) */}
+      <div
+        className={`shv2-overlay ${addServicesDialog ? 'open' : ''}`}
+        onClick={() => setAddServicesDialog(false)}
+        style={{ zIndex: 9060 }}
+      />
+      <aside
+        data-testid="modify-booking-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-hidden={!addServicesDialog}
+        style={{
+          position: 'fixed', right: 0, top: 0, bottom: 0,
+          width: 'min(640px, 95vw)', background: '#fff',
+          boxShadow: '-20px 0 40px rgba(30,32,50,.12)',
+          borderLeft: '1px solid #ECECF3',
+          transform: addServicesDialog ? 'translateX(0)' : 'translateX(100%)',
+          transition: 'transform .32s cubic-bezier(.22,.61,.36,1)',
+          zIndex: 9070, display: 'flex', flexDirection: 'column',
+          fontFamily: "'Plus Jakarta Sans','Inter',system-ui,sans-serif",
+          color: '#23252F',
+        }}
+      >
+        {/* Drawer header — Queue-purple theme */}
+        <div style={{
+          padding: '16px 22px', borderBottom: '1px solid #ECECF3',
+          background: 'linear-gradient(135deg,#F5F1FF,#FFFFFF)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.7px', color: '#6C4FE0', textTransform: 'uppercase' }}>Queue · Booking</div>
+            <div style={{ fontSize: 18, fontWeight: 800, marginTop: 2 }}>Modify Booking</div>
+          </div>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={() => setAddServicesDialog(false)}
+            style={{
+              width: 34, height: 34, borderRadius: 10, border: '1px solid #ECECF3',
+              background: '#fff', color: '#23252F', cursor: 'pointer', fontSize: 20, lineHeight: 1,
+              display: 'grid', placeItems: 'center',
+            }}
+          >×</button>
+        </div>
+        <div style={{ padding: '14px 22px 18px', overflow: 'hidden', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }} data-testid="modify-booking-dialog">
           {selectedToken && (
             <>
               {/* Compact Info Row */}
-              <div className="flex items-center gap-3 p-3 bg-muted rounded-lg text-sm flex-shrink-0">
-                <span className="font-bold text-gold">{selectedToken.token_number}</span>
-                <span className="text-foreground font-semibold">{selectedToken.customer_name}</span>
-                <span className="text-muted-foreground">•</span>
-                <span className={selectedToken.payment_confirmed ? 'text-green-500 font-medium' : 'text-yellow-500 font-medium'}>
+              <div className="flex items-center gap-3 p-3 rounded-lg text-sm flex-shrink-0" style={{ background: '#F6F6FA' }}>
+                <span className="font-bold" style={{ color: '#6C4FE0' }}>{selectedToken.token_number}</span>
+                <span className="font-semibold">{selectedToken.customer_name}</span>
+                <span style={{ color: '#9EA1B2' }}>•</span>
+                <span style={{ color: selectedToken.payment_confirmed ? '#12A150' : '#D8873F', fontWeight: 600 }}>
                   {selectedToken.payment_confirmed ? '✓ Paid' : '⏳ Unpaid'}
                 </span>
               </div>
@@ -2329,13 +1458,15 @@ export default function EnhancedSalonDashboard() {
               </div>
 
               {/* Tabs: Services search vs Assignment table */}
-              <div className="mt-3 flex items-center gap-2 border-b border-border flex-shrink-0">
+              <div className="mt-3 flex items-center gap-2 border-b flex-shrink-0" style={{ borderColor: '#ECECF3' }}>
                 <button
                   type="button"
                   onClick={() => setModifyTab('services')}
-                  className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
-                    modifyTab === 'services' ? 'text-gold border-b-2 border-gold' : 'text-muted-foreground'
-                  }`}
+                  className="px-3 py-1.5 text-xs font-semibold transition-colors"
+                  style={{
+                    color: modifyTab === 'services' ? '#6C4FE0' : '#7C8092',
+                    borderBottom: modifyTab === 'services' ? '2px solid #6C4FE0' : '2px solid transparent',
+                  }}
                   data-testid="modify-tab-services"
                 >
                   Pick services ({selectedNewServices.length})
@@ -2343,9 +1474,11 @@ export default function EnhancedSalonDashboard() {
                 <button
                   type="button"
                   onClick={() => setModifyTab('assignment')}
-                  className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
-                    modifyTab === 'assignment' ? 'text-gold border-b-2 border-gold' : 'text-muted-foreground'
-                  }`}
+                  className="px-3 py-1.5 text-xs font-semibold transition-colors"
+                  style={{
+                    color: modifyTab === 'assignment' ? '#6C4FE0' : '#7C8092',
+                    borderBottom: modifyTab === 'assignment' ? '2px solid #6C4FE0' : '2px solid transparent',
+                  }}
                   data-testid="modify-tab-assignment"
                 >
                   Barber assignment
@@ -2375,15 +1508,16 @@ export default function EnhancedSalonDashboard() {
                         return (
                           <div
                             key={service.id}
-                            className={`flex items-center gap-3 px-3 py-2 border rounded-lg cursor-pointer transition-all text-sm ${
-                              isSelected ? 'border-gold bg-gold/5' : 'border-border hover:border-gold/40'
-                            }`}
+                            className="flex items-center gap-3 px-3 py-2 border rounded-lg cursor-pointer transition-all text-sm"
+                            style={isSelected
+                              ? { borderColor: '#6C4FE0', background: 'rgba(108,79,224,.06)' }
+                              : { borderColor: '#ECECF3' }}
                             onClick={() => toggleServiceSelection(service.id)}
                           >
                             <Checkbox checked={isSelected} onCheckedChange={() => toggleServiceSelection(service.id)} />
                             <span className="flex-1 font-medium">{service.service_name}</span>
-                            <span className="text-xs text-muted-foreground">{service.category}</span>
-                            <span className="font-bold text-gold">₹{service.base_price}</span>
+                            <span className="text-xs" style={{ color: '#7C8092' }}>{service.category}</span>
+                            <span className="font-bold" style={{ color: '#6C4FE0' }}>₹{service.base_price}</span>
                           </div>
                         );
                       })}
@@ -2423,7 +1557,7 @@ export default function EnhancedSalonDashboard() {
                               </p>
                               <p className="text-[11px] text-muted-foreground">{svc?.category || ''}</p>
                             </div>
-                            <div className="col-span-2 text-right font-bold text-gold" data-testid={`assignment-price-${sid}`}>
+                            <div className="col-span-2 text-right font-bold" style={{ color: '#6C4FE0' }} data-testid={`assignment-price-${sid}`}>
                               ₹{Number(price || 0).toFixed(0)}
                             </div>
                             <div className="col-span-5">
@@ -2487,7 +1621,8 @@ export default function EnhancedSalonDashboard() {
                         discountSourceRef.current = 'final';
                         setFinalAmount(e.target.value);
                       }}
-                      className="w-24 h-8 text-sm font-bold text-gold"
+                      className="w-24 h-8 text-sm font-bold"
+                      style={{ color: '#6C4FE0' }}
                       min={0}
                       data-testid="modify-final-amount"
                     />
@@ -2495,7 +1630,8 @@ export default function EnhancedSalonDashboard() {
                   <Button
                     onClick={handleSaveAllModifications}
                     disabled={modifySubtotal === 0}
-                    className="bg-gold text-black hover:bg-gold/90 h-8 text-sm disabled:opacity-50"
+                    className="h-8 text-sm disabled:opacity-50"
+                    style={{ background: 'linear-gradient(135deg,#6C4FE0,#8464F5)', color: '#fff', fontWeight: 700 }}
                     data-testid="modify-save-btn"
                   >
                     <CheckCircle className="w-4 h-4 mr-1.5" />
@@ -2505,8 +1641,8 @@ export default function EnhancedSalonDashboard() {
               </div>
             </>
           )}
-        </DialogContent>
-      </Dialog>
+        </div>
+      </aside>
 
       {/* Payment Confirmation Dialog (when clicking Complete) */}
       <Dialog open={showPaymentConfirmDialog} onOpenChange={setShowPaymentConfirmDialog}>
@@ -2930,22 +2066,50 @@ export default function EnhancedSalonDashboard() {
 
           {/* Payment Mode */}
           <div className="mb-4">
-            <Label>Payment Mode</Label>
-            <div className="flex flex-wrap gap-2 mt-2">
-              {['cash', 'upi', 'card', 'pay_later'].map((mode) => (
-                <button
-                  key={mode}
-                  onClick={() => setManualBookingForm(prev => ({ ...prev, payment_mode: mode }))}
-                  className={`px-3 py-2 rounded-lg border text-sm transition-colors capitalize ${
-                    manualBookingForm.payment_mode === mode
-                      ? 'bg-gold text-black border-gold font-semibold'
-                      : 'bg-card border-border hover:bg-muted'
-                  }`}
-                >
-                  {mode === 'pay_later' ? 'Pay Later at Salon' : mode.toUpperCase()}
-                </button>
-              ))}
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <Label>Payment Mode</Label>
+              {walletInfo?.has_membership && (
+                <span className="text-[11px] px-2 py-0.5 rounded-full border border-emerald-500/50 text-emerald-600 bg-emerald-500/5">
+                  Wallet available: ₹{Number(walletInfo.wallet_balance || 0).toFixed(0)} · {walletInfo.membership_name}
+                </span>
+              )}
             </div>
+            <div className="flex flex-wrap gap-2 mt-2">
+              {['cash', 'upi', 'card', 'wallet', 'pay_later'].map((mode) => {
+                const isWallet = mode === 'wallet';
+                const walletUsable = !!walletInfo?.has_membership && Number(walletInfo?.wallet_balance || 0) > 0;
+                const disabled = isWallet && bookingMode === 'existing' && selectedCustomer && !walletUsable;
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => !disabled && setManualBookingForm(prev => ({ ...prev, payment_mode: mode }))}
+                    data-testid={`manual-booking-payment-${mode}`}
+                    disabled={disabled}
+                    className={`px-3 py-2 rounded-lg border text-sm transition-colors capitalize inline-flex items-center gap-1.5 ${
+                      manualBookingForm.payment_mode === mode
+                        ? 'bg-gold text-black border-gold font-semibold'
+                        : disabled
+                          ? 'bg-muted/40 border-border text-muted-foreground cursor-not-allowed opacity-60'
+                          : 'bg-card border-border hover:bg-muted'
+                    }`}
+                    title={disabled ? 'Customer has no active membership wallet' : ''}
+                  >
+                    {isWallet && <Wallet className="w-4 h-4" />}
+                    {mode === 'pay_later'
+                      ? 'Pay Later at Salon'
+                      : isWallet
+                        ? (walletUsable ? `Wallet · ₹${Number(walletInfo.wallet_balance).toFixed(0)}` : 'Wallet (Membership)')
+                        : mode.toUpperCase()}
+                  </button>
+                );
+              })}
+            </div>
+            {manualBookingForm.payment_mode === 'wallet' && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1.5">
+                ⓘ Customer must have an active membership wallet with sufficient balance. Amount will be auto-deducted.
+              </p>
+            )}
           </div>
 
           {/* Action Buttons */}
@@ -2968,7 +2132,8 @@ export default function EnhancedSalonDashboard() {
         </DialogContent>
       </Dialog>
       </div>
-    </div>
+    </HomeV2Shell>
+    )}
     <SubscriptionPaywallModal />
     </SubscriptionProvider>
   );

@@ -40,7 +40,11 @@ const readAuth = () => {
 const fmtDate = (iso) => {
   if (!iso) return '—';
   try {
-    return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    const d = new Date(iso);
+    // Complimentary / lifetime grants are stored as year 3026 (1000-year expiry).
+    // Show a friendlier "Unlimited" label instead of a nonsense year.
+    if (d.getFullYear() >= 2100) return 'Unlimited';
+    return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
   } catch { return iso; }
 };
 const fmtTs = (iso) => {
@@ -95,7 +99,7 @@ export default function PlatformDashboardPage() {
   const [suspendReason, setSuspendReason] = useState('');
 
   // Override form state
-  const [grantForm, setGrantForm] = useState({ duration_months: 3, max_branches: '', reason: '' });
+  const [grantForm, setGrantForm] = useState({ duration_unit: 'days', duration_value: 90, max_branches: '', reason: '' });
   const [overrideForm, setOverrideForm] = useState({ max_branches: '', reason: '' });
   const [trialForm, setTrialForm] = useState({ days: 14, reason: '' });
   const [compForm, setCompForm] = useState({ max_branches: '', reason: '' });
@@ -205,21 +209,23 @@ export default function PlatformDashboardPage() {
   // Override submit handlers
   const submitGrantPro = async () => {
     const sid = modal.salonId;
-    if (!grantForm.duration_months || grantForm.duration_months < 1) {
-      toast.error('Duration must be at least 1 month'); return;
+    const val = Number(grantForm.duration_value || 0);
+    if (!val || val < 1) {
+      toast.error(`Duration must be at least 1 ${grantForm.duration_unit || 'day'}`); return;
     }
     if (!grantForm.reason.trim()) { toast.error('Reason is required'); return; }
     setModalSubmitting(true);
     try {
       const body = {
-        duration_months: Number(grantForm.duration_months),
+        duration_days: grantForm.duration_unit === 'days' ? val : null,
+        duration_months: grantForm.duration_unit === 'months' ? val : null,
         max_branches: grantForm.max_branches ? Number(grantForm.max_branches) : null,
         reason: grantForm.reason.trim(),
       };
       await axios.post(`${API}/platform/salons/${sid}/subscription/grant-pro`, body, { headers });
-      toast.success(`Granted ${body.duration_months}-month Pro access`);
+      toast.success(`Granted ${val} ${grantForm.duration_unit} Pro access`);
       setModal(null);
-      setGrantForm({ duration_months: 3, max_branches: '', reason: '' });
+      setGrantForm({ duration_unit: 'days', duration_value: 90, max_branches: '', reason: '' });
       fetchSalons();
       if (detail?.salon?.id === sid) refreshDetail();
     } catch (err) {
@@ -746,8 +752,43 @@ function OverrideModals({
             <p className="text-sm text-muted-foreground">Creates a granted subscription. The salon pays nothing for the duration.</p>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs uppercase tracking-widest text-muted-foreground/80 font-bold">Duration (months)</label>
-                <Input type="number" min={1} value={grantForm.duration_months} onChange={(e) => setGrantForm({ ...grantForm, duration_months: e.target.value })} className="mt-1 bg-card border-border" />
+                <label className="text-xs uppercase tracking-widest text-muted-foreground/80 font-bold">Duration</label>
+                <div className="flex gap-2 mt-1">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={grantForm.duration_unit === 'days' ? 3650 : 120}
+                    value={grantForm.duration_value}
+                    onChange={(e) => setGrantForm({ ...grantForm, duration_value: e.target.value })}
+                    className="flex-1 bg-card border-border"
+                  />
+                  <select
+                    value={grantForm.duration_unit}
+                    onChange={(e) => setGrantForm({ ...grantForm, duration_unit: e.target.value })}
+                    className="h-9 px-2 rounded-md border border-border bg-card text-sm"
+                  >
+                    <option value="days">Days</option>
+                    <option value="months">Months</option>
+                  </select>
+                </div>
+                <div className="text-[10px] text-muted-foreground mt-1">
+                  Pick <b>Days</b> for short trials (e.g. 100 days) or <b>Months</b> for long grants.
+                </div>
+                {Number(grantForm.duration_value) > 0 && (
+                  <div className="text-[11px] mt-1.5 text-emerald-600 dark:text-emerald-400">
+                    Expiry preview:&nbsp;
+                    <b>
+                      {(() => {
+                        const v = Number(grantForm.duration_value) || 0;
+                        if (!v) return '—';
+                        const d = new Date();
+                        const days = grantForm.duration_unit === 'months' ? Math.round(30 * v) : v;
+                        d.setDate(d.getDate() + days);
+                        return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+                      })()}
+                    </b>
+                  </div>
+                )}
               </div>
               <div>
                 <label className="text-xs uppercase tracking-widest text-muted-foreground/80 font-bold">Max branches</label>

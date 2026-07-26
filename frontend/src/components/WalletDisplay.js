@@ -11,6 +11,8 @@ export default function WalletDisplay({ salonId, customerPhone }) {
   const [membership, setMembership] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loyalty, setLoyalty] = useState(null);
+  const [redeeming, setRedeeming] = useState(false);
 
   const fetchWalletData = useCallback(async (silent = false) => {
     if (!salonId || !customerPhone) return;
@@ -33,12 +35,36 @@ export default function WalletDisplay({ salonId, customerPhone }) {
         setMembership(null);
         setTransactions([]);
       }
+      // Fetch loyalty points (independent of membership)
+      try {
+        const lp = await axios.get(`${API}/salons/${salonId}/customers/${customerPhone}/loyalty-points`);
+        setLoyalty(lp.data);
+      } catch (_) { setLoyalty(null); }
     } catch (error) {
       console.error('Error fetching wallet data:', error);
     } finally {
       if (!silent) setLoading(false);
     }
   }, [salonId, customerPhone]);
+
+  const redeemPoints = useCallback(async () => {
+    if (!loyalty?.can_redeem) return;
+    setRedeeming(true);
+    try {
+      const { data } = await axios.post(
+        `${API}/salons/${salonId}/customers/${customerPhone}/loyalty-points/redeem`,
+        { points: 0 }
+      );
+      const { toast } = await import('sonner');
+      toast.success(`₹${data.credited} added to your wallet from ${loyalty.points} points`);
+      await fetchWalletData(true);
+    } catch (err) {
+      const { toast } = await import('sonner');
+      toast.error(err?.response?.data?.detail || 'Could not redeem points');
+    } finally {
+      setRedeeming(false);
+    }
+  }, [loyalty, salonId, customerPhone, fetchWalletData]);
 
   useEffect(() => {
     fetchWalletData();
@@ -56,6 +82,37 @@ export default function WalletDisplay({ salonId, customerPhone }) {
     return diffDays;
   };
 
+  const pointsCard = loyalty && loyalty.config?.points_enabled ? (
+    <div className="relative overflow-hidden rounded-2xl p-5 border border-gold/40 bg-gradient-to-br from-amber-500/10 to-yellow-600/5" data-testid="loyalty-points-card">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 rounded-full bg-gold/20">
+            <TrendingUp className="w-5 h-5 text-gold" />
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Loyalty points</p>
+            <p className="text-3xl font-bold text-foreground leading-none mt-1" data-testid="loyalty-points-balance">{loyalty.points} <span className="text-base font-medium text-muted-foreground">pts</span></p>
+          </div>
+        </div>
+        <div className="text-right">
+          <p className="text-xs text-muted-foreground">Worth</p>
+          <p className="text-xl font-bold text-gold">₹{loyalty.redeemable_value}</p>
+        </div>
+      </div>
+      <p className="text-[11px] text-muted-foreground mt-3">
+        Earn {loyalty.config.points_earn_per_100} pts per ₹100 spent · {loyalty.config.points_redeem_rate} pts = ₹1 · min {loyalty.config.points_min_redeem} pts to redeem
+      </p>
+      <button
+        onClick={redeemPoints}
+        disabled={!loyalty.can_redeem || redeeming}
+        data-testid="loyalty-redeem-btn"
+        className={`mt-3 w-full h-10 rounded-xl font-semibold text-sm transition-colors ${loyalty.can_redeem ? 'bg-gold text-white hover:bg-gold/90' : 'bg-muted text-muted-foreground cursor-not-allowed'}`}
+      >
+        {redeeming ? 'Converting…' : loyalty.can_redeem ? `Convert ${loyalty.points} pts → ₹${loyalty.redeemable_value} wallet` : `Need ${loyalty.config.points_min_redeem} pts to redeem`}
+      </button>
+    </div>
+  ) : null;
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -66,12 +123,15 @@ export default function WalletDisplay({ salonId, customerPhone }) {
 
   if (!membership) {
     return (
-      <div className="bg-card border border-border rounded-xl p-8 text-center">
-        <Wallet className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
-        <h3 className="text-lg font-semibold mb-2">No Active Membership</h3>
-        <p className="text-muted-foreground text-sm mb-4">
-          Purchase a membership to enjoy exclusive benefits and wallet credits
-        </p>
+      <div className="space-y-4">
+        {pointsCard}
+        <div className="bg-card border border-border rounded-xl p-8 text-center">
+          <Wallet className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
+          <h3 className="text-lg font-semibold mb-2">No Active Membership</h3>
+          <p className="text-muted-foreground text-sm mb-4">
+            Purchase a membership to enjoy exclusive benefits and wallet credits
+          </p>
+        </div>
       </div>
     );
   }
@@ -82,6 +142,7 @@ export default function WalletDisplay({ salonId, customerPhone }) {
 
   return (
     <div className="space-y-4">
+      {pointsCard}
       {/* Membership Card */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}

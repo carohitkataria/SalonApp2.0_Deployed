@@ -6,6 +6,16 @@
 @tailwind utilities;
 
 /* ============================================================
+   Global inline-SVG baseline (Phase 3.0)
+   Prevents inline <svg> icons from painting as solid black
+   full-size shapes before scoped CSS-in-JS <style> is injected.
+   Loaded with the bundle so it applies on the very first paint.
+   ============================================================ */
+.setv3 svg, .shv2 svg, .shv2-drawer svg { fill: none; stroke: currentColor; }
+svg:not([width]):not([height]) { width: 1em; height: 1em; }
+
+
+/* ============================================================
    SalonHub — Multi-theme tokens
    Themes: ivory · obsidian · velvet · midnight · sand
    Apply via <html data-theme="..."> + (optional) .dark class.
@@ -281,7 +291,25 @@
 
   html, body, #root {
     overflow-x: hidden;
+    /* Jul 2026 — Ensure the app always fills the viewport width and height.
+       Fixes zoom-out issue where the page appeared to shrink instead of
+       proportionally reducing item sizes. */
+    min-height: 100vh;
+    width: 100%;
+    min-width: 100%;
     max-width: 100vw;
+  }
+
+  html {
+    /* Anchor the base font size so browser zoom scales everything
+       proportionally rather than clamping to a fixed pixel width. */
+    font-size: 16px;
+  }
+
+  #root {
+    display: flex;
+    flex-direction: column;
+    background-color: hsl(var(--background));
   }
 
   body {

@@ -314,7 +314,66 @@ export const AuthProvider = ({ children }) => {
 
   const hasPermission = (permission) => {
     if (salonUser?.role === 'admin') return true;
+    if (salonUser?.role === 'branch_manager') return true;
     return salonUser?.permissions?.[permission] || false;
+  };
+
+  /**
+   * Granular module-level permission check.
+   * Example:  hasModulePermission('staff', 'attendance')
+   *           hasModulePermission('financials', 'delete_transaction')
+   *
+   * Admin & branch_manager always pass. For staff, we consult the granular
+   * `permissions.modules[module][action]` first; if unset, we fall back to
+   * the legacy flat `can_access_*` keys via the LEGACY_MAP below so users
+   * without the new granular config keep working exactly as before.
+   */
+  const MODULE_LEGACY_MAP = {
+    staff: {
+      view: 'can_access_staff', view_all: 'can_view_all_staff',
+      create: 'can_access_staff', edit: 'can_access_staff', delete: 'can_access_staff',
+      attendance: 'can_access_staff', salary_view: 'can_access_staff',
+      salary_pay: 'can_access_staff', documents: 'can_access_staff',
+      access_control: 'can_access_staff',
+    },
+    financials: {
+      view_dashboard: 'can_access_financials', view_transactions: 'can_access_financials',
+      create_transaction: 'can_access_financials', edit_transaction: 'can_access_financials',
+      delete_transaction: 'can_access_financials',
+    },
+    analytics: { view: 'can_access_analytics' },
+    services: {
+      view: 'can_access_services', create: 'can_access_services',
+      edit: 'can_access_services', delete: 'can_access_services',
+      toggle: 'can_access_services', upload_csv: 'can_access_services',
+      manage_categories: 'can_access_services', manage_packages: 'can_access_services',
+      manage_memberships: 'can_access_services',
+    },
+    gallery: { view: 'can_access_gallery', upload: 'can_access_gallery', delete: 'can_access_gallery' },
+    marketing: {
+      view: 'can_access_marketing', create_campaign: 'can_access_marketing',
+      edit_campaign: 'can_access_marketing', delete_campaign: 'can_access_marketing',
+      manage_coupons: 'can_access_marketing', manage_loyalty: 'can_access_marketing',
+    },
+    salon_settings: {
+      view: 'can_edit_salon', edit_profile: 'can_edit_salon',
+      edit_hours: 'can_edit_salon', edit_notifications: 'can_edit_salon',
+      edit_branches: 'can_edit_salon', manage_users: 'can_edit_salon',
+      manage_subscription: 'can_edit_salon',
+    },
+    delete_salon: { allowed: 'can_delete_salon' },
+  };
+
+  const hasModulePermission = (moduleName, action) => {
+    if (salonUser?.role === 'admin') return true;
+    if (salonUser?.role === 'branch_manager') return true;
+    const perms = salonUser?.permissions || {};
+    const mods = perms.modules || {};
+    const modPerms = mods[moduleName] || {};
+    if (modPerms[action]) return true;
+    const legacyKey = MODULE_LEGACY_MAP[moduleName]?.[action];
+    if (legacyKey && perms[legacyKey]) return true;
+    return false;
   };
 
   return (
@@ -345,6 +404,7 @@ export const AuthProvider = ({ children }) => {
         isBranchManager,
         getAssignedBranchIds,
         hasPermission,
+        hasModulePermission,
         isUserLoggedIn: !!user,
         isUserOtpVerified: !!user?.is_otp_verified,
         isAdminLoggedIn: !!admin,

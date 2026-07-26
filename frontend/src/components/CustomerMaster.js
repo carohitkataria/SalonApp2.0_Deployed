@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
+import { useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -19,6 +20,11 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 export default function CustomerMaster({ salonId, getAuthHeaders }) {
+  const location = useLocation();
+  const urlParams = new URLSearchParams(location.search);
+  const filterMode = urlParams.get('filter') || 'all';
+  const autoOpen = urlParams.get('autoOpen'); // 'add' | null
+
   const [customers, setCustomers] = useState([]);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [customerBookings, setCustomerBookings] = useState([]);
@@ -497,10 +503,25 @@ export default function CustomerMaster({ salonId, getAuthHeaders }) {
     }
   };
 
-  const filteredCustomers = customers.filter(c =>
-    c.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.phone?.includes(searchQuery)
-  );
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const filteredCustomers = customers.filter(c => {
+    const matches = c.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.phone?.includes(searchQuery);
+    if (!matches) return false;
+    if (filterMode === 'new') {
+      const created = String(c.created_at || '').slice(0, 10);
+      return created === todayISO;
+    }
+    return true;
+  });
+
+  // Auto-open Add Customer modal when navigated with ?autoOpen=add
+  useEffect(() => {
+    if (autoOpen === 'add' && !showAddCustomerModal) {
+      setShowAddCustomerModal(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpen]);
 
   // Show membership management view
   if (showMembershipManagement) {

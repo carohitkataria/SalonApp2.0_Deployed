@@ -16,7 +16,7 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import {
   ArrowLeft, Loader2, Search, Boxes, Plus, Filter, Edit3, Truck, ShoppingCart,
-  AlertTriangle, History, X, Save, Trash2, IndianRupee, UserCheck, Minus,
+  AlertTriangle, History, X, Save, UserCheck, Minus,
   ScanLine,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -64,21 +64,19 @@ export default function SalonInventoryPage() {
 export function InventoryView({ embedded = false }) {
   const navigate = useNavigate();
 
-  const [tab, setTab] = useState('items');
   const [items, setItems] = useState([]);
-  const [allMovements, setAllMovements] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [movLoading, setMovLoading] = useState(false);
+  // Jul 2026 — Staff list for dropdowns
+  const [staffList, setStaffList] = useState([]);
 
   const [search, setSearch] = useState('');
   const [searchDraft, setSearchDraft] = useState('');
   const [filterAvailability, setFilterAvailability] = useState('');
   const [filterLowStock, setFilterLowStock] = useState(false);
-  const [movementFilterType, setMovementFilterType] = useState('');
 
   const [activeAction, setActiveAction] = useState(null); // {type, item}
   const [showCreate, setShowCreate] = useState(false);
-  const [showMovementsModal, setShowMovementsModal] = useState(null);
+  const [detailItem, setDetailItem] = useState(null); // item clicked → detail+logs modal
 
   const authHeaders = useMemo(() => {
     const raw = localStorage.getItem('salon_user_auth');
@@ -86,6 +84,24 @@ export function InventoryView({ embedded = false }) {
     if (!token && raw) { try { token = JSON.parse(raw).token; } catch (e) { console.debug('Bad salon_user_auth JSON:', e); } }
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, []);
+
+  const salonId = useMemo(() => {
+    try {
+      const raw = localStorage.getItem('salon_user_auth');
+      if (raw) { const j = JSON.parse(raw); return j?.salon_id || j?.salonId || null; }
+    } catch (e) { console.debug('bad auth json', e); }
+    return null;
+  }, []);
+
+  const fetchStaff = useCallback(async () => {
+    if (!salonId) return;
+    try {
+      const r = await axios.get(`${API}/salons/${salonId}/barbers`, { headers: authHeaders });
+      setStaffList(Array.isArray(r.data) ? r.data : (r.data?.barbers || []));
+    } catch (e) { console.debug('staff list fetch failed', e); }
+  }, [authHeaders, salonId]);
+
+  useEffect(() => { fetchStaff(); }, [fetchStaff]);
 
   const fetchItems = useCallback(async () => {
     setLoading(true);
@@ -102,20 +118,7 @@ export function InventoryView({ embedded = false }) {
     } finally { setLoading(false); }
   }, [authHeaders, search, filterAvailability, filterLowStock, navigate]);
 
-  const fetchAllMovements = useCallback(async () => {
-    setMovLoading(true);
-    try {
-      const params = { page_size: 300 };
-      if (movementFilterType) params.movement_type = movementFilterType;
-      const r = await axios.get(`${API}/salon/inventory/movements`, { headers: authHeaders, params });
-      setAllMovements(r.data.movements || []);
-    } catch (e) {
-      toast.error(extractErrorMessage(e, 'Failed to load movements'));
-    } finally { setMovLoading(false); }
-  }, [authHeaders, movementFilterType]);
-
   useEffect(() => { fetchItems(); }, [fetchItems]);
-  useEffect(() => { if (tab === 'movements') fetchAllMovements(); }, [tab, fetchAllMovements]);
 
   const lowStockCount = useMemo(() => items.filter(i => i.is_low_stock).length, [items]);
 
@@ -142,8 +145,9 @@ export function InventoryView({ embedded = false }) {
         </div>
 
         <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-3 flex items-center gap-2">
-          <Tab active={tab === 'items'} onClick={() => setTab('items')} testid="inv-tab-items"><Boxes className="w-3.5 h-3.5 mr-1" /> All items ({items.length})</Tab>
-          <Tab active={tab === 'movements'} onClick={() => setTab('movements')} testid="inv-tab-movements"><History className="w-3.5 h-3.5 mr-1" /> Movements</Tab>
+          <div className="text-[10px] uppercase tracking-widest text-muted-foreground/80 font-bold" data-testid="inv-count-pill">
+            <Boxes className="w-3.5 h-3.5 inline mr-1" /> All items ({items.length})
+          </div>
           {lowStockCount > 0 && (
             <span data-testid="inv-low-stock-banner" className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-500/15 border border-amber-500/40 text-amber-600">
               <AlertTriangle className="w-3.5 h-3.5" /> {lowStockCount} low-stock items
@@ -153,8 +157,7 @@ export function InventoryView({ embedded = false }) {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
-        {tab === 'items' ? (
-          <>
+        <>
             {/* Filters */}
             <div className="flex flex-col sm:flex-row gap-2 mb-4">
               <form
@@ -201,26 +204,18 @@ export function InventoryView({ embedded = false }) {
                 </div>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              <div className="border border-border rounded-xl overflow-hidden bg-card divide-y divide-border" data-testid="inv-list">
                 {items.map(it => (
-                  <InventoryCard
+                  <InventoryRow
                     key={it.id}
                     it={it}
+                    onClick={() => setDetailItem(it)}
                     onAction={(type) => setActiveAction({ type, item: it })}
-                    onMovements={() => setShowMovementsModal(it)}
                   />
                 ))}
               </div>
             )}
           </>
-        ) : (
-          <MovementsTab
-            movements={allMovements}
-            loading={movLoading}
-            movementFilterType={movementFilterType}
-            setMovementFilterType={setMovementFilterType}
-          />
-        )}
       </main>
 
       {/* Modals */}
@@ -235,16 +230,19 @@ export function InventoryView({ embedded = false }) {
         <ActionModal
           action={activeAction.type}
           item={activeAction.item}
+          staffList={staffList}
           onClose={() => setActiveAction(null)}
           authHeaders={authHeaders}
           onSaved={() => { setActiveAction(null); fetchItems(); }}
         />
       )}
-      {showMovementsModal && (
-        <ItemMovementsModal
-          item={showMovementsModal}
+      {detailItem && (
+        <ItemDetailModal
+          item={detailItem}
           authHeaders={authHeaders}
-          onClose={() => setShowMovementsModal(null)}
+          staffList={staffList}
+          onClose={() => setDetailItem(null)}
+          onAction={(type) => { setActiveAction({ type, item: detailItem }); setDetailItem(null); }}
         />
       )}
     </div>
@@ -252,65 +250,84 @@ export function InventoryView({ embedded = false }) {
 }
 
 
-function Tab({ active, onClick, children, testid }) {
+function InventoryRow({ it, onClick, onAction }) {
   return (
-    <button
-      type="button"
+    <div
+      className={`flex items-center gap-3 px-4 py-3 hover:bg-muted/40 transition-colors cursor-pointer ${it.is_low_stock ? 'border-l-4 border-l-amber-500' : ''}`}
+      data-testid={`inv-row-${it.id}`}
       onClick={onClick}
-      data-testid={testid}
-      className={`inline-flex items-center text-xs font-semibold px-3 py-1.5 rounded-full border transition-colors ${
-        active ? 'bg-primary text-primary-foreground border-primary' : 'bg-background border-border hover:border-primary/50'
-      }`}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); }}
     >
-      {children}
-    </button>
+      {/* Thumbnail */}
+      <div className="w-11 h-11 rounded bg-muted overflow-hidden flex items-center justify-center flex-shrink-0">
+        {it.image_url
+          ? <img src={it.image_url} alt={it.name} className="w-full h-full object-cover" />
+          : <Boxes className="w-4 h-4 text-muted-foreground" />}
+      </div>
+      {/* Name + brand + meta */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="text-sm font-bold truncate" data-testid={`inv-row-name-${it.id}`}>{it.name}</div>
+          {it.product_id_source && (
+            <span className="text-[10px] px-1.5 py-0.5 bg-emerald-500/15 text-emerald-600 rounded">From supplier</span>
+          )}
+          {it.is_low_stock && (
+            <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 bg-amber-500/15 text-amber-600 rounded">
+              <AlertTriangle className="w-3 h-3" /> Low
+            </span>
+          )}
+        </div>
+        <div className="text-[11px] text-muted-foreground truncate">
+          {(it.brand || '—')} · {(it.category || 'Uncategorised')} · {it.unit}
+          {it.sku_code ? ` · SKU: ${it.sku_code}` : ''}
+        </div>
+      </div>
+      {/* Stock breakdown */}
+      <div className="hidden md:flex items-center gap-4 text-[11px]">
+        <div className="text-right">
+          <div className="text-lg font-extrabold leading-none">{it.qty_total}</div>
+          <div className="text-[9px] uppercase tracking-wider text-muted-foreground">in stock</div>
+        </div>
+        <div className="text-right">
+          <div className="text-emerald-600 font-semibold">{it.qty_available_for_customer}</div>
+          <div className="text-[9px] uppercase tracking-wider text-muted-foreground">sellable</div>
+        </div>
+        <div className="text-right">
+          <div className="text-slate-600 dark:text-slate-300 font-semibold">{fmt(it.selling_price)}</div>
+          <div className="text-[9px] uppercase tracking-wider text-muted-foreground">price</div>
+        </div>
+      </div>
+      {/* Compact stock col for mobile */}
+      <div className="md:hidden text-right">
+        <div className="text-lg font-extrabold leading-none">{it.qty_total}</div>
+        <div className="text-[9px] uppercase tracking-wider text-muted-foreground">stock</div>
+      </div>
+      {/* Inline action buttons */}
+      <div className="flex items-center gap-1.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+        <RowActionBtn icon={UserCheck} label="Assign / Consume" onClick={() => onAction('assign_consume')} testid={`inv-row-assign-${it.id}`} />
+        <RowActionBtn icon={ShoppingCart} label="Sell" onClick={() => onAction('sell')} testid={`inv-row-sell-${it.id}`} />
+        <RowActionBtn icon={Edit3} label="Edit" onClick={() => onAction('edit')} testid={`inv-row-edit-${it.id}`} />
+      </div>
+    </div>
   );
 }
 
 
-function InventoryCard({ it, onAction, onMovements }) {
+function RowActionBtn({ icon: Icon, label, onClick, testid }) {
   return (
-    <div className={`border rounded-xl p-3 bg-card ${it.is_low_stock ? 'border-amber-500/50' : 'border-border'}`} data-testid={`inv-card-${it.id}`}>
-      <div className="flex items-start gap-3 mb-2">
-        <div className="w-12 h-12 rounded bg-muted overflow-hidden flex items-center justify-center flex-shrink-0">
-          {it.image_url ? <img src={it.image_url} alt={it.name} className="w-full h-full object-cover" /> : <Boxes className="w-5 h-5 text-muted-foreground" />}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-xs text-muted-foreground">{it.brand || '—'}</div>
-          <div className="text-sm font-bold leading-tight line-clamp-2">{it.name}</div>
-          <div className="text-[10px] text-muted-foreground">
-            {it.category || 'Uncategorised'} · {it.unit}
-            {it.product_id_source && <span className="ml-1 px-1.5 py-0.5 bg-emerald-500/15 text-emerald-600 rounded">From supplier</span>}
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="text-lg font-extrabold">{it.qty_total}</div>
-          <div className="text-[10px] text-muted-foreground uppercase">in stock</div>
-        </div>
-      </div>
-
-      {/* Mini bar of breakdown */}
-      <div className="grid grid-cols-3 gap-1.5 text-[10px] mb-2">
-        <Stat label="Sellable" value={it.qty_available_for_customer} cls="bg-emerald-500/10 text-emerald-600" />
-        <Stat label="Reserved" value={it.qty_reserved_for_internal + it.qty_reserved_for_customer_orders} cls="bg-amber-500/10 text-amber-600" />
-        <Stat label="Cost" value={fmt(it.cost_price)} cls="bg-slate-500/10 text-slate-600" />
-      </div>
-
-      {it.is_low_stock && (
-        <div className="flex items-center gap-1 text-[10px] text-amber-600 mb-2">
-          <AlertTriangle className="w-3 h-3" /> Below threshold of {it.low_stock_threshold}
-        </div>
-      )}
-
-      <div className="grid grid-cols-3 gap-1.5">
-        <ActionBtn icon={Edit3} label="Edit"     onClick={() => onAction('edit')}     testid={`inv-action-edit-${it.id}`} />
-        <ActionBtn icon={UserCheck} label="Assign" onClick={() => onAction('assign')}  testid={`inv-action-assign-${it.id}`} />
-        <ActionBtn icon={Truck} label="Reserve"  onClick={() => onAction('reserve')}  testid={`inv-action-reserve-${it.id}`} />
-        <ActionBtn icon={Minus} label="Consume"  onClick={() => onAction('consume')}  testid={`inv-action-consume-${it.id}`} />
-        <ActionBtn icon={ShoppingCart} label="Sell" onClick={() => onAction('sell')}  testid={`inv-action-sell-${it.id}`} />
-        <ActionBtn icon={History} label="Log"    onClick={onMovements}                testid={`inv-action-log-${it.id}`} />
-      </div>
-    </div>
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onClick={onClick}
+      data-testid={testid}
+      className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-border hover:border-primary/60 hover:bg-muted transition-colors"
+    >
+      <Icon className="w-3 h-3" />
+      <span className="hidden lg:inline">{label}</span>
+    </button>
   );
 }
 
@@ -338,78 +355,17 @@ function ActionBtn({ icon: Icon, label, onClick, testid }) {
 }
 
 
-function MovementsTab({ movements, loading, movementFilterType, setMovementFilterType }) {
-  return (
-    <div>
-      <div className="flex items-center gap-2 mb-3">
-        <select
-          value={movementFilterType}
-          onChange={(e) => setMovementFilterType(e.target.value)}
-          data-testid="inv-movements-filter"
-          className="bg-background border border-border rounded px-3 py-2 text-sm"
-        >
-          <option value="">All movement types</option>
-          {Object.entries(MOVEMENT_TYPE_LABELS).map(([k, v]) => (
-            <option key={k} value={k}>{v.label}</option>
-          ))}
-        </select>
-      </div>
-      {loading ? (
-        <div className="text-center py-16 text-muted-foreground"><Loader2 className="w-6 h-6 animate-spin inline mr-2" /> Loading…</div>
-      ) : movements.length === 0 ? (
-        <div className="text-center py-16 border border-dashed border-border rounded-xl">
-          <History className="w-10 h-10 mx-auto mb-3 text-muted-foreground" />
-          <div className="font-semibold mb-1">No movements logged yet</div>
-          <div className="text-xs text-muted-foreground">Stock additions, sales, consumption etc will appear here.</div>
-        </div>
-      ) : (
-        <div className="border border-border rounded-xl overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-muted text-xs uppercase tracking-widest text-muted-foreground">
-              <tr>
-                <th className="text-left p-3">When</th>
-                <th className="text-left p-3">Item</th>
-                <th className="text-left p-3">Type</th>
-                <th className="text-right p-3">Δ Qty</th>
-                <th className="text-right p-3">After</th>
-                <th className="text-left p-3 hidden md:table-cell">Note</th>
-              </tr>
-            </thead>
-            <tbody>
-              {movements.map(m => {
-                const cfg = MOVEMENT_TYPE_LABELS[m.movement_type] || { label: m.movement_type, cls: 'bg-muted' };
-                return (
-                  <tr key={m.id} className="border-t border-border hover:bg-muted/40" data-testid={`inv-movement-row-${m.id}`}>
-                    <td className="p-3 text-xs text-muted-foreground">{new Date(m.created_at).toLocaleString()}</td>
-                    <td className="p-3 text-xs font-semibold">{m.item_name || m.inventory_item_id?.slice(0, 8)}</td>
-                    <td className="p-3">
-                      <span className={`inline-flex items-center text-[10px] uppercase tracking-widest font-bold px-2 py-0.5 rounded-full border ${cfg.cls}`}>
-                        {cfg.label}
-                      </span>
-                    </td>
-                    <td className={`p-3 text-right font-bold ${m.qty_delta < 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
-                      {m.qty_delta > 0 ? '+' : ''}{m.qty_delta}
-                    </td>
-                    <td className="p-3 text-right">{m.qty_after}</td>
-                    <td className="p-3 text-xs text-muted-foreground hidden md:table-cell">{m.note || '—'}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-function ActionModal({ action, item, onClose, authHeaders, onSaved }) {
+function ActionModal({ action, item, staffList = [], onClose, authHeaders, onSaved }) {
   const [qty, setQty] = useState(1);
   const [paymentMode, setPaymentMode] = useState('cash');
   const [note, setNote] = useState('');
   const [staffId, setStaffId] = useState(item.assigned_to_staff_id || '');
   const [saving, setSaving] = useState(false);
+  // For merged assign/consume mode selector
+  const [assignMode, setAssignMode] = useState('assign'); // 'assign' | 'consume'
+  // Sell → optional customer fields
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
 
   // Edit-specific
   const [editForm, setEditForm] = useState({
@@ -428,12 +384,16 @@ function ActionModal({ action, item, onClose, authHeaders, onSaved }) {
   });
 
   const titleMap = {
-    edit:     'Edit item',
-    assign:   'Assign to staff',
-    reserve:  'Reserve for internal use',
-    consume:  'Consume from stock',
-    sell:     'Sell over the counter',
+    edit:            'Edit item',
+    assign_consume:  'Assign to staff / Consume stock',
+    sell:            'Sell over the counter',
   };
+
+  const staffOptions = useMemo(() => (
+    [{ value: '', label: 'Common pool (not assigned)' }].concat(
+      (staffList || []).map((s) => ({ value: s.id, label: s.name || 'Staff' }))
+    )
+  ), [staffList]);
 
   const submit = async (e) => {
     e?.preventDefault();
@@ -442,17 +402,27 @@ function ActionModal({ action, item, onClose, authHeaders, onSaved }) {
       if (action === 'edit') {
         await axios.put(`${API}/salon/inventory/${item.id}`, editForm, { headers: authHeaders });
         toast.success('Item updated');
-      } else if (action === 'assign') {
-        await axios.post(`${API}/salon/inventory/${item.id}/assign`, { staff_id: staffId || null, qty }, { headers: authHeaders });
-        toast.success('Assignment updated');
-      } else if (action === 'reserve') {
-        await axios.post(`${API}/salon/inventory/${item.id}/reserve-internal`, { qty }, { headers: authHeaders });
-        toast.success('Reserved for internal use');
-      } else if (action === 'consume') {
-        await axios.post(`${API}/salon/inventory/${item.id}/consume`, { qty, staff_id: staffId || null, note }, { headers: authHeaders });
-        toast.success('Stock consumed');
+      } else if (action === 'assign_consume') {
+        if (assignMode === 'assign') {
+          await axios.post(`${API}/salon/inventory/${item.id}/assign`, { staff_id: staffId || null, qty }, { headers: authHeaders });
+          toast.success('Assignment updated');
+        } else {
+          await axios.post(`${API}/salon/inventory/${item.id}/consume`, { qty, staff_id: staffId || null, note }, { headers: authHeaders });
+          toast.success('Stock consumed');
+        }
       } else if (action === 'sell') {
-        const r = await axios.post(`${API}/salon/inventory/${item.id}/sell`, { qty, payment_mode: paymentMode, staff_id: staffId || null, note }, { headers: authHeaders });
+        const r = await axios.post(
+          `${API}/salon/inventory/${item.id}/sell`,
+          {
+            qty,
+            payment_mode: paymentMode,
+            staff_id: staffId || null,
+            note,
+            customer_name: customerName.trim() || null,
+            customer_phone: customerPhone.trim() || null,
+          },
+          { headers: authHeaders }
+        );
         toast.success(r.data.message || 'POS sale recorded');
       }
       onSaved();
@@ -504,27 +474,50 @@ function ActionModal({ action, item, onClose, authHeaders, onSaved }) {
             </>
           )}
 
-          {action === 'assign' && (
+          {action === 'assign_consume' && (
             <>
-              <FormRow label="Staff ID (leave blank for common pool)" value={staffId} onChange={setStaffId} testid="inv-assign-staff" />
-              <FormRow label="Quantity to reserve for this staff" type="number" value={qty} onChange={(v) => setQty(Number(v))} testid="inv-assign-qty" />
-              <Hint text={`Currently reserved internally: ${item.qty_reserved_for_internal}. Available outside customer reservations: ${item.qty_total - item.qty_reserved_for_customer_orders}.`} />
-            </>
-          )}
+              {/* Mode chooser */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAssignMode('assign')}
+                  data-testid="inv-assign-mode-assign"
+                  className={`text-xs font-semibold py-2 rounded border ${assignMode === 'assign' ? 'bg-primary text-primary-foreground border-primary' : 'bg-background border-border'}`}
+                >
+                  <UserCheck className="w-3.5 h-3.5 inline mr-1" /> Assign to staff
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAssignMode('consume')}
+                  data-testid="inv-assign-mode-consume"
+                  className={`text-xs font-semibold py-2 rounded border ${assignMode === 'consume' ? 'bg-primary text-primary-foreground border-primary' : 'bg-background border-border'}`}
+                >
+                  <Minus className="w-3.5 h-3.5 inline mr-1" /> Consume from stock
+                </button>
+              </div>
 
-          {action === 'reserve' && (
-            <>
-              <FormRow label="Quantity to reserve" type="number" value={qty} onChange={(v) => setQty(Number(v))} testid="inv-reserve-qty" />
-              <Hint text={`Available right now: ${item.qty_available_for_internal}`} />
-            </>
-          )}
-
-          {action === 'consume' && (
-            <>
-              <FormRow label="Quantity to consume" type="number" value={qty} onChange={(v) => setQty(Number(v))} testid="inv-consume-qty" />
-              <FormRow label="Staff ID (optional)" value={staffId} onChange={setStaffId} />
-              <FormTextarea label="Note (optional)" value={note} onChange={setNote} />
-              <Hint text="Reduces total stock. Will not eat into customer reservations." />
+              <FormSelect
+                label="Staff"
+                value={staffId}
+                onChange={setStaffId}
+                options={staffOptions}
+                testid="inv-assign-staff-select"
+              />
+              <FormRow
+                label={assignMode === 'assign' ? 'Quantity to reserve for this staff' : 'Quantity to consume'}
+                type="number"
+                value={qty}
+                onChange={(v) => setQty(Number(v))}
+                testid="inv-assign-qty"
+              />
+              {assignMode === 'consume' && (
+                <FormTextarea label="Note (optional)" value={note} onChange={setNote} />
+              )}
+              <Hint text={
+                assignMode === 'assign'
+                  ? `Currently reserved internally: ${item.qty_reserved_for_internal}. Available outside customer reservations: ${item.qty_total - item.qty_reserved_for_customer_orders}.`
+                  : `Reduces total stock. Will not eat into customer reservations. Available: ${item.qty_total - item.qty_reserved_for_customer_orders}.`
+              } />
             </>
           )}
 
@@ -538,7 +531,12 @@ function ActionModal({ action, item, onClose, authHeaders, onSaved }) {
                 { value: 'wallet', label: 'Wallet' },
                 { value: 'other', label: 'Other' },
               ]} testid="inv-sell-payment-mode" />
-              <FormRow label="Staff who sold (optional)" value={staffId} onChange={setStaffId} />
+              <FormSelect label="Staff who sold (optional)" value={staffId} onChange={setStaffId} options={staffOptions} testid="inv-sell-staff-select" />
+              {/* Optional customer info */}
+              <div className="grid grid-cols-2 gap-3">
+                <FormRow label="Customer name (optional)" value={customerName} onChange={setCustomerName} testid="inv-sell-customer-name" />
+                <FormRow label="Customer mobile (optional)" value={customerPhone} onChange={setCustomerPhone} testid="inv-sell-customer-phone" />
+              </div>
               <FormTextarea label="Note (optional)" value={note} onChange={setNote} />
               <Hint text={`Estimated total: ${fmt(item.selling_price * qty * (1 - (item.discount || 0) / 100) * (1 + (item.gst_percent || 0) / 100))}`} />
             </>
@@ -562,6 +560,9 @@ function CreateItemModal({ onClose, authHeaders, onSaved }) {
     name: '', brand: '', category: '', unit: 'piece', pack_size: '',
     cost_price: 0, selling_price: 0, gst_percent: 18, mrp: 0, discount: 0,
     qty_total: 0, availability: 'both', low_stock_threshold: 5, sku_code: '',
+    // Jul 2026 — payment mode for auto financial entry on manual add
+    purchase_payment_mode: 'none',
+    purchase_note: '',
   });
   const [saving, setSaving] = useState(false);
   const submit = async (e) => {
@@ -569,12 +570,14 @@ function CreateItemModal({ onClose, authHeaders, onSaved }) {
     if (!form.name.trim()) { toast.error('Name is required'); return; }
     setSaving(true);
     try {
-      await axios.post(`${API}/salon/inventory`, form, { headers: authHeaders });
-      toast.success('Item added');
+      const res = await axios.post(`${API}/salon/inventory`, form, { headers: authHeaders });
+      const finId = res?.data?.financial_transaction_id;
+      toast.success(finId ? 'Item added — purchase entry recorded in Financials' : 'Item added');
       onSaved();
     } catch (e) { toast.error(extractErrorMessage(e, 'Failed to add item')); }
     finally { setSaving(false); }
   };
+  const purchaseAmount = Number(form.cost_price || 0) * Number(form.qty_total || 0);
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
       <form className="bg-card border border-border rounded-2xl w-full max-w-xl max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
@@ -607,6 +610,29 @@ function CreateItemModal({ onClose, authHeaders, onSaved }) {
             <FormRow label="Low-stock threshold" type="number" value={form.low_stock_threshold} onChange={(v) => setForm(f => ({ ...f, low_stock_threshold: Number(v) }))} />
           </div>
           <FormRow label="SKU code (optional)" value={form.sku_code} onChange={(v) => setForm(f => ({ ...f, sku_code: v }))} />
+
+          {/* Jul 2026 — Financial entry section */}
+          <div className="border-t border-border pt-3 mt-3">
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground font-bold mb-2">Auto-record purchase in Financials?</div>
+            <FormSelect
+              label="Payment mode for purchase"
+              value={form.purchase_payment_mode}
+              onChange={(v) => setForm(f => ({ ...f, purchase_payment_mode: v }))}
+              options={[
+                { value: 'none', label: 'Do not record purchase entry' },
+                { value: 'cash', label: 'Cash' },
+                { value: 'upi',  label: 'UPI' },
+                { value: 'bank', label: 'Bank transfer' },
+              ]}
+              testid="inv-create-purchase-payment-mode"
+            />
+            {form.purchase_payment_mode !== 'none' && (
+              <>
+                <FormRow label="Purchase note (optional)" value={form.purchase_note} onChange={(v) => setForm(f => ({ ...f, purchase_note: v }))} />
+                <Hint text={`A financial outflow of ${fmt(purchaseAmount)} will be recorded automatically (${form.cost_price} × ${form.qty_total}).`} />
+              </>
+            )}
+          </div>
         </div>
         <footer className="px-5 py-3 border-t border-border flex justify-end gap-2">
           <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
@@ -620,7 +646,7 @@ function CreateItemModal({ onClose, authHeaders, onSaved }) {
 }
 
 
-function ItemMovementsModal({ item, authHeaders, onClose }) {
+function ItemDetailModal({ item, authHeaders, staffList = [], onClose, onAction }) {
   const [movements, setMovements] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -634,43 +660,105 @@ function ItemMovementsModal({ item, authHeaders, onClose }) {
     })();
   }, [item.id, authHeaders]);
 
+  const assignedStaff = (staffList || []).find(s => s.id === item.assigned_to_staff_id);
+
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-card border border-border rounded-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
-          <div>
-            <div className="text-base font-bold">Movement history</div>
-            <div className="text-[11px] text-muted-foreground">{item.name}</div>
-          </div>
-          <button type="button" onClick={onClose} className="p-1.5 rounded hover:bg-muted"><X className="w-4 h-4" /></button>
-        </header>
-        <div className="p-5">
-          {loading ? (
-            <div className="text-center py-10 text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin inline mr-2" /> Loading…</div>
-          ) : movements.length === 0 ? (
-            <div className="text-center py-10 text-muted-foreground">No movements yet.</div>
-          ) : (
-            <div className="space-y-2">
-              {movements.map(m => {
-                const cfg = MOVEMENT_TYPE_LABELS[m.movement_type] || { label: m.movement_type, cls: 'bg-muted' };
-                return (
-                  <div key={m.id} className="flex items-start gap-3 py-2 border-b border-border last:border-b-0" data-testid={`inv-modal-mov-${m.id}`}>
-                    <span className={`flex-shrink-0 inline-flex items-center text-[10px] uppercase tracking-widest font-bold px-2 py-0.5 rounded-full border ${cfg.cls}`}>{cfg.label}</span>
-                    <div className="flex-1 min-w-0 text-xs">
-                      <div className="text-muted-foreground">{new Date(m.created_at).toLocaleString()}</div>
-                      {m.note && <div className="text-foreground">{m.note}</div>}
-                    </div>
-                    <div className="text-right">
-                      <div className={`text-sm font-bold ${m.qty_delta < 0 ? 'text-rose-500' : 'text-emerald-500'}`}>{m.qty_delta > 0 ? '+' : ''}{m.qty_delta}</div>
-                      <div className="text-[10px] text-muted-foreground">after: {m.qty_after}</div>
-                    </div>
-                  </div>
-                );
-              })}
+      <div className="bg-card border border-border rounded-2xl w-full max-w-3xl max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()} data-testid="inv-detail-modal">
+        <header className="px-5 py-4 border-b border-border flex items-start justify-between gap-3 sticky top-0 bg-card z-10">
+          <div className="flex items-start gap-3 flex-1 min-w-0">
+            <div className="w-14 h-14 rounded bg-muted overflow-hidden flex items-center justify-center flex-shrink-0">
+              {item.image_url
+                ? <img src={item.image_url} alt={item.name} className="w-full h-full object-cover" />
+                : <Boxes className="w-6 h-6 text-muted-foreground" />}
             </div>
-          )}
+            <div className="min-w-0">
+              <div className="text-lg font-bold leading-tight">{item.name}</div>
+              <div className="text-[11px] text-muted-foreground">{(item.brand || '—')} · {(item.category || 'Uncategorised')} · {item.unit}</div>
+              {item.product_id_source && (
+                <span className="mt-1 inline-block text-[10px] px-1.5 py-0.5 bg-emerald-500/15 text-emerald-600 rounded">From supplier</span>
+              )}
+            </div>
+          </div>
+          <button type="button" onClick={onClose} className="p-1.5 rounded hover:bg-muted" data-testid="inv-detail-close-btn"><X className="w-4 h-4" /></button>
+        </header>
+
+        {/* Detail grid */}
+        <div className="p-5 space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+            <DetailCell label="Total Qty" value={item.qty_total} />
+            <DetailCell label="Sellable" value={item.qty_available_for_customer} cls="text-emerald-600" />
+            <DetailCell label="Reserved (internal)" value={item.qty_reserved_for_internal} />
+            <DetailCell label="Reserved (customers)" value={item.qty_reserved_for_customer_orders} />
+            <DetailCell label="Cost price" value={fmt(item.cost_price)} />
+            <DetailCell label="Selling price" value={fmt(item.selling_price)} />
+            <DetailCell label="MRP" value={fmt(item.mrp)} />
+            <DetailCell label="Discount" value={`${item.discount || 0}%`} />
+            <DetailCell label="GST" value={`${item.gst_percent || 0}%`} />
+            <DetailCell label="Availability" value={item.availability} />
+            <DetailCell label="Low-stock at" value={item.low_stock_threshold} />
+            <DetailCell label="SKU" value={item.sku_code || '—'} />
+            <DetailCell label="Pack size" value={item.pack_size || '—'} />
+            <DetailCell label="Assigned to" value={assignedStaff?.name || (item.assigned_to_staff_id ? 'Staff' : 'Common pool')} />
+            <DetailCell label="Created" value={item.created_at ? new Date(item.created_at).toLocaleDateString() : '—'} />
+            <DetailCell label="Updated" value={item.updated_at ? new Date(item.updated_at).toLocaleDateString() : '—'} />
+          </div>
+
+          {/* Quick actions */}
+          <div className="flex flex-wrap gap-2 pt-2 border-t border-border">
+            <Button size="sm" onClick={() => onAction('sell')} data-testid="inv-detail-sell-btn">
+              <ShoppingCart className="w-3.5 h-3.5 mr-1" /> Sell
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => onAction('assign_consume')} data-testid="inv-detail-assign-btn">
+              <UserCheck className="w-3.5 h-3.5 mr-1" /> Assign / Consume
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => onAction('edit')} data-testid="inv-detail-edit-btn">
+              <Edit3 className="w-3.5 h-3.5 mr-1" /> Edit
+            </Button>
+          </div>
+
+          {/* Logs */}
+          <div>
+            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground/80 mb-2">
+              <History className="w-3.5 h-3.5" /> Item logs ({movements.length})
+            </div>
+            {loading ? (
+              <div className="text-center py-6 text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin inline mr-2" /> Loading…</div>
+            ) : movements.length === 0 ? (
+              <div className="text-center py-6 text-muted-foreground text-xs">No movements yet.</div>
+            ) : (
+              <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1" data-testid="inv-detail-logs">
+                {movements.map(m => {
+                  const cfg = MOVEMENT_TYPE_LABELS[m.movement_type] || { label: m.movement_type, cls: 'bg-muted' };
+                  return (
+                    <div key={m.id} className="flex items-start gap-3 py-2 border-b border-border last:border-b-0">
+                      <span className={`flex-shrink-0 inline-flex items-center text-[10px] uppercase tracking-widest font-bold px-2 py-0.5 rounded-full border ${cfg.cls}`}>{cfg.label}</span>
+                      <div className="flex-1 min-w-0 text-xs">
+                        <div className="text-muted-foreground">{new Date(m.created_at).toLocaleString()}</div>
+                        {m.note && <div className="text-foreground">{m.note}</div>}
+                      </div>
+                      <div className="text-right">
+                        <div className={`text-sm font-bold ${m.qty_delta < 0 ? 'text-rose-500' : 'text-emerald-500'}`}>{m.qty_delta > 0 ? '+' : ''}{m.qty_delta}</div>
+                        <div className="text-[10px] text-muted-foreground">after: {m.qty_after}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+
+function DetailCell({ label, value, cls = '' }) {
+  return (
+    <div className="border border-border rounded-lg px-2.5 py-2 bg-background">
+      <div className="text-[9px] uppercase tracking-widest text-muted-foreground">{label}</div>
+      <div className={`text-sm font-semibold ${cls}`}>{value}</div>
     </div>
   );
 }

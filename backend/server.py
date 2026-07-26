@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict, Any
 from enum import Enum
 import uuid
-from datetime import datetime, timezone, time, timedelta
+import re
+from datetime import datetime, timezone, time, timedelta, date
 import calendar
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import io
@@ -47,6 +48,13 @@ from twilio_service import (
 
 # Import invoice service
 from invoice_service import generate_invoice_pdf, save_invoice_pdf
+from invoice_html import (
+    resolve_invoice_settings,
+    render_invoice_html,
+    number_to_words_inr,
+    make_qr_data_url,
+    INVOICE_SETTINGS_DEFAULTS,
+)
 
 # Import platform admin module (Phase 1 — Part A)
 import platform_admin as platform_admin_mod
@@ -109,6 +117,7 @@ class SalonCreate(BaseModel):
     gender_tag: str = "Unisex"  # Unisex/Men/Women
 
 class SalonUpdate(BaseModel):
+    model_config = ConfigDict(extra="allow")
     salon_name: Optional[str] = None
     owner_name: Optional[str] = None
     phone: Optional[str] = None
@@ -168,7 +177,7 @@ class ManualToggle(BaseModel):
     overridden_at: Optional[str] = None  # ISO timestamp
 
 class Salon(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
     id: str
     salon_name: str
     owner_name: str
@@ -205,6 +214,7 @@ class ServiceCreate(BaseModel):
     service_name: str
     description: Optional[str] = None
     category: str = "General"  # Category for grouping
+    sub_category: Optional[str] = None  # Fine-grained bucket under the category
     gender_tag: str = "Unisex"  # Men/Women/Unisex
     default_duration: int = 30  # minutes
     base_price: float = 0
@@ -220,11 +230,19 @@ class ServiceCreate(BaseModel):
     home_min_items: Optional[int] = None       # Minimum number of services for at-home
     home_travel_fee: Optional[float] = None    # ₹ flat travel fee added at checkout
     home_service_radius_km: Optional[float] = None  # Service area radius
+    # GST — per-service override. When None the invoice falls back to salon.gst_rate.
+    gst_rate: Optional[float] = None
+    hsn_code: Optional[str] = None
+    # Package composition (only meaningful when category == 'Packages')
+    linked_service_ids: Optional[List[str]] = None
+    discount_percentage: Optional[float] = None
+    services_subtotal: Optional[float] = None  # snapshot of the sum-of-services at save time
 
 class ServiceUpdate(BaseModel):
     service_name: Optional[str] = None
     description: Optional[str] = None
     category: Optional[str] = None
+    sub_category: Optional[str] = None
     gender_tag: Optional[str] = None
     default_duration: Optional[int] = None
     base_price: Optional[float] = None
@@ -240,13 +258,21 @@ class ServiceUpdate(BaseModel):
     home_min_items: Optional[int] = None
     home_travel_fee: Optional[float] = None
     home_service_radius_km: Optional[float] = None
+    # GST — per-service override
+    gst_rate: Optional[float] = None
+    hsn_code: Optional[str] = None
+    # Package composition (only meaningful when category == 'Packages')
+    linked_service_ids: Optional[List[str]] = None
+    discount_percentage: Optional[float] = None
+    services_subtotal: Optional[float] = None
 
 class Service(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str
     service_name: str
     description: Optional[str] = None
-    category: str = "General"
+    category: str = "Services"
+    sub_category: Optional[str] = None
     gender_tag: str = "Unisex"
     default_duration: int
     base_price: float
@@ -263,6 +289,13 @@ class Service(BaseModel):
     home_min_items: Optional[int] = None
     home_travel_fee: Optional[float] = None
     home_service_radius_km: Optional[float] = None
+    # GST — per-service override
+    gst_rate: Optional[float] = None
+    hsn_code: Optional[str] = None
+    # Package composition (only meaningful when category == 'Packages')
+    linked_service_ids: Optional[List[str]] = None
+    discount_percentage: Optional[float] = None
+    services_subtotal: Optional[float] = None
 
 # Package Models
 class PackageService(BaseModel):
@@ -373,16 +406,16 @@ class BarberUpdate(BaseModel):
     documents: Optional[List[str]] = None
 
 class Barber(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     salon_id: str
     branch_id: Optional[str] = None
-    experience: int
-    category: str
+    experience: int = 0
+    category: Optional[str] = None
     specialization: Optional[str] = None
     gender_specialization: Optional[str] = None  # Men/Women/Unisex/Kids
-    mobile: str
+    mobile: Optional[str] = None
     profile_image: Optional[str] = None
     photo_url: Optional[str] = None  # Alias for profile_image
     queue_status: str = "available"  # available/busy/offline
@@ -402,7 +435,7 @@ class Barber(BaseModel):
     dob: Optional[str] = None  # Date of Birth
     last_working_date: Optional[str] = None  # If set + today > this date, barber is hidden from customers
     leave_dates: List[str] = []  # YYYY-MM-DD list; barber on leave on those days
-    compensation: Optional[float] = None
+    compensation: Optional[Any] = None  # number (legacy) OR dict {base_salary, commission_pct, incentive_pct, pay_cycle}
     documents: List[str] = []  # URLs to uploaded documents (legacy)
     staff_documents: List[Dict[str, Any]] = []  # Structured docs: {id, doc_type, label, file_data, mime_type, file_name, size_kb, uploaded_at}
     # Customer-view-only flag: True when this barber is on leave for the requested date.
@@ -455,6 +488,11 @@ class User(BaseModel):
     address: Optional[str] = None
     city: Optional[str] = None
     pincode: Optional[str] = None
+    # Marketing / customer master fields (M1)
+    wedding_anniversary: Optional[str] = None  # YYYY-MM-DD
+    spouse_name: Optional[str] = None
+    spouse_date_of_birth: Optional[str] = None  # YYYY-MM-DD
+    important_dates: Optional[List[Dict[str, Any]]] = None  # [{label, date}, ...]
     is_otp_verified: Optional[bool] = False  # OTP verification status
     otp_verified_at: Optional[str] = None  # When OTP was verified
     # Whether the user has set a password for password-based login. We never
@@ -512,6 +550,11 @@ class UserProfileUpdate(BaseModel):
     address: Optional[str] = None
     city: Optional[str] = None
     pincode: Optional[str] = None
+    # Marketing / customer master fields (M1)
+    wedding_anniversary: Optional[str] = None
+    spouse_name: Optional[str] = None
+    spouse_date_of_birth: Optional[str] = None
+    important_dates: Optional[List[Dict[str, Any]]] = None
 
 # Token/Booking Models
 class BookingCreate(BaseModel):
@@ -532,6 +575,9 @@ class BookingCreate(BaseModel):
     is_guest: bool = False  # True if booking as guest (no auth)
     payment_mode: Optional[str] = None  # cash/upi/wallet/card
     customer_gender: Optional[str] = None
+    coupon_code: Optional[str] = None
+    points_redeem: Optional[int] = 0
+    user_id_ref: Optional[str] = None
 
 class TokenModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -627,15 +673,21 @@ class BarberRatingSummary(BaseModel):
 # ============ SALON USER MODELS (Multi-User Access) ============
 
 class SalonUserPermissions(BaseModel):
+    # ---- LEGACY flat keys — kept for backward compatibility ----
     can_edit_salon: bool = False
     can_access_analytics: bool = False
     can_access_financials: bool = False
     can_delete_salon: bool = False
-    # New section-visibility permissions
     can_access_services: bool = False   # See Services & Offerings section
     can_access_gallery: bool = False    # See Gallery section
     can_access_staff: bool = False      # See Staff Management section (own profile by default)
     can_view_all_staff: bool = False    # When can_access_staff, see ALL staff (not just own)
+    can_access_marketing: bool = False  # See Marketing section (campaigns/coupons/rewards)
+    # ---- NEW: Granular per-module action-level permissions ----
+    # Structure: { "staff": {"view": true, "edit": false, ...}, "financials": {...}, ... }
+    # If empty, we fall back to the legacy flat keys above (so old salon_users
+    # keep working unchanged). See has_module_permission() for canonical mapping.
+    modules: Dict[str, Dict[str, bool]] = {}
 
 class SalonUserCreate(BaseModel):
     salon_id: str
@@ -645,6 +697,7 @@ class SalonUserCreate(BaseModel):
     password: str
     role: str = "staff"  # "admin" | "staff" | "branch_manager"
     staff_id: Optional[str] = None  # Link to staff member in barbers collection
+    role_id: Optional[str] = None  # Link to salon_roles template
     assigned_branch_ids: Optional[List[str]] = None  # For branch_manager
     permissions: Optional[SalonUserPermissions] = None
 
@@ -655,6 +708,7 @@ class SalonUserUpdate(BaseModel):
     password: Optional[str] = None
     role: Optional[str] = None
     staff_id: Optional[str] = None
+    role_id: Optional[str] = None
     assigned_branch_ids: Optional[List[str]] = None
     permissions: Optional[SalonUserPermissions] = None
     status: Optional[str] = None  # active/inactive
@@ -669,6 +723,7 @@ class SalonUser(BaseModel):
     password_hash: str
     role: str  # "admin" | "staff" | "branch_manager"
     staff_id: Optional[str] = None  # Link to staff member
+    role_id: Optional[str] = None  # Link to salon_roles template
     assigned_branch_ids: List[str] = []  # Branches this user can access (branch_manager)
     permissions: SalonUserPermissions
     status: str = "active"  # active/inactive
@@ -687,6 +742,32 @@ class SalonUserToken(BaseModel):
     permissions: SalonUserPermissions
     assigned_branch_ids: List[str] = []
     staff_id: Optional[str] = None  # Linked barber id (for self check-in)
+
+# ============ ROLE MODELS (Staff Access Consolidation) ============
+
+class SalonRoleCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    base_role: str = "staff"  # "admin" | "branch_manager" | "staff"
+    modules: Dict[str, Dict[str, bool]] = {}
+
+class SalonRoleUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    base_role: Optional[str] = None
+    modules: Optional[Dict[str, Dict[str, bool]]] = None
+
+class SalonRole(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    salon_id: str
+    name: str
+    description: Optional[str] = None
+    base_role: str = "staff"
+    is_system: bool = False
+    modules: Dict[str, Dict[str, bool]] = {}
+    created_at: str
+    updated_at: Optional[str] = None
 
 # ============ BRANCH MODELS (Multi-Branch / Multi-Location) ============
 
@@ -919,6 +1000,328 @@ def check_permission(user_payload: dict, permission: str) -> bool:
     
     permissions = user_payload.get("permissions", {})
     return permissions.get(permission, False)
+
+
+# ---------------------------------------------------------------------------
+# Granular module-level permissions (view / create / edit / delete / …)
+#
+# The salon-user's `permissions.modules` dict is the authoritative source.
+# Example shape:
+#   {
+#     "staff":          {"view": True, "view_all": True, "edit": False, "delete": False,
+#                        "attendance": True, "salary_view": True, "salary_pay": False,
+#                        "documents": False, "access_control": False},
+#     "financials":     {"view_dashboard": True, "view_transactions": True,
+#                        "create_transaction": False, "edit_transaction": False,
+#                        "delete_transaction": False},
+#     "analytics":      {"view": True},
+#     "services":       {"view": True, "create": False, "edit": False, "delete": False,
+#                        "toggle": False, "upload_csv": False, "manage_categories": False,
+#                        "manage_packages": False, "manage_memberships": False},
+#     "gallery":        {"view": True, "upload": False, "delete": False},
+#     "marketing":      {"view": True, "create_campaign": False, "edit_campaign": False,
+#                        "delete_campaign": False, "manage_coupons": False,
+#                        "manage_loyalty": False},
+#     "salon_settings": {"view": True, "edit_profile": False, "edit_hours": False,
+#                        "edit_notifications": False, "edit_branches": False,
+#                        "manage_users": False, "manage_subscription": False},
+#     "delete_salon":   {"allowed": False},
+#   }
+#
+# has_module_permission() falls back to the legacy flat "can_access_*" keys
+# whenever the modules dict is empty for that action, so pre-existing
+# salon_users continue to work without any data migration.
+# ---------------------------------------------------------------------------
+
+# Map (module, action) -> legacy flat key that grants the same capability.
+_MODULE_LEGACY_MAP: Dict[str, Dict[str, str]] = {
+    "staff": {
+        "view": "can_access_staff",
+        "view_all": "can_view_all_staff",
+        "create": "can_access_staff",
+        "edit": "can_access_staff",
+        "delete": "can_access_staff",
+        "attendance": "can_access_staff",
+        "salary_view": "can_access_staff",
+        "salary_pay": "can_access_staff",
+        "documents": "can_access_staff",
+        "access_control": "can_access_staff",
+    },
+    "financials": {
+        "view_dashboard": "can_access_financials",
+        "view_transactions": "can_access_financials",
+        "create_transaction": "can_access_financials",
+        "edit_transaction": "can_access_financials",
+        "delete_transaction": "can_access_financials",
+    },
+    "analytics": {
+        "view": "can_access_analytics",
+    },
+    "reports": {
+        # Reports = merged Financials + Analytics. Grants view via either legacy flag.
+        "view": "can_access_analytics",
+        "view_dashboard": "can_access_financials",
+        "view_transactions": "can_access_financials",
+        "create_transaction": "can_access_financials",
+        "edit_transaction": "can_access_financials",
+        "delete_transaction": "can_access_financials",
+        "edit_targets": "can_access_financials",
+        "edit_prefs": "can_access_analytics",
+    },
+    "services": {
+        "view": "can_access_services",
+        "create": "can_access_services",
+        "edit": "can_access_services",
+        "delete": "can_access_services",
+        "toggle": "can_access_services",
+        "upload_csv": "can_access_services",
+        "manage_categories": "can_access_services",
+        "manage_packages": "can_access_services",
+        "manage_memberships": "can_access_services",
+    },
+    "gallery": {
+        "view": "can_access_gallery",
+        "upload": "can_access_gallery",
+        "delete": "can_access_gallery",
+    },
+    "marketing": {
+        "view": "can_access_marketing",
+        "create_campaign": "can_access_marketing",
+        "edit_campaign": "can_access_marketing",
+        "delete_campaign": "can_access_marketing",
+        "manage_coupons": "can_access_marketing",
+        "manage_loyalty": "can_access_marketing",
+    },
+    "salon_settings": {
+        "view": "can_edit_salon",
+        "edit_profile": "can_edit_salon",
+        "edit_hours": "can_edit_salon",
+        "edit_notifications": "can_edit_salon",
+        "edit_branches": "can_edit_salon",
+        "manage_users": "can_edit_salon",
+        "manage_subscription": "can_edit_salon",
+    },
+    "delete_salon": {
+        "allowed": "can_delete_salon",
+    },
+}
+
+
+def has_module_permission(user_payload: dict, module: str, action: str) -> bool:
+    """
+    Check whether the current salon user has permission for a given
+    module action (e.g. `has_module_permission(u, "staff", "attendance")`).
+
+    Admins always pass. Branch managers get everything within their assigned
+    branches (branch scoping is enforced separately by enforce_branch_for_manager).
+    For staff, the granular `permissions.modules[module][action]` flag is
+    consulted first; if unset, we fall back to the legacy flat `can_access_*`
+    key so existing users don't lose access.
+    """
+    role = user_payload.get("role")
+    if role in ("salon_admin", "admin", "salon"):
+        return True
+    if role == "salon_branch_manager":
+        # Branch managers get admin-equivalent access inside their assigned branches.
+        return True
+
+    perms = user_payload.get("permissions") or {}
+    modules = perms.get("modules") or {}
+    module_perms = modules.get(module) or {}
+    if module_perms.get(action):
+        return True
+
+    # Legacy fallback — grants if the old flat "can_access_*" flag is true.
+    legacy_key = _MODULE_LEGACY_MAP.get(module, {}).get(action)
+    if legacy_key and perms.get(legacy_key):
+        return True
+
+    # Reports module = union of legacy Financials + Analytics access.
+    if module == "reports":
+        if perms.get("can_access_financials") or perms.get("can_access_analytics"):
+            return True
+    return False
+
+
+def require_module_permission(module: str, action: str = "view"):
+    """
+    FastAPI dependency factory. Returns a dependency that verifies the JWT
+    AND enforces the given module+action permission. 403 on failure.
+    """
+    async def _dep(current_user=Depends(get_current_salon_user)):
+        if not has_module_permission(current_user, module, action):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Permission denied: {module}.{action}"
+            )
+        return current_user
+    return _dep
+
+
+# ---------------------------------------------------------------------------
+# ROLE TEMPLATES & PERMISSION RESOLUTION (Staff Access Consolidation)
+#
+# `salon_roles` holds reusable role templates. `salon_users.role_id` points at
+# one. Effective permissions = role.modules deep-merged with the user's own
+# `permissions.modules` overrides (user value wins when explicitly present).
+# The JWT payload shape is unchanged — we still stuff resolved flat legacy keys
+# + `modules` into it, so has_module_permission() / _MODULE_LEGACY_MAP need no
+# changes.
+# ---------------------------------------------------------------------------
+
+# Python mirror of frontend/src/components/staff/ModulePermissionsConfig.js.
+# Keep in sync.
+MODULE_SCHEMA: Dict[str, List[str]] = {
+    "staff": [
+        "view", "view_all", "create", "edit", "delete", "attendance",
+        "salary_view", "salary_pay", "documents", "access_control",
+    ],
+    "financials": [
+        "view_dashboard", "view_transactions", "create_transaction",
+        "edit_transaction", "delete_transaction",
+    ],
+    "analytics": ["view"],
+    "services": [
+        "view", "create", "edit", "delete", "toggle", "upload_csv",
+        "manage_categories", "manage_packages", "manage_memberships",
+    ],
+    "gallery": ["view", "upload", "delete"],
+    "marketing": [
+        "view", "create_campaign", "edit_campaign", "delete_campaign",
+        "manage_coupons", "manage_loyalty",
+    ],
+    "salon_settings": [
+        "view", "edit_profile", "edit_hours", "edit_notifications",
+        "edit_branches", "manage_users", "manage_subscription",
+    ],
+    "delete_salon": ["allowed"],
+}
+
+
+def _build_modules(value: bool) -> Dict[str, Dict[str, bool]]:
+    return {m: {a: value for a in actions} for m, actions in MODULE_SCHEMA.items()}
+
+
+def _system_role_templates() -> List[Dict[str, Any]]:
+    """The three seeded system roles, mirroring today's hardcoded behaviour."""
+    return [
+        {
+            "name": "Owner / Admin",
+            "description": "Full access to every module and action.",
+            "base_role": "admin",
+            "modules": _build_modules(True),
+        },
+        {
+            "name": "Branch Manager",
+            "description": "Full access scoped to assigned branches.",
+            "base_role": "branch_manager",
+            "modules": _build_modules(True),
+        },
+        {
+            "name": "Staff",
+            "description": "Default staff — queue & walk-ins only.",
+            "base_role": "staff",
+            "modules": _build_modules(False),
+        },
+    ]
+
+
+async def ensure_system_roles(salon_id: str) -> List[dict]:
+    """Lazy, idempotent seed of the three system roles for a salon.
+    Returns the current list of that salon's roles."""
+    now = datetime.now(timezone.utc).isoformat()
+    for tpl in _system_role_templates():
+        existing = await db.salon_roles.find_one(
+            {"salon_id": salon_id, "is_system": True, "base_role": tpl["base_role"]},
+            {"_id": 0, "id": 1},
+        )
+        if not existing:
+            await db.salon_roles.insert_one({
+                "id": str(uuid.uuid4()),
+                "salon_id": salon_id,
+                "name": tpl["name"],
+                "description": tpl["description"],
+                "base_role": tpl["base_role"],
+                "is_system": True,
+                "modules": tpl["modules"],
+                "created_at": now,
+                "updated_at": now,
+            })
+    return await db.salon_roles.find({"salon_id": salon_id}, {"_id": 0}).to_list(200)
+
+
+async def get_system_role(salon_id: str, base_role: str) -> Optional[dict]:
+    await ensure_system_roles(salon_id)
+    return await db.salon_roles.find_one(
+        {"salon_id": salon_id, "is_system": True, "base_role": base_role}, {"_id": 0}
+    )
+
+
+def _deep_merge_modules(base: dict, override: dict) -> Dict[str, Dict[str, bool]]:
+    """Merge two modules dicts. `override` value wins when the key is present."""
+    merged: Dict[str, Dict[str, bool]] = {}
+    keys = set(base or {}) | set(override or {})
+    for m in keys:
+        b = (base or {}).get(m) or {}
+        o = (override or {}).get(m) or {}
+        merged[m] = {**b}
+        for a, v in o.items():
+            merged[m][a] = v
+    return merged
+
+
+def _derive_legacy_from_modules(modules: dict) -> Dict[str, bool]:
+    m = modules or {}
+
+    def any_on(mod_key):
+        return any((m.get(mod_key) or {}).values())
+
+    return {
+        "can_edit_salon": any_on("salon_settings"),
+        "can_access_analytics": any_on("analytics"),
+        "can_access_financials": any_on("financials"),
+        "can_delete_salon": bool((m.get("delete_salon") or {}).get("allowed")),
+        "can_access_services": any_on("services"),
+        "can_access_gallery": any_on("gallery"),
+        "can_access_staff": any_on("staff"),
+        "can_view_all_staff": bool((m.get("staff") or {}).get("view_all")),
+        "can_access_marketing": any_on("marketing"),
+    }
+
+
+async def resolve_effective_permissions(salon_user: dict) -> Dict[str, Any]:
+    """Resolve a salon_user's effective permissions.
+
+    role.modules (baseline) ⊕ user.permissions.modules (overrides, user wins).
+    Existing flat legacy keys are preserved and OR-merged with keys derived from
+    the effective modules, so legacy-only users never lose access.
+    """
+    user_perms = dict(salon_user.get("permissions") or {})
+    user_modules = user_perms.get("modules") or {}
+
+    role_modules = {}
+    role_id = salon_user.get("role_id")
+    if role_id:
+        role = await db.salon_roles.find_one(
+            {"id": role_id, "salon_id": salon_user.get("salon_id")}, {"_id": 0}
+        )
+        if role:
+            role_modules = role.get("modules") or {}
+
+    effective_modules = _deep_merge_modules(role_modules, user_modules)
+    derived_legacy = _derive_legacy_from_modules(effective_modules)
+
+    resolved: Dict[str, Any] = {}
+    for k, v in derived_legacy.items():
+        resolved[k] = bool(user_perms.get(k)) or bool(v)
+    # Preserve any other legacy flags already present on the user.
+    for k, v in user_perms.items():
+        if k == "modules":
+            continue
+        if k not in resolved:
+            resolved[k] = v
+    resolved["modules"] = effective_modules
+    return resolved
 
 
 def is_branch_manager(user_payload: dict) -> bool:
@@ -1862,7 +2265,46 @@ async def check_and_apply_loyalty_reward(salon_id: str, customer_phone: str, boo
     if existing_reward:
         # Already rewarded for this tier in current period
         return None
-    
+
+    # Where does the earned reward land? "wallet" (default) or "points".
+    destination = (loyalty_program.get("credit_destination") or "wallet").lower()
+    if destination == "points":
+        # Credit loyalty points (1 point == ₹1 of reward) then record the reward.
+        pts = int(round(topup_amount))
+        new_points = await _credit_loyalty_points(
+            salon_id, customer_phone, pts,
+            f"Loyalty reward ({qualifying_tier['name']} tier)"
+        )
+        await db.loyalty_rewards.insert_one({
+            "id": str(uuid.uuid4()),
+            "salon_id": salon_id,
+            "customer_phone": customer_phone,
+            "tier_name": qualifying_tier["name"],
+            "topup_amount": topup_amount,
+            "points_awarded": pts,
+            "destination": "points",
+            "total_spend": total_spend_for_tier,
+            "period_months": qualifying_tier["period_months"],
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+        await create_in_app_notification(
+            user_type="customer",
+            user_id=customer_phone,
+            title="🎉 Loyalty Points Earned!",
+            message=f"You've earned {pts} loyalty points ({qualifying_tier['name']} tier). Convert them to wallet credit anytime.",
+            notification_type="loyalty_reward",
+            setting_key="membership_added",
+            salon_id=salon_id,
+            related_id="",
+        )
+        return {
+            "rewarded": True,
+            "tier": qualifying_tier["name"],
+            "destination": "points",
+            "points_awarded": pts,
+            "points_balance": new_points,
+        }
+
     # Get or create customer wallet (independent of membership)
     customer_wallet = await db.customer_wallets.find_one({
         "salon_id": salon_id,
@@ -2466,37 +2908,80 @@ async def generate_and_send_invoice(token_id: str):
         if not salon:
             raise Exception("Salon not found")
         
+        # ---- Resolve invoice settings snapshot (nothing hard-coded) ----
+        inv_settings = resolve_invoice_settings(salon)
+        is_tax_invoice = bool(inv_settings.get('is_gst_registered'))
+        gst_rate_full = float(inv_settings.get('gst_rate') or 0.0)
+        prices_incl_tax = bool(inv_settings.get('prices_include_tax'))
+
         # Get services details
         services_data = []
-        total_amount = 0
-        
+        render_items = []
+        subtotal = 0.0
         for service_id in token.get('selected_services', []):
             service = await db.services.find_one({"id": service_id}, {"_id": 0})
             if service:
-                # For simplicity, no discount here - can be added later
-                price = service.get('base_price', 0)
+                price = float(service.get('base_price', 0) or 0)
+                duration = int(service.get('default_duration') or 0)
+                sac = service.get('hsn_code') or inv_settings.get('sac_code')
                 services_data.append({
                     "name": service.get('service_name'),
                     "price": price,
                     "discount": 0,
-                    "amount": price
+                    "amount": price,
                 })
-                total_amount += price
-        
-        # Calculate tax if GST registered
-        is_tax_invoice = salon.get('is_gst_registered', False)
-        tax_rate = salon.get('tax_rate', 9.0)
-        
-        if is_tax_invoice:
-            subtotal = total_amount
-            cgst = subtotal * (tax_rate / 100)
-            sgst = subtotal * (tax_rate / 100)
-            total = subtotal + cgst + sgst
+                render_items.append({
+                    "name": service.get('service_name'),
+                    "desc": (f"{duration} min" if duration else ""),
+                    "sac": sac,
+                    "qty": 1,
+                    "rate": price,
+                    "amount": price,
+                })
+                subtotal += price
+
+        # ---- Discounts / tip from the token record ----
+        discount_amount = float(token.get('order_discount_amount') or 0)
+        if not discount_amount:
+            discount_amount = float(token.get('membership_discount') or 0) + float(token.get('coupon_discount') or 0)
+        tip_amount = float(token.get('tip_amount') or 0)
+        coupon_code = token.get('coupon_code')
+        if token.get('coupon_code'):
+            discount_label = f"Discount \u00b7 {token.get('coupon_code')}"
+        elif token.get('membership_discount'):
+            discount_label = "Discount \u00b7 Member"
         else:
-            subtotal = total_amount
-            cgst = 0
-            sgst = 0
-            total = subtotal
+            discount_label = "Discount"
+
+        net = max(0.0, subtotal - discount_amount)
+        # GST maths
+        cgst = sgst = 0.0
+        cgst_rate = sgst_rate = 0.0
+        if is_tax_invoice and gst_rate_full > 0:
+            cgst_rate = sgst_rate = round(gst_rate_full / 2.0, 2)
+            if prices_incl_tax:
+                taxable_value = round(net / (1 + gst_rate_full / 100.0), 2)
+                gst_total = round(net - taxable_value, 2)
+                pre_round = net + tip_amount
+            else:
+                taxable_value = round(net, 2)
+                gst_total = round(taxable_value * gst_rate_full / 100.0, 2)
+                pre_round = taxable_value + gst_total + tip_amount
+            cgst = round(gst_total / 2.0, 2)
+            sgst = round(gst_total - cgst, 2)
+        else:
+            taxable_value = round(net, 2)
+            pre_round = net + tip_amount
+
+        # Round off
+        round_off = 0.0
+        if inv_settings.get('round_off_invoice'):
+            grand_total = round(pre_round)
+            round_off = round(grand_total - pre_round, 2)
+        else:
+            grand_total = round(pre_round, 2)
+        total = grand_total
+        tax_rate = gst_rate_full / 2.0
         
         # Generate invoice number using salon's prefix and counter
         invoice_prefix = salon.get('invoice_prefix', 'INV')
@@ -2520,12 +3005,125 @@ async def generate_and_send_invoice(token_id: str):
             {"id": salon['id']},
             {"$inc": {"current_invoice_number": 1}}
         )        
-        # Prepare invoice data
+        # Prepare invoice number prefix from settings (reuses existing keys)
+        invoice_prefix = inv_settings.get('invoice_prefix') or salon.get('invoice_prefix', 'INV')
+
+        # Create invoice ID + link first (QR encodes the link)
+        invoice_id = str(uuid.uuid4())
+        base_url = os.getenv('REACT_APP_BACKEND_URL', 'http://localhost:8001')
+        invoice_link = f"{base_url}/api/invoices/{invoice_id}/view"
+
+        # ---- Loyalty points (earn per salon config) ----
+        cust_phone = token.get('phone')
+        pts_cfg = resolve_loyalty_points_config(salon)
+        loyalty_points = None
+        if pts_cfg.get('points_enabled'):
+            earned = int(round((grand_total / 100.0) * float(pts_cfg.get('points_earn_per_100') or 0)))
+            if earned > 0 and cust_phone:
+                try:
+                    await _credit_loyalty_points(salon['id'], cust_phone, earned, f"Earned on invoice {invoice_no}")
+                except Exception:
+                    pass
+            loyalty_points = earned
+        elif inv_settings.get('show_points'):
+            loyalty_points = int(round(grand_total / 100.0))
+        wallet_balance = None
+        member_tier = None
+        if cust_phone:
+            try:
+                mem = await db.customer_memberships.find_one(
+                    {"salon_id": salon['id'], "customer_phone": cust_phone, "is_active": True}, {"_id": 0})
+                if mem:
+                    wallet_balance = float(mem.get('wallet_balance') or 0)
+                    member_tier = (f"Member \u00b7 {mem.get('tier')}" if mem.get('tier') else "Member")
+            except Exception:
+                pass
+
+        # ---- Offers flagged "Show on invoice" in Marketing ----
+        offers_snapshot = []
+        if inv_settings.get('show_offers'):
+            try:
+                now_iso_ = datetime.now(timezone.utc).isoformat()
+                q_off = {
+                    "salon_id": salon['id'],
+                    "show_on_invoice": True,
+                    "is_active": True,
+                    "$and": [
+                        {"$or": [{"valid_from": None}, {"valid_from": {"$exists": False}}, {"valid_from": {"$lte": now_iso_}}]},
+                        {"$or": [{"valid_to": None}, {"valid_to": {"$exists": False}}, {"valid_to": {"$gte": now_iso_}}]},
+                    ],
+                }
+                cap = int(inv_settings.get('max_offers') or 4)
+                async for c in db.salon_coupons.find(q_off).sort("created_at", -1).limit(cap):
+                    offers_snapshot.append({
+                        "title": c.get('title') or c.get('code'),
+                        "description": c.get('description') or '',
+                        "code": c.get('code'),
+                    })
+            except Exception:
+                pass
+
+        # ---- QR ----
+        qr_text = ""
+        if inv_settings.get('show_qr'):
+            if inv_settings.get('qr_type') == 'upi' and salon.get('upi_id'):
+                qr_text = f"upi://pay?pa={salon.get('upi_id')}&am={grand_total:.2f}&tn={invoice_no}"
+            else:
+                qr_text = invoice_link
+        qr_url = make_qr_data_url(qr_text) if qr_text else ""
+
+        now_dt = datetime.now()
+        payment_mode = (token.get('payment_mode') or 'Cash')
+        payment_mode_disp = str(payment_mode).upper() if len(str(payment_mode)) <= 4 else str(payment_mode).title()
+
+        # ---- Normalized render payload (single source for the HTML) ----
+        render_inv = {
+            "invoice_no": invoice_no,
+            "date": now_dt.strftime('%d %b %Y'),
+            "time": now_dt.strftime('%I:%M %p').lstrip('0'),
+            "salon": {
+                "name": salon.get('salon_name', 'Salon'),
+                "sub": salon.get('description') or salon.get('tagline') or '',
+                "address": salon.get('address', ''),
+                "phone": salon.get('phone', ''),
+                "email": salon.get('email', ''),
+                "gstin": inv_settings.get('gstin'),
+                "logo_url": salon.get('logo_url'),
+                "place_of_supply": salon.get('city') or salon.get('state') or '',
+                "branch_name": salon.get('city') or 'Main Branch',
+            },
+            "customer": {
+                "name": token.get('customer_name', 'Customer'),
+                "phone": token.get('phone', ''),
+                "tier": member_tier,
+            },
+            "served_by": {"name": token.get('barber_name') or 'Salon', "role": ''},
+            "items": render_items,
+            "subtotal": round(subtotal, 2),
+            "discount_label": discount_label,
+            "discount_amount": round(discount_amount, 2),
+            "taxable_value": round(taxable_value, 2),
+            "cgst_rate": cgst_rate, "cgst": cgst,
+            "sgst_rate": sgst_rate, "sgst": sgst,
+            "igst_rate": 0, "igst": 0,
+            "tip": round(tip_amount, 2),
+            "round_off": round_off,
+            "grand_total": grand_total,
+            "payment_mode": payment_mode_disp,
+            "amount_in_words": number_to_words_inr(grand_total),
+            "loyalty_points": loyalty_points,
+            "wallet_balance": wallet_balance,
+            "offers": offers_snapshot,
+            "qr_url": qr_url,
+            "settings": {k: inv_settings.get(k) for k in INVOICE_SETTINGS_DEFAULTS},
+        }
+
+        # Legacy invoice_data (kept for the PDF template + analytics)
         invoice_data = {
             "salon": {
                 "salon_name": salon.get('salon_name', 'Salon'),
                 "address": salon.get('address', ''),
-                "gstin": salon.get('gstin'),
+                "gstin": inv_settings.get('gstin'),
                 "logo_url": salon.get('logo_url')
             },
             "customer": {
@@ -2533,30 +3131,28 @@ async def generate_and_send_invoice(token_id: str):
                 "phone": token.get('phone', '')
             },
             "invoice_no": invoice_no,
-            "date": datetime.now().strftime('%d/%m/%Y'),
+            "date": now_dt.strftime('%d/%m/%Y'),
             "services": services_data,
             "subtotal": subtotal,
             "cgst": cgst,
             "sgst": sgst,
             "tax_rate": tax_rate,
             "total": total,
-            "payment_method": "UPI",
-            "is_tax_invoice": is_tax_invoice
+            "payment_method": payment_mode_disp,
+            "is_tax_invoice": is_tax_invoice,
+            "render": render_inv,
+            "settings": render_inv["settings"],
         }
-        
-        # Generate PDF
-        pdf_data = generate_invoice_pdf(invoice_data)
-        
-        # Convert PDF to base64 for storage
-        import base64
-        pdf_base64 = base64.b64encode(pdf_data).decode('utf-8')
-        
-        # Create invoice ID
-        invoice_id = str(uuid.uuid4())
-        
-        # Generate invoice link
-        invoice_link = f"{os.getenv('REACT_APP_BACKEND_URL', 'http://localhost:8001')}/api/invoices/{invoice_id}/view"
-        
+
+        # Generate PDF (best-effort — HTML is now the primary invoice view)
+        pdf_base64 = None
+        try:
+            pdf_data = generate_invoice_pdf(invoice_data)
+            import base64
+            pdf_base64 = base64.b64encode(pdf_data).decode('utf-8')
+        except Exception as _pdf_err:
+            logger.warning(f"PDF generation skipped: {_pdf_err}")
+
         # Send link via WhatsApp
         message = f"""
 📄 *Invoice Generated*
@@ -2581,7 +3177,7 @@ Thank you for visiting us! 💈
             'invoice_sent'
         )
         
-        # Store invoice record with base64 PDF
+        # Store invoice record
         invoice_record = {
             "id": invoice_id,
             "token_id": token_id,
@@ -2859,22 +3455,25 @@ async def initialize_data():
         salon = await db.salons.find_one({}, {"_id": 0})
         salon_id = salon["id"]
     
-    # Initialize services
+    # Initialize services (Jul 2026 — only starter "General" services)
     service_count = await db.services.count_documents({})
     if service_count == 0:
-        services = [
-            {"id": str(uuid.uuid4()), "service_name": "Haircut", "description": "Regular haircut", "default_duration": 30, "base_price": 150, "is_active": True},
-            {"id": str(uuid.uuid4()), "service_name": "Beard Trim", "description": "Beard trimming and shaping", "default_duration": 20, "base_price": 80, "is_active": True},
-            {"id": str(uuid.uuid4()), "service_name": "Hair Color", "description": "Full hair coloring", "default_duration": 60, "base_price": 500, "is_active": True},
-            {"id": str(uuid.uuid4()), "service_name": "Facial", "description": "Relaxing facial treatment", "default_duration": 45, "base_price": 400, "is_active": True},
-            {"id": str(uuid.uuid4()), "service_name": "Head Massage", "description": "Soothing head massage", "default_duration": 30, "base_price": 200, "is_active": True},
-            {"id": str(uuid.uuid4()), "service_name": "Hair Spa", "description": "Complete hair spa treatment", "default_duration": 60, "base_price": 600, "is_active": True},
-            {"id": str(uuid.uuid4()), "service_name": "Shave", "description": "Clean shave", "default_duration": 20, "base_price": 100, "is_active": True},
-            {"id": str(uuid.uuid4()), "service_name": "Pedicure", "description": "Foot care and pedicure", "default_duration": 45, "base_price": 350, "is_active": True},
-            {"id": str(uuid.uuid4()), "service_name": "Manicure", "description": "Hand care and manicure", "default_duration": 45, "base_price": 300, "is_active": True},
-            {"id": str(uuid.uuid4()), "service_name": "Waxing", "description": "Body waxing service", "default_duration": 40, "base_price": 400, "is_active": True}
-        ]
-        await db.services.insert_many(services)
+        from predefined_services import PREDEFINED_SERVICES as _STARTER_SERVICES
+        services = []
+        for sd in _STARTER_SERVICES:
+            services.append({
+                "id": str(uuid.uuid4()),
+                "service_name": sd["service_name"],
+                "description": sd.get("description") or "",
+                "category": sd.get("category") or "General",
+                "gender_tag": sd.get("gender_tag") or "Unisex",
+                "default_duration": sd.get("default_duration") or 30,
+                "base_price": sd.get("base_price") or 0,
+                "price_type": sd.get("price_type") or "fixed",
+                "is_active": True,
+            })
+        if services:
+            await db.services.insert_many(services)
         service_ids = [s["id"] for s in services]
     else:
         services = await db.services.find({}, {"_id": 0}).to_list(100)
@@ -2945,7 +3544,8 @@ async def initialize_data():
                 "can_access_services": True,
                 "can_access_gallery": True,
                 "can_access_staff": True,
-                "can_view_all_staff": True
+                "can_view_all_staff": True,
+                "can_access_marketing": True
             },
             "created_at": datetime.now(timezone.utc).isoformat()
         }
@@ -3445,6 +4045,11 @@ async def create_salon(salon: SalonCreate, current_salon=Depends(get_current_sal
     salon_dict["created_at"] = datetime.now(timezone.utc).isoformat()
     
     await db.salons.insert_one(salon_dict)
+    # Auto-create Main Branch so customer search can find the salon immediately.
+    try:
+        await ensure_main_branch_for_salon(salon_dict)
+    except Exception as e:
+        logger.warning(f"[create_salon] Main Branch auto-create failed for salon {salon_dict['id']}: {e}")
     return Salon(**salon_dict)
 
 @api_router.put("/salons/{salon_id}", response_model=Salon)
@@ -3456,6 +4061,11 @@ async def update_salon(salon_id: str, salon: SalonUpdate, current_user=Depends(g
     token_salon_id = current_user.get("salon_id") or current_user.get("sub")
     if token_salon_id != salon_id:
         raise HTTPException(status_code=403, detail="Not allowed for this salon")
+    # Enforce granular RBAC: even admin-tokens flow through this — legacy admin
+    # is fine, but staff-role admins with restricted salon_settings.edit_profile
+    # will be blocked here.
+    if not has_module_permission(current_user, "salon_settings", "edit_profile"):
+        raise HTTPException(status_code=403, detail="Permission denied: salon_settings.edit_profile")
 
     existing = await db.salons.find_one({"id": salon_id}, {"_id": 0})
     if not existing:
@@ -3957,7 +4567,7 @@ async def update_operational_hours(
                 # If salon_id is set on user, must match
                 if current_user.get("salon_id") == salon_id:
                     is_authorized = True
-        elif current_user.get("permissions", {}).get("can_edit_salon"):
+        elif has_module_permission(current_user, "salon_settings", "edit_hours"):
             if current_user.get("salon_id") == salon_id:
                 is_authorized = True
     
@@ -4249,23 +4859,44 @@ async def get_salon_menu(salon_id: str, branch: Optional[str] = None):
 
 @api_router.get("/salons/{salon_id}/services/all")
 async def get_all_services_with_salon_status(salon_id: str):
-    """Get all services with their enabled status for the salon"""
-    # Get all services
-    all_services = await db.services.find({"is_active": True}, {"_id": 0}).to_list(1000)
-    
-    # Get salon's service statuses
+    """Get services for the given salon.
+
+    A service is visible to a salon if either:
+      • the salon created it (services.salon_id == salon_id), OR
+      • a salon_services row exists linking it to the salon (legacy).
+    Predefined / master services that were never explicitly loaded by the
+    salon are NOT auto-shown here (that was the "pre-filled services"
+    problem for fresh onboards).
+    """
+    # Get salon's linked services from salon_services (legacy / imported / explicitly loaded)
     salon_services = await db.salon_services.find(
         {"salon_id": salon_id},
         {"_id": 0, "service_id": 1, "is_enabled": 1}
     ).to_list(1000)
-    
-    # Create a map of service_id to is_enabled
-    salon_service_map = {ss["service_id"]: ss["is_enabled"] for ss in salon_services}
-    
-    # Add is_enabled field to each service
+    linked_ids = [ss["service_id"] for ss in salon_services]
+    linked_enabled_map = {ss["service_id"]: ss.get("is_enabled", False) for ss in salon_services}
+
+    # Fetch services either owned by this salon OR linked via salon_services.
+    query = {
+        "is_active": True,
+        "$or": [
+            {"salon_id": salon_id},
+            {"id": {"$in": linked_ids}} if linked_ids else {"id": "__no_match__"},
+        ],
+    }
+    all_services = await db.services.find(query, {"_id": 0}).to_list(1000)
+
+    # Add is_enabled_for_salon:
+    #   - Own service (salon_id == salon_id) is considered enabled by default
+    #   - Linked service uses salon_services flag
     for service in all_services:
-        service["is_enabled_for_salon"] = salon_service_map.get(service["id"], False)
-    
+        if service.get("salon_id") == salon_id:
+            service["is_enabled_for_salon"] = True
+            service["is_owned"] = True
+        else:
+            service["is_enabled_for_salon"] = linked_enabled_map.get(service["id"], False)
+            service["is_owned"] = False
+
     return all_services
 
 @api_router.put("/salons/{salon_id}/services/{service_id}/toggle")
@@ -4281,6 +4912,9 @@ async def toggle_service_for_salon(
     payload = verify_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid authentication")
+    # RBAC: services.toggle
+    if not has_module_permission(payload, "services", "toggle"):
+        raise HTTPException(status_code=403, detail="Permission denied: services.toggle")
     
     # Upsert: ensure a single entry per (salon_id, service_id).
     # Clean up any pre-existing duplicates first.
@@ -4311,7 +4945,11 @@ async def create_service(service: ServiceCreate, current_salon=Depends(get_curre
     service_dict = service.model_dump()
     service_dict["id"] = str(uuid.uuid4())
     service_dict["is_active"] = True
-    
+    # Scope to the creating salon so it doesn't leak into other salons' lists.
+    salon_id = current_salon.get("salon_id") or current_salon.get("sub")
+    if salon_id:
+        service_dict["salon_id"] = salon_id
+
     await db.services.insert_one(service_dict)
     return Service(**service_dict)
 
@@ -4339,6 +4977,61 @@ async def delete_service(service_id: str, current_salon=Depends(get_current_salo
     # Also remove from all barber_services
     await db.barber_services.delete_many({"service_id": service_id})
     return {"message": "Service deleted"}
+
+
+@api_router.post("/salons/{salon_id}/services/bulk-delete")
+async def bulk_delete_salon_services(
+    salon_id: str,
+    body: dict,
+    current_user=Depends(get_current_salon_user),
+):
+    """Bulk delete services for a salon.
+
+    Behaviour (Jul 2026 requirement — salon bulk-delete):
+    * Salon-owned services (`salon_id == salon_id`) are HARD-deleted.
+    * Global services (no salon_id) are disabled for THIS salon only (via
+      `salon_services.is_enabled=False`) — they remain in the global catalog.
+    * All barber_services links for these services within this salon are cleared.
+
+    Body: {"service_ids": ["...", "..."]}
+    Returns: {ok, hard_deleted, disabled_for_salon, barber_links_removed}.
+    """
+    if not has_module_permission(current_user, "services", "delete"):
+        raise HTTPException(status_code=403, detail="Permission denied: services.delete")
+    ids = list((body or {}).get("service_ids") or [])
+    if not ids:
+        raise HTTPException(status_code=400, detail="service_ids is required")
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    services_docs = await db.services.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "salon_id": 1}).to_list(length=None)
+    salon_owned = [s["id"] for s in services_docs if s.get("salon_id") == salon_id]
+    global_ids = [s["id"] for s in services_docs if not s.get("salon_id")]
+
+    hard_res = None
+    if salon_owned:
+        hard_res = await db.services.delete_many({"id": {"$in": salon_owned}, "salon_id": salon_id})
+        await db.salon_services.delete_many({"salon_id": salon_id, "service_id": {"$in": salon_owned}})
+
+    disabled_res = None
+    if global_ids:
+        disabled_res = await db.salon_services.update_many(
+            {"salon_id": salon_id, "service_id": {"$in": global_ids}},
+            {"$set": {"is_enabled": False, "updated_at": now_iso}},
+        )
+
+    # Clean up barber_services links (only for this salon's barbers)
+    salon_barber_ids = await db.barbers.distinct("id", {"salon_id": salon_id})
+    bs_res = await db.barber_services.delete_many({
+        "barber_id": {"$in": salon_barber_ids},
+        "service_id": {"$in": ids},
+    })
+
+    return {
+        "ok": True,
+        "hard_deleted": (hard_res.deleted_count if hard_res else 0),
+        "disabled_for_salon": (disabled_res.modified_count if disabled_res else 0),
+        "barber_links_removed": bs_res.deleted_count,
+    }
 
 @api_router.get("/services/categories")
 async def get_service_categories():
@@ -4383,6 +5076,87 @@ async def get_service_categories():
         })
     
     return {"categories": categories}
+
+
+# ---- Sub-categories master (per salon, free-form) ----
+@api_router.get("/salons/{salon_id}/services/subcategories")
+async def list_service_subcategories(salon_id: str):
+    """Return list of sub-categories used by this salon under Services and Packages,
+    plus any explicitly-added sub-categories saved in service_subcategories."""
+    # collected from actual services
+    pipeline = [
+        {"$match": {"salon_id": salon_id, "is_active": True}},
+        {"$group": {"_id": {"category": "$category", "sub_category": "$sub_category"}}}
+    ]
+    seen: Dict[str, set] = {"Services": set(), "Packages": set()}
+    try:
+        async for row in db.services.aggregate(pipeline):
+            k = row["_id"]
+            cat = k.get("category") or "Services"
+            sub = k.get("sub_category")
+            if cat not in ("Services", "Packages"):
+                cat = "Services"
+            if sub:
+                seen[cat].add(sub)
+    except Exception:
+        pass
+    # extras saved manually
+    try:
+        docs = await db.service_subcategories.find(
+            {"salon_id": salon_id}, {"_id": 0}
+        ).to_list(500)
+        for d in docs:
+            cat = d.get("category") or "Services"
+            if cat not in ("Services", "Packages"):
+                cat = "Services"
+            if d.get("name"):
+                seen[cat].add(d["name"])
+    except Exception:
+        pass
+    return {
+        "Services": sorted(list(seen["Services"])),
+        "Packages": sorted(list(seen["Packages"])),
+    }
+
+
+@api_router.post("/salons/{salon_id}/services/subcategories")
+async def add_service_subcategory(
+    salon_id: str,
+    payload: dict,
+    current_user=Depends(get_current_salon_user),
+):
+    """Add a free-form sub-category to service_subcategories (idempotent)."""
+    if not has_module_permission(current_user, "services", "manage_categories"):
+        raise HTTPException(403, "Permission denied")
+    cat = payload.get("category") or "Services"
+    name = (payload.get("name") or "").strip()
+    if cat not in ("Services", "Packages"):
+        cat = "Services"
+    if not name:
+        raise HTTPException(400, "name required")
+    await db.service_subcategories.update_one(
+        {"salon_id": salon_id, "category": cat, "name": name},
+        {"$set": {"salon_id": salon_id, "category": cat, "name": name,
+                  "updated_at": datetime.utcnow().isoformat()}},
+        upsert=True,
+    )
+    return {"success": True, "category": cat, "name": name}
+
+
+@api_router.delete("/salons/{salon_id}/services/subcategories")
+async def delete_service_subcategory(
+    salon_id: str,
+    category: str,
+    name: str,
+    current_user=Depends(get_current_salon_user),
+):
+    if not has_module_permission(current_user, "services", "manage_categories"):
+        raise HTTPException(403, "Permission denied")
+    await db.service_subcategories.delete_one(
+        {"salon_id": salon_id, "category": category, "name": name}
+    )
+    return {"success": True}
+
 
 @api_router.get("/services/by-category")
 async def get_services_by_category(gender: Optional[str] = None):
@@ -4628,7 +5402,11 @@ def normalize_barber_data(barber: Dict[str, Any]) -> Dict[str, Any]:
     """
     Normalize barber data to ensure all fields match Pydantic model expectations.
     Converts None values to appropriate defaults for list fields.
+    Removes MongoDB _id field to prevent serialization errors.
     """
+    # Remove MongoDB _id field if present
+    barber.pop("_id", None)
+    
     if barber.get("leave_dates") is None:
         barber["leave_dates"] = []
     if barber.get("gallery") is None:
@@ -4725,9 +5503,9 @@ async def create_barber(salon_id: str, barber: BarberCreate, current_user=Depend
 @api_router.put("/barbers/{barber_id}", response_model=Barber)
 async def update_barber(barber_id: str, barber_update: BarberUpdate, current_user=Depends(get_current_salon_user)):
     """Update barber details. Accepts both legacy salon admin token and multi-user salon-admin tokens."""
-    # Only admins/salon admins can edit barber records
-    if current_user.get("role") not in ["admin", "salon_admin", "salon"]:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    # RBAC: staff.edit
+    if not has_module_permission(current_user, "staff", "edit"):
+        raise HTTPException(status_code=403, detail="Permission denied: staff.edit")
     existing = await db.barbers.find_one({"id": barber_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Barber not found")
@@ -4756,8 +5534,8 @@ async def delete_barber(
     PRESERVES financial history: financial_transactions, salary_records,
     incentive_payouts — for audit/accounting purposes.
     """
-    if current_user.get("role") not in ("salon", "salon_admin"):
-        raise HTTPException(status_code=403, detail="Admin access required to delete staff")
+    if not has_module_permission(current_user, "staff", "delete"):
+        raise HTTPException(status_code=403, detail="Permission denied: staff.delete")
 
     existing = await db.barbers.find_one({"id": barber_id}, {"_id": 0})
     if not existing:
@@ -4789,8 +5567,16 @@ async def delete_barber(
     # Free up tokens that referenced this barber so customer queue stays clean
     await db.tokens.delete_many({"barber_id": barber_id, "status": {"$in": ["waiting", "in_progress"]}})
 
-    # Remove staff login access (salon_user records linked to this barber)
-    login_removed = await db.salon_users.delete_many({"barber_id": barber_id})
+    # Deactivate staff login access (salon_users are linked via staff_id, not
+    # barber_id). Keep the account for audit — an orphaned-but-inactive account
+    # is traceable; a silently vanished one is not.
+    login_res = await db.salon_users.update_many(
+        {"staff_id": barber_id, "salon_id": salon_id},
+        {"$set": {"status": "inactive", "staff_id": None, "deactivated_reason": "staff_deleted"}},
+    )
+    login_removed = login_res.modified_count
+    if login_removed:
+        logger.info(f"[STAFF DELETE] Deactivated {login_removed} login account(s) for deleted barber {barber_id}")
 
     # Anonymize barber_id references in preserved financial collections so future
     # joins don't blow up (we keep the row but null out the link).
@@ -4811,7 +5597,7 @@ async def delete_barber(
         "message": "Staff deleted permanently",
         "barber_id": barber_id,
         "barber_name": existing.get("name"),
-        "login_access_removed": login_removed.deleted_count > 0,
+        "login_access_removed": login_removed > 0,
         "preserved_records": preserved,
     }
 
@@ -5161,6 +5947,14 @@ async def register_salon(salon: SalonCreate):
     
     await db.salons.insert_one(salon_dict)
     
+    # Bug #3 fix: A new salon MUST have a Main Branch immediately so the
+    # customer-side salon search (`/api/public/salon-locations`) — which
+    # returns one row per active branch — can find it right after signup.
+    try:
+        await ensure_main_branch_for_salon(salon_dict)
+    except Exception as e:
+        logger.warning(f"[register_salon] Main Branch auto-create failed for salon {salon_dict['id']}: {e}")
+    
     return Salon(**salon_dict)
 
 @api_router.post("/salon/verify-otp", response_model=SalonToken)
@@ -5279,13 +6073,9 @@ async def salon_user_login(credentials: SalonUserLogin):
             },
         )
     
-    # Generate token with role and permissions
-    permissions = salon_user.get("permissions", {
-        "can_edit_salon": False,
-        "can_access_analytics": False,
-        "can_access_financials": False,
-        "can_delete_salon": False
-    })
+    # Generate token with role and permissions.
+    # Resolve effective permissions = role template ⊕ user overrides (user wins).
+    permissions = await resolve_effective_permissions(salon_user)
     # Ensure newly added keys default to False if missing on legacy records
     permissions.setdefault("can_access_financials", False)
     permissions.setdefault("can_access_analytics", False)
@@ -5295,6 +6085,7 @@ async def salon_user_login(credentials: SalonUserLogin):
     permissions.setdefault("can_access_gallery", False)
     permissions.setdefault("can_access_staff", False)
     permissions.setdefault("can_view_all_staff", False)
+    permissions.setdefault("can_access_marketing", False)
 
     assigned_branch_ids = salon_user.get("assigned_branch_ids") or []
     staff_id = salon_user.get("staff_id")
@@ -5307,13 +6098,42 @@ async def salon_user_login(credentials: SalonUserLogin):
         "assigned_branch_ids": assigned_branch_ids,
         "staff_id": staff_id,
     })
-    
+
+    # Record a login session + audit event (BUG-4 fix — powers Active devices).
+    if staff_id:
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            session_id = str(uuid.uuid4())
+            await db.staff_sessions.insert_one({
+                "id": session_id,
+                "salon_id": salon_user["salon_id"],
+                "barber_id": staff_id,
+                "user_id": salon_user["id"],
+                "device": "web",
+                "user_agent": None,
+                "ip": None,
+                "created_at": now_iso,
+                "last_seen": now_iso,
+                "revoked": False,
+            })
+            await db.staff_login_events.insert_one({
+                "id": str(uuid.uuid4()),
+                "salon_id": salon_user["salon_id"],
+                "barber_id": staff_id,
+                "user_id": salon_user["id"],
+                "event": "login",
+                "session_id": session_id,
+                "timestamp": now_iso,
+            })
+        except Exception as _e:
+            logger.debug(f"session record failed: {_e}")
+
     return SalonUserToken(
         access_token=token,
         salon_id=salon_user["salon_id"],
         user_id=salon_user["id"],
         role=salon_user["role"],
-        permissions=SalonUserPermissions(**permissions),
+        permissions=SalonUserPermissions(**{k: v for k, v in permissions.items() if k in SalonUserPermissions.model_fields}),
         assigned_branch_ids=assigned_branch_ids,
         staff_id=staff_id,
     )
@@ -5355,9 +6175,20 @@ async def create_salon_user(user_data: SalonUserCreate, current_user=Depends(get
     if len(user_data.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     password_hash = pwd_context.hash(user_data.password)
+
+    # Resolve role_id → base_role (role_id, when present, drives the role string).
+    role_id = user_data.role_id
+    role_str = user_data.role
+    if role_id:
+        role_doc = await db.salon_roles.find_one(
+            {"id": role_id, "salon_id": user_data.salon_id}, {"_id": 0}
+        )
+        if not role_doc:
+            raise HTTPException(status_code=404, detail="Role not found")
+        role_str = role_doc.get("base_role") or role_str
     
     # Set default permissions for staff
-    if user_data.role == "staff" and not user_data.permissions:
+    if role_str == "staff" and not user_data.permissions:
         permissions = {
             "can_edit_salon": False,
             "can_access_analytics": False,
@@ -5366,7 +6197,8 @@ async def create_salon_user(user_data: SalonUserCreate, current_user=Depends(get
             "can_access_services": False,
             "can_access_gallery": False,
             "can_access_staff": False,
-            "can_view_all_staff": False
+            "can_view_all_staff": False,
+            "can_access_marketing": False
         }
     else:
         permissions = user_data.permissions.dict() if user_data.permissions else {
@@ -5377,16 +6209,17 @@ async def create_salon_user(user_data: SalonUserCreate, current_user=Depends(get
             "can_access_services": False,
             "can_access_gallery": False,
             "can_access_staff": False,
-            "can_view_all_staff": False
+            "can_view_all_staff": False,
+            "can_access_marketing": False
         }
 
     # Validate role
-    if user_data.role not in ("admin", "staff", "branch_manager"):
+    if role_str not in ("admin", "staff", "branch_manager"):
         raise HTTPException(status_code=400, detail="Invalid role")
 
     # Validate assigned_branch_ids for branch_manager
     assigned_branch_ids = list(user_data.assigned_branch_ids or [])
-    if user_data.role == "branch_manager":
+    if role_str == "branch_manager":
         if not assigned_branch_ids:
             raise HTTPException(status_code=400, detail="Branch manager must have at least one assigned_branch_id")
         # Make sure each branch belongs to this salon
@@ -5411,8 +6244,9 @@ async def create_salon_user(user_data: SalonUserCreate, current_user=Depends(get
         "mobile": mobile,
         "login_id": user_data.login_id,
         "password_hash": password_hash,
-        "role": user_data.role,
+        "role": role_str,
         "staff_id": user_data.staff_id,
+        "role_id": role_id,
         "assigned_branch_ids": assigned_branch_ids,
         "permissions": permissions,
         "status": "active",
@@ -5429,14 +6263,19 @@ async def create_salon_user(user_data: SalonUserCreate, current_user=Depends(get
 
 @api_router.get("/salon/users")
 async def get_salon_users(current_user=Depends(get_current_salon_admin)):
-    """Get all users for a salon (admin only)"""
+    """Get all users for a salon (admin only).
+    Each user carries `permissions` (raw overrides) + `effective_permissions`
+    (role baseline ⊕ overrides, resolved on read)."""
     salon_id = current_user.get("salon_id")
-    
+
     users = await db.salon_users.find(
         {"salon_id": salon_id},
         {"_id": 0, "password_hash": 0}
     ).to_list(100)
-    
+
+    for u in users:
+        u["effective_permissions"] = await resolve_effective_permissions(u)
+
     return {"users": users}
 
 @api_router.put("/salon/users/{user_id}")
@@ -5490,7 +6329,16 @@ async def update_salon_user(user_id: str, update_data: SalonUserUpdate, current_
             raise HTTPException(status_code=404, detail="Staff member not found")
         update_fields["staff_id"] = update_data.staff_id
     
-    if update_data.role is not None:
+    if update_data.role_id is not None:
+        role_doc = await db.salon_roles.find_one(
+            {"id": update_data.role_id, "salon_id": salon_id}, {"_id": 0}
+        )
+        if not role_doc:
+            raise HTTPException(status_code=404, detail="Role not found")
+        update_fields["role_id"] = update_data.role_id
+        # role string is derived from the role's base_role.
+        update_fields["role"] = role_doc.get("base_role") or "staff"
+    elif update_data.role is not None:
         if update_data.role not in ("admin", "staff", "branch_manager"):
             raise HTTPException(status_code=400, detail="Invalid role")
         update_fields["role"] = update_data.role
@@ -5545,6 +6393,132 @@ async def delete_salon_user(user_id: str, current_user=Depends(get_current_salon
     )
     
     return {"message": "User deactivated successfully"}
+
+
+# ============ ROLES CRUD (Staff Access Consolidation) ============
+
+@api_router.get("/salons/{salon_id}/roles")
+async def list_salon_roles(salon_id: str, current_user=Depends(get_current_salon_admin)):
+    """List all role templates for a salon. Lazily seeds the 3 system roles."""
+    if current_user.get("salon_id") != salon_id:
+        raise HTTPException(status_code=403, detail="Access denied for this salon")
+    roles = await ensure_system_roles(salon_id)
+    for r in roles:
+        r["assigned_user_count"] = await db.salon_users.count_documents(
+            {"salon_id": salon_id, "role_id": r["id"], "status": "active"}
+        )
+    roles.sort(key=lambda x: (not x.get("is_system"), x.get("name", "").lower()))
+    return {"roles": roles}
+
+
+@api_router.post("/salons/{salon_id}/roles", response_model=SalonRole)
+async def create_salon_role(salon_id: str, body: SalonRoleCreate, current_user=Depends(get_current_salon_admin)):
+    if current_user.get("salon_id") != salon_id:
+        raise HTTPException(status_code=403, detail="Access denied for this salon")
+    await ensure_system_roles(salon_id)
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Role name is required")
+    if body.base_role not in ("admin", "branch_manager", "staff"):
+        raise HTTPException(status_code=400, detail="Invalid base_role")
+    dup = await db.salon_roles.find_one(
+        {"salon_id": salon_id, "name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
+        {"_id": 0, "id": 1},
+    )
+    if dup:
+        raise HTTPException(status_code=400, detail=f"A role named '{name}' already exists")
+    now = datetime.now(timezone.utc).isoformat()
+    role = {
+        "id": str(uuid.uuid4()),
+        "salon_id": salon_id,
+        "name": name,
+        "description": body.description,
+        "base_role": body.base_role,
+        "is_system": False,
+        "modules": body.modules or {},
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.salon_roles.insert_one(role.copy())
+    role.pop("_id", None)
+    return SalonRole(**role)
+
+
+@api_router.put("/salons/{salon_id}/roles/{role_id}", response_model=SalonRole)
+async def update_salon_role(salon_id: str, role_id: str, body: SalonRoleUpdate, current_user=Depends(get_current_salon_admin)):
+    if current_user.get("salon_id") != salon_id:
+        raise HTTPException(status_code=403, detail="Access denied for this salon")
+    role = await db.salon_roles.find_one({"id": role_id, "salon_id": salon_id}, {"_id": 0})
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+
+    updates: Dict[str, Any] = {}
+    if role.get("is_system"):
+        if (body.name is not None and body.name != role["name"]) or \
+           (body.base_role is not None and body.base_role != role["base_role"]):
+            raise HTTPException(status_code=400, detail="System roles cannot be renamed or change base role")
+        if body.modules is not None:
+            updates["modules"] = body.modules
+    else:
+        if body.name is not None:
+            name = body.name.strip()
+            if not name:
+                raise HTTPException(status_code=400, detail="Role name is required")
+            dup = await db.salon_roles.find_one(
+                {"salon_id": salon_id, "name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}, "id": {"$ne": role_id}},
+                {"_id": 0, "id": 1},
+            )
+            if dup:
+                raise HTTPException(status_code=400, detail=f"A role named '{name}' already exists")
+            updates["name"] = name
+        if body.description is not None:
+            updates["description"] = body.description
+        if body.base_role is not None:
+            if body.base_role not in ("admin", "branch_manager", "staff"):
+                raise HTTPException(status_code=400, detail="Invalid base_role")
+            updates["base_role"] = body.base_role
+        if body.modules is not None:
+            updates["modules"] = body.modules
+
+    if updates:
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.salon_roles.update_one({"id": role_id}, {"$set": updates})
+        if "base_role" in updates:
+            await db.salon_users.update_many(
+                {"salon_id": salon_id, "role_id": role_id},
+                {"$set": {"role": updates["base_role"]}},
+            )
+    fresh = await db.salon_roles.find_one({"id": role_id, "salon_id": salon_id}, {"_id": 0})
+    return SalonRole(**fresh)
+
+
+@api_router.delete("/salons/{salon_id}/roles/{role_id}")
+async def delete_salon_role(salon_id: str, role_id: str, current_user=Depends(get_current_salon_admin)):
+    if current_user.get("salon_id") != salon_id:
+        raise HTTPException(status_code=403, detail="Access denied for this salon")
+    role = await db.salon_roles.find_one({"id": role_id, "salon_id": salon_id}, {"_id": 0})
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if role.get("is_system"):
+        raise HTTPException(status_code=400, detail="System roles cannot be deleted")
+    users = await db.salon_users.find(
+        {"salon_id": salon_id, "role_id": role_id}, {"_id": 0, "name": 1}
+    ).to_list(200)
+    if users:
+        names = [u.get("name") or "(unnamed)" for u in users]
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "role_in_use",
+                "message": f"Role is assigned to {len(users)} user(s). Reassign them before deleting.",
+                "count": len(users),
+                "users": names,
+            },
+        )
+    await db.salon_roles.delete_one({"id": role_id})
+    return {"success": True, "deleted": role_id}
+
+
 
 @api_router.post("/user/login", response_model=User)
 async def user_login(credentials: UserLogin):
@@ -6248,27 +7222,35 @@ async def get_salon_customers(salon_id: str, branch_id: Optional[str] = None, cu
         tokens_query["branch_id"] = branch_id
     tokens = await db.tokens.find(
         tokens_query,
-        {"_id": 0, "user_id": 1, "customer_name": 1, "phone": 1}
+        {"_id": 0, "user_id": 1, "customer_name": 1, "phone": 1, "created_at": 1, "date": 1}
     ).to_list(10000)
-    
-    # Group by phone to get unique customers
+
+    # Group by phone to get unique customers + track last visit date
     customers_map = {}
+    last_visit_by_phone: Dict[str, str] = {}
     for token in tokens:
         phone = token.get('phone')
-        if phone and phone not in customers_map:
-            # Get user details if user_id exists
+        if not phone:
+            continue
+        visit_dt = token.get('date') or token.get('created_at') or ''
+        if isinstance(visit_dt, str) and visit_dt:
+            prev = last_visit_by_phone.get(phone, '')
+            if visit_dt > prev:
+                last_visit_by_phone[phone] = visit_dt
+        if phone not in customers_map:
             user_data = None
             if token.get('user_id'):
                 user_data = await db.users.find_one({"id": token['user_id']}, {"_id": 0})
-            
             customers_map[phone] = {
                 "phone": phone,
                 "name": token.get('customer_name'),
                 "user_id": token.get('user_id'),
                 "gender": user_data.get('gender') if user_data else None,
                 "date_of_birth": user_data.get('date_of_birth') if user_data else None,
+                # Pull profile photo from user account if guest uploaded via customer app
+                "photo_url": (user_data or {}).get('profile_photo') or (user_data or {}).get('photo_url'),
             }
-    
+
     # Also include manually added customers
     manual_query = {"salon_id": salon_id, "status": {"$ne": "deleted"}}
     if branch_id:
@@ -6276,24 +7258,82 @@ async def get_salon_customers(salon_id: str, branch_id: Optional[str] = None, cu
     manual_customers = await db.salon_customers.find(
         manual_query, {"_id": 0}
     ).to_list(10000)
-    
+
     for mc in manual_customers:
         phone = mc.get('phone')
-        if phone and phone not in customers_map:
+        if not phone:
+            continue
+        if phone not in customers_map:
             customers_map[phone] = {
                 "phone": phone,
                 "name": mc.get('name'),
                 "user_id": None,
                 "gender": mc.get('gender', 'Men'),
-                "date_of_birth": mc.get('date_of_birth'),
-                "source": "manual"
+                "date_of_birth": mc.get('date_of_birth') or mc.get('dob'),
+                "anniversary": mc.get('anniversary'),
+                "source": mc.get('source') or "manual",
+                "photo_url": mc.get('photo_url'),
+                "instagram_id": mc.get('instagram_id'),
+                "facebook_id": mc.get('facebook_id'),
+                "preferred_barber_id": mc.get('preferred_barber_id'),
+                "tags": mc.get('tags') or [],
+                "id": mc.get('id'),
+                # Seed-friendly aggregate fields (used by Guests V2 page)
+                "visit_count": mc.get('visit_count'),
+                "total_spend": mc.get('total_spend'),
+                "notes": mc.get('notes'),
             }
-        elif phone and phone in customers_map:
-            # Update gender / DOB if not already set
-            if not customers_map[phone].get('gender'):
-                customers_map[phone]['gender'] = mc.get('gender', 'Men')
-            if not customers_map[phone].get('date_of_birth') and mc.get('date_of_birth'):
-                customers_map[phone]['date_of_birth'] = mc.get('date_of_birth')
+        else:
+            # Merge — salon-master fields take priority when the token record was thin.
+            cust = customers_map[phone]
+            if not cust.get('gender'):
+                cust['gender'] = mc.get('gender', 'Men')
+            if not cust.get('date_of_birth'):
+                cust['date_of_birth'] = mc.get('date_of_birth') or mc.get('dob')
+            if not cust.get('anniversary'):
+                cust['anniversary'] = mc.get('anniversary')
+            if not cust.get('photo_url') and mc.get('photo_url'):
+                cust['photo_url'] = mc.get('photo_url')
+            cust.setdefault('instagram_id', mc.get('instagram_id'))
+            cust.setdefault('facebook_id', mc.get('facebook_id'))
+            cust.setdefault('preferred_barber_id', mc.get('preferred_barber_id'))
+            cust.setdefault('tags', mc.get('tags') or [])
+            cust.setdefault('id', mc.get('id'))
+            # Prefer master-doc aggregates when present (seeded data / manual overrides)
+            if mc.get('visit_count') is not None:
+                cust['visit_count'] = mc.get('visit_count')
+            if mc.get('total_spend') is not None:
+                cust['total_spend'] = mc.get('total_spend')
+            if mc.get('notes'):
+                cust['notes'] = mc.get('notes')
+
+    # Compute visit_count + total_spend from tokens when master-doc value is missing
+    if customers_map:
+        phones_needing_agg = [p for p, c in customers_map.items() if c.get('visit_count') is None or c.get('total_spend') is None]
+        if phones_needing_agg:
+            token_agg_q = {"salon_id": salon_id, "phone": {"$in": phones_needing_agg}, "customer_status": {"$ne": "deleted"}}
+            if branch_id:
+                token_agg_q["branch_id"] = branch_id
+            agg_tokens = await db.tokens.find(token_agg_q, {"_id": 0, "phone": 1, "final_amount": 1, "total_amount": 1, "status": 1}).to_list(20000)
+            counts: Dict[str, int] = {}
+            spends: Dict[str, float] = {}
+            for t in agg_tokens:
+                p = t.get('phone')
+                if not p:
+                    continue
+                counts[p] = counts.get(p, 0) + 1
+                if t.get('status') in ('completed', 'complete'):
+                    amt = t.get('final_amount') or t.get('total_amount') or 0
+                    spends[p] = spends.get(p, 0.0) + float(amt)
+            for p, c in customers_map.items():
+                if c.get('visit_count') is None:
+                    c['visit_count'] = counts.get(p, 0)
+                if c.get('total_spend') is None:
+                    c['total_spend'] = spends.get(p, 0.0)
+
+    # Attach last visit date computed from tokens
+    for phone, cust in customers_map.items():
+        cust['last_visit'] = last_visit_by_phone.get(phone)
     
     # Attach active wallet balance for each customer (if any active membership)
     if customers_map:
@@ -6312,8 +7352,18 @@ async def get_salon_customers(salon_id: str, branch_id: Optional[str] = None, cu
                 }
         for phone, cust in customers_map.items():
             info = wallet_by_phone.get(phone, {"wallet_balance": 0, "membership_name": ""})
+            # Membership overrides only when present
             cust["wallet_balance"] = info["wallet_balance"]
             cust["membership_name"] = info["membership_name"]
+
+        # Fill from master doc if endpoint's membership lookup returned empty (for seeded / manual data)
+        for mc in manual_customers:
+            p = mc.get('phone')
+            if p and p in customers_map:
+                if not customers_map[p].get("wallet_balance"):
+                    customers_map[p]["wallet_balance"] = float(mc.get("wallet_balance") or 0)
+                if not customers_map[p].get("membership_name"):
+                    customers_map[p]["membership_name"] = mc.get("membership_name") or ""
     
     return {"customers": list(customers_map.values())}
 
@@ -6355,8 +7405,19 @@ async def add_salon_customer(salon_id: str, body: dict, current_user=Depends(get
         "name": name,
         "phone": phone or None,
         "gender": gender,
+        "email": body.get("email") or None,
+        "tags": body.get("tags") or [],
+        "notes": body.get("notes") or "",
+        # Extended master fields (added for Home v2 New Guest drawer)
+        "photo_url": body.get("photo_url") or None,   # data-URL or CDN URL
+        "dob": body.get("dob") or None,               # ISO date "YYYY-MM-DD"
+        "anniversary": body.get("anniversary") or None,  # ISO date "YYYY-MM-DD"
+        "preferred_barber_id": body.get("preferred_barber_id") or None,
+        "instagram_id": (body.get("instagram_id") or "").strip() or None,
+        "facebook_id":  (body.get("facebook_id")  or "").strip() or None,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "source": "manual"
+        # source enum: online|qr|owner|direct  (legacy value "manual" also allowed)
+        "source": (body.get("source") or "owner"),
     }
     
     await db.salon_customers.insert_one(customer)
@@ -6806,6 +7867,27 @@ async def bulk_upload_customers(
         "errors": errors[:50],  # cap
         "message": f"Imported {inserted} customers · {skipped_duplicate} duplicates skipped · {skipped_invalid} invalid rows.",
     }
+
+
+@api_router.get("/salons/{salon_id}/customers/csv-template")
+async def get_customers_csv_template(salon_id: str):
+    """Return a downloadable CSV template for the guest bulk-upload.
+    Public endpoint (safe – it's just a template with dummy rows)."""
+    import csv as _csv
+    buf = io.StringIO()
+    writer = _csv.writer(buf)
+    writer.writerow(["Name", "Mobile No.", "Gender", "Date of Birth"])
+    writer.writerow(["Priya Sharma", "9876543210", "Female", "1994-03-14"])
+    writer.writerow(["Amit Kumar", "9123456789", "Male", "1988-11-02"])
+    csv_bytes = buf.getvalue().encode("utf-8")
+    from fastapi.responses import Response as _Response
+    return _Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=guests_template.csv"},
+    )
+
+
 
 
 # ============================================================================
@@ -7327,6 +8409,7 @@ async def upload_services_csv(
             "service_name": name[:120],
             "description": str(_find(raw, "description", "desc") or "").strip()[:500] or None,
             "category": (str(_find(raw, "category", "cat") or "").strip()[:60] or "General"),
+            "sub_category": (str(_find(raw, "sub_category", "subcategory", "sub-cat", "subcat") or "").strip()[:60] or None),
             "gender_tag": _norm_gender(_find(raw, "gender_tag", "gender")),
             "default_duration": max(1, _to_int(_find(raw, "default_duration", "duration", "minutes"), 30)),
             "base_price": max(0.0, _to_float(_find(raw, "base_price", "price", "amount"), 0.0)),
@@ -7335,6 +8418,12 @@ async def upload_services_csv(
             "available_at_home": _truthy(_find(raw, "available_at_home", "athome", "home")),
             "thumbnail_url": (str(_find(raw, "thumbnail_url", "thumbnail", "thumb") or "").strip() or None),
             "images": _split_images(_find(raw, "images", "image_urls", "image")),
+            "gst_rate": (
+                _to_float(_find(raw, "gst_rate", "gst", "tax_rate"), 0.0)
+                if str(_find(raw, "gst_rate", "gst", "tax_rate") or "").strip() != ""
+                else None
+            ),
+            "hsn_code": (str(_find(raw, "hsn_code", "hsn", "sac", "sac_code") or "").strip() or None),
             "is_active": True,
             "is_enabled": True,
             "source": "csv_upload",
@@ -7343,6 +8432,7 @@ async def upload_services_csv(
         docs_to_insert.append(doc)
 
     created = 0
+    batch_id: Optional[str] = None
     if docs_to_insert:
         await db.services.insert_many(docs_to_insert)
         created = len(docs_to_insert)
@@ -7360,8 +8450,30 @@ async def upload_services_csv(
         ]
         await db.salon_services.insert_many(salon_service_docs)
 
+        # Record an upload batch so the salon can see history & roll it back.
+        batch_id = str(uuid.uuid4())
+        uploader = (
+            current_user.get("email")
+            or current_user.get("phone")
+            or current_user.get("sub")
+            or "salon_admin"
+        )
+        await db.service_upload_batches.insert_one({
+            "id": batch_id,
+            "salon_id": salon_id,
+            "filename": file.filename,
+            "uploaded_by": uploader,
+            "uploaded_at": now_iso,
+            "created_count": created,
+            "skipped_count": skipped_duplicates,
+            "error_count": len(errors),
+            "service_ids": [d["id"] for d in docs_to_insert],
+            "status": "active",  # → "rolled_back" after undo
+        })
+
     return {
         "success": True,
+        "batch_id": batch_id,
         "total_rows": len(rows),
         "created": created,
         "skipped_duplicates": skipped_duplicates,
@@ -7374,6 +8486,293 @@ async def upload_services_csv(
         ),
     }
 
+
+# ---- Upload template + history + rollback ------------------------------------
+SERVICES_CSV_TEMPLATE = (
+    "service_name,description,category,sub_category,gender_tag,default_duration,base_price,price_type,is_favorite,available_at_home,thumbnail_url,images,gst_rate,hsn_code\n"
+    "Men's Haircut,Classic scissor cut with styling,Services,Hair,Men,30,300,fixed,true,false,,,9,999721\n"
+    "Beard Trim,Shape-up and hot towel,Services,Beard,Men,20,150,fixed,false,false,,,9,999721\n"
+    "Women's Haircut,Wash + cut + blow-dry,Services,Hair,Women,45,600,fixed,true,false,,,9,999721\n"
+    "Classic Manicure,Nail shaping + cuticle care,Services,Nails,Unisex,30,400,fixed,false,true,,,9,999721\n"
+    "Bridal Glow Package,Facial + hair spa + mani-pedi (bulk-upload packages leave category='Packages' and fill base_price for the bundle),Packages,,Women,180,4999,onwards,true,false,,,9,999721\n"
+)
+
+
+@api_router.get("/services/upload-template.csv")
+async def download_services_csv_template_generic():
+    """Return a small illustrative CSV so owners know the exact column headers.
+    Available to any authenticated salon; no salon_id required."""
+    from fastapi.responses import Response
+    return Response(
+        content=SERVICES_CSV_TEMPLATE,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": 'attachment; filename="services-upload-template.csv"'
+        },
+    )
+
+
+@api_router.get("/salons/{salon_id}/services/upload-batches")
+async def list_service_upload_batches(
+    salon_id: str,
+    current_user=Depends(get_current_salon_user),
+):
+    """List past service-upload batches for this salon, newest first."""
+    batches = await db.service_upload_batches.find(
+        {"salon_id": salon_id},
+        {"_id": 0},
+    ).sort("uploaded_at", -1).to_list(200)
+    return {"batches": batches}
+
+
+@api_router.delete("/salons/{salon_id}/services/upload-batches/{batch_id}")
+async def rollback_service_upload_batch(
+    salon_id: str,
+    batch_id: str,
+    current_user=Depends(get_current_salon_user),
+):
+    """Undo a service-upload batch — hard-delete the created services and their
+    salon_services mappings. Idempotent: rolling back an already-rolled-back
+    batch is a no-op."""
+    batch = await db.service_upload_batches.find_one(
+        {"id": batch_id, "salon_id": salon_id}, {"_id": 0}
+    )
+    if not batch:
+        raise HTTPException(status_code=404, detail="Upload batch not found")
+
+    if batch.get("status") == "rolled_back":
+        return {"success": True, "removed": 0, "already_rolled_back": True}
+
+    svc_ids: List[str] = batch.get("service_ids") or []
+    removed = 0
+    if svc_ids:
+        # Only delete services still owned by this salon (safety).
+        result = await db.services.delete_many({
+            "id": {"$in": svc_ids},
+            "salon_id": salon_id,
+        })
+        removed = int(getattr(result, "deleted_count", 0) or 0)
+        # Clean mappings + any barber links.
+        await db.salon_services.delete_many({
+            "salon_id": salon_id,
+            "service_id": {"$in": svc_ids},
+        })
+        try:
+            await db.barber_services.delete_many({"service_id": {"$in": svc_ids}})
+        except Exception:
+            pass
+
+    await db.service_upload_batches.update_one(
+        {"id": batch_id, "salon_id": salon_id},
+        {"$set": {
+            "status": "rolled_back",
+            "rolled_back_at": datetime.now(timezone.utc).isoformat(),
+            "removed_count": removed,
+        }}
+    )
+    return {"success": True, "removed": removed, "batch_id": batch_id}
+
+
+@api_router.get("/salons/{salon_id}/services/metrics-overview")
+async def services_metrics_overview(
+    salon_id: str,
+    current_user=Depends(get_current_salon_user),
+):
+    """Menu & Services header KPIs + per-service rollups for the last 30 days.
+
+    Returns:
+      overview: { total_menu, services_count, packages_count, revenue_30d,
+                  bookings_30d, avg_rating, total_reviews, at_home_count,
+                  favorites_count }
+      per_service: [{ service_id, bookings_30d, revenue_30d, rating,
+                      trend_pct }]  # trend_pct compares current 30d window
+                                      against the prior 30d window.
+    """
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+
+    services = await db.services.find(
+        {"salon_id": salon_id, "is_active": True},
+        {"_id": 0}
+    ).to_list(5000)
+
+    services_count = sum(1 for s in services if (s.get("category") or "Services") != "Packages")
+    packages_count = sum(1 for s in services if (s.get("category") or "Services") == "Packages")
+    at_home_count = sum(1 for s in services if s.get("available_at_home"))
+    favorites_count = sum(1 for s in services if s.get("is_favorite"))
+
+    today = datetime.now(timezone.utc).date()
+    d0 = (today - timedelta(days=29)).isoformat()
+    d1 = today.isoformat()
+    d_prev0 = (today - timedelta(days=59)).isoformat()
+    d_prev1 = (today - timedelta(days=30)).isoformat()
+
+    # Current 30d bucket
+    tokens_current = await db.tokens.find({
+        "salon_id": salon_id,
+        "date": {"$gte": d0, "$lte": d1},
+        "status": "completed",
+    }, {"_id": 0}).to_list(20000)
+    tokens_prev = await db.tokens.find({
+        "salon_id": salon_id,
+        "date": {"$gte": d_prev0, "$lte": d_prev1},
+        "status": "completed",
+    }, {"_id": 0}).to_list(20000)
+
+    def _bucket_from(tokens: List[dict]) -> Dict[str, Dict[str, float]]:
+        bucket: Dict[str, Dict[str, float]] = {}
+        for tok in tokens:
+            rows = attribute_token_revenue_to_services(tok)
+            for r in rows:
+                sid = r.get("service_id")
+                if not sid:
+                    continue
+                b = bucket.setdefault(sid, {"bookings": 0, "revenue": 0.0})
+                b["bookings"] += 1
+                b["revenue"] += float(r.get("line_total") or 0)
+        return bucket
+
+    curr = _bucket_from(tokens_current)
+    prev = _bucket_from(tokens_prev)
+
+    # Salon-wide rating summary (for header + fallback per-service rating).
+    avg_rating = float(salon.get("rating") or 0)
+    total_reviews = int(salon.get("total_reviews") or 0)
+
+    per_service = []
+    total_rev = 0.0
+    total_bookings = 0
+    for s in services:
+        sid = s.get("id")
+        cur_b = curr.get(sid, {}).get("bookings", 0)
+        cur_r = curr.get(sid, {}).get("revenue", 0.0)
+        prv_r = prev.get(sid, {}).get("revenue", 0.0)
+        trend_pct = None
+        if prv_r > 0:
+            trend_pct = round(((cur_r - prv_r) / prv_r) * 100, 1)
+        elif cur_r > 0:
+            trend_pct = 100.0
+        else:
+            trend_pct = 0.0
+        total_rev += cur_r
+        total_bookings += int(cur_b)
+        per_service.append({
+            "service_id": sid,
+            "bookings_30d": int(cur_b),
+            "revenue_30d": round(cur_r, 2),
+            "rating": round(avg_rating, 2) if avg_rating > 0 else None,
+            "trend_pct": trend_pct,
+        })
+
+    overview = {
+        "total_menu": len(services),
+        "services_count": services_count,
+        "packages_count": packages_count,
+        "revenue_30d": round(total_rev, 2),
+        "bookings_30d": int(total_bookings),
+        "avg_rating": round(avg_rating, 2),
+        "total_reviews": total_reviews,
+        "at_home_count": at_home_count,
+        "favorites_count": favorites_count,
+    }
+    return {"overview": overview, "per_service": per_service}
+
+
+@api_router.get("/salons/{salon_id}/services/{service_id}/metrics")
+async def service_detail_metrics(
+    salon_id: str,
+    service_id: str,
+    current_user=Depends(get_current_salon_user),
+):
+    """Deep metrics for one service used in the click-through drawer."""
+    svc = await db.services.find_one({"id": service_id, "salon_id": salon_id}, {"_id": 0})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+
+    today = datetime.now(timezone.utc).date()
+    d30_start = (today - timedelta(days=29)).isoformat()
+    d90_start = (today - timedelta(days=89)).isoformat()
+    d1 = today.isoformat()
+
+    tokens_90 = await db.tokens.find({
+        "salon_id": salon_id,
+        "date": {"$gte": d90_start, "$lte": d1},
+        "status": "completed",
+    }, {"_id": 0}).to_list(20000)
+
+    bookings_30, revenue_30 = 0, 0.0
+    bookings_90, revenue_90 = 0, 0.0
+    top_barbers: Dict[str, Dict[str, Any]] = {}
+
+    # 30-day per-day trend (for a mini chart in drawer)
+    day_bucket: Dict[str, Dict[str, float]] = {}
+
+    for tok in tokens_90:
+        rows = attribute_token_revenue_to_services(tok)
+        for r in rows:
+            if r.get("service_id") != service_id:
+                continue
+            revenue_90 += float(r.get("line_total") or 0)
+            bookings_90 += 1
+            if tok.get("date", "") >= d30_start:
+                bookings_30 += 1
+                revenue_30 += float(r.get("line_total") or 0)
+                bid = tok.get("barber_id") or "unassigned"
+                bname = tok.get("barber_name") or "—"
+                row = top_barbers.setdefault(bid, {"barber_id": bid, "barber_name": bname, "bookings": 0, "revenue": 0.0})
+                row["bookings"] += 1
+                row["revenue"] += float(r.get("line_total") or 0)
+                dkey = tok.get("date") or ""
+                if dkey:
+                    dd = day_bucket.setdefault(dkey, {"bookings": 0, "revenue": 0.0})
+                    dd["bookings"] += 1
+                    dd["revenue"] += float(r.get("line_total") or 0)
+
+    # Build ordered 30d timeline (fill missing days with zero).
+    timeline = []
+    for i in range(30):
+        d = (today - timedelta(days=29 - i)).isoformat()
+        v = day_bucket.get(d, {"bookings": 0, "revenue": 0.0})
+        timeline.append({"date": d, "bookings": int(v["bookings"]), "revenue": round(v["revenue"], 2)})
+
+    top_barbers_list = sorted(
+        [{"barber_id": v["barber_id"], "barber_name": v["barber_name"],
+          "bookings": int(v["bookings"]), "revenue": round(v["revenue"], 2)}
+         for v in top_barbers.values()],
+        key=lambda r: r["revenue"], reverse=True,
+    )[:5]
+
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0, "rating": 1, "total_reviews": 1}) or {}
+
+    return {
+        "service": {
+            "id": svc.get("id"),
+            "service_name": svc.get("service_name"),
+            "description": svc.get("description"),
+            "category": svc.get("category") or "Services",
+            "sub_category": svc.get("sub_category"),
+            "gender_tag": svc.get("gender_tag") or "Unisex",
+            "default_duration": int(svc.get("default_duration") or 30),
+            "base_price": float(svc.get("base_price") or 0),
+            "price_type": svc.get("price_type") or "fixed",
+            "is_favorite": bool(svc.get("is_favorite")),
+            "available_at_home": bool(svc.get("available_at_home")),
+            "home_price": svc.get("home_price"),
+            "thumbnail_url": svc.get("thumbnail_url"),
+        },
+        "metrics": {
+            "bookings_30d": bookings_30,
+            "revenue_30d": round(revenue_30, 2),
+            "bookings_90d": bookings_90,
+            "revenue_90d": round(revenue_90, 2),
+            "avg_ticket_30d": round((revenue_30 / bookings_30) if bookings_30 else 0.0, 2),
+            "rating": round(float(salon.get("rating") or 0), 2),
+            "total_reviews": int(salon.get("total_reviews") or 0),
+        },
+        "top_barbers": top_barbers_list,
+        "timeline_30d": timeline,
+    }
 
 
 @api_router.post("/salons/{salon_id}/salon-booking")
@@ -7395,6 +8794,7 @@ async def create_salon_booking(salon_id: str, body: dict, current_user=Depends(g
     gender = body.get("gender", "Men")
     barber_id = body.get("barber_id", "any")
     selected_services = body.get("selected_services", [])
+    selected_products = body.get("selected_products") or []
     shift = body.get("shift", "")
     date = body.get("date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     payment_mode = body.get("payment_mode")
@@ -7436,6 +8836,35 @@ async def create_salon_booking(salon_id: str, body: dict, current_user=Depends(g
         if service:
             total_amount += service.get("base_price", 0)
 
+    # Product lines (also decrement inventory)
+    product_details = []
+    for p in selected_products:
+        pid = p.get("product_id") or p.get("id")
+        qty = int(p.get("qty") or 0)
+        unit_price = float(p.get("unit_price") or 0)
+        if not pid or qty <= 0:
+            continue
+        if unit_price <= 0:
+            item = await db.salon_inventory.find_one({"id": pid, "salon_id": salon_id}, {"_id": 0})
+            if item:
+                unit_price = float(item.get("retail_price") or item.get("selling_price") or 0)
+        line_total = qty * unit_price
+        total_amount += line_total
+        product_details.append({
+            "product_id": pid,
+            "name": p.get("name"),
+            "qty": qty,
+            "unit_price": unit_price,
+            "line_total": line_total,
+        })
+        try:
+            await db.salon_inventory.update_one(
+                {"id": pid, "salon_id": salon_id},
+                {"$inc": {"stock_quantity": -qty}}
+            )
+        except Exception:
+            pass
+
     # Auto-assign barber when "any" is selected, using the same fastest-barber
     # logic as the customer booking flow (priority: shortest active queue today
     # → fewest yesterday → random eligible).
@@ -7465,11 +8894,77 @@ async def create_salon_booking(salon_id: str, body: dict, current_user=Depends(g
     if barber:
         barber_name = barber.get("name", "Unknown")
 
+    # --- Per-service barber attribution (Module 7 split) ---
+    # The client may send `services_payload` = [{service_id, barber_id}] so each
+    # service is credited to the barber who performed it (revenue + incentive).
+    services_payload = body.get("services_payload") or []
+    service_assignments = []
+    _distinct_line_barbers = set()
+    for sp in services_payload:
+        svc_id = sp.get("service_id") if isinstance(sp, dict) else sp
+        line_barber = (sp.get("barber_id") if isinstance(sp, dict) else None) or barber_id
+        if not svc_id or not line_barber or line_barber == "any":
+            continue
+        line_price = await _resolve_assignment_price(line_barber, svc_id)
+        lb = await db.barbers.find_one({"id": line_barber, "salon_id": salon_id}, {"_id": 0, "name": 1})
+        service_assignments.append({
+            "service_id": svc_id,
+            "barber_id": line_barber,
+            "barber_name_snapshot": (lb or {}).get("name", ""),
+            "service_price": round(float(line_price or 0), 2),
+        })
+        _distinct_line_barbers.add(line_barber)
+    # Only keep assignments when they add information (a real split across ≥2 barbers).
+    if len(_distinct_line_barbers) <= 1:
+        service_assignments = []
+    else:
+        # Recompute total from per-line prices so the bill matches attribution.
+        _svc_subtotal = sum(a["service_price"] for a in service_assignments)
+        _products_total = sum(float(pd.get("line_total") or 0) for pd in product_details)
+        total_amount = round(_svc_subtotal + _products_total, 2)
+
     # Resolve branch: explicit body override > barber's branch > salon main
     requested_branch_id = body.get("branch_id")
     booking_branch_id = await resolve_branch_id(salon_id, requested_branch_id)
     if not requested_branch_id and barber and barber.get("branch_id"):
         booking_branch_id = barber.get("branch_id")
+
+    # Handle wallet payment — must debit from customer's membership wallet first
+    payment_status = "pending"
+    payment_confirmed = False
+    if payment_mode == "wallet":
+        if not phone:
+            raise HTTPException(status_code=400, detail="Customer mobile number is required for wallet payment.")
+        membership = await db.customer_memberships.find_one({
+            "salon_id": salon_id,
+            "customer_phone": phone,
+            "is_active": True,
+        }, {"_id": 0})
+        if not membership:
+            raise HTTPException(status_code=400, detail="No active wallet/membership found for this customer.")
+        current_balance = float(membership.get("wallet_balance") or 0)
+        if current_balance < total_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient wallet balance. Available: ₹{current_balance:.2f}, Required: ₹{total_amount:.2f}",
+            )
+        new_balance = current_balance - total_amount
+        await db.customer_memberships.update_one(
+            {"id": membership["id"]},
+            {"$set": {"wallet_balance": new_balance}}
+        )
+        await db.wallet_transactions.insert_one({
+            "id": str(uuid.uuid4()),
+            "customer_phone": phone,
+            "salon_id": salon_id,
+            "transaction_type": "debit",
+            "amount": total_amount,
+            "balance_after": new_balance,
+            "description": f"Salon booking payment - {shift} shift",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        payment_status = "paid"
+        payment_confirmed = True
     
     token_dict = {
         "id": str(uuid.uuid4()),
@@ -7482,14 +8977,16 @@ async def create_salon_booking(salon_id: str, body: dict, current_user=Depends(g
         "barber_id": barber_id,
         "barber_name": barber_name,
         "selected_services": selected_services,
+        "service_assignments": service_assignments,
+        "selected_products": product_details,
         "date": date,
         "shift": shift,
         "time_slot": shift,
         "total_amount": total_amount,
         "status": "waiting",
-        "payment_status": "pending",
+        "payment_status": payment_status,
         "payment_mode": payment_mode,
-        "payment_confirmed": False,
+        "payment_confirmed": payment_confirmed,
         "source": "salon",
         "booking_type": "instant",
         "booking_for_self": True,
@@ -7582,6 +9079,8 @@ class MembershipPlanCreate(BaseModel):
     # Color-tier badge (shown to customer as a colored badge)
     tier: Optional[str] = "Custom"  # one of: Diamond, Gold, Silver, Custom
     color: Optional[str] = None  # hex color override, optional
+    plan_type: Optional[str] = "credit"  # "credit" (wallet top-up) | "discount" (flat % off every booking)
+    discount_percent: Optional[float] = 0  # flat % off services, used when plan_type == "discount"
 
 class MembershipPlan(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -7594,6 +9093,8 @@ class MembershipPlan(BaseModel):
     terms_conditions: str
     tier: Optional[str] = "Custom"
     color: Optional[str] = None
+    plan_type: Optional[str] = "credit"
+    discount_percent: Optional[float] = 0
     is_active: bool = True
     created_at: str
 
@@ -7648,7 +9149,8 @@ class LoyaltyTier(BaseModel):
 class LoyaltyProgramSettings(BaseModel):
     salon_id: str
     enabled: bool = False
-    tiers: List[Dict[str, Any]] = []  # Multiple tiers with individual periods
+    tiers: List[Dict[str, Any]] = []  # Multiple tiers/slabs with individual periods
+    credit_destination: str = "wallet"  # "wallet" | "points" — where earned reward lands
 
 class LoyaltyProgram(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -7656,6 +9158,7 @@ class LoyaltyProgram(BaseModel):
     salon_id: str
     enabled: bool
     tiers: List[Dict[str, Any]]
+    credit_destination: str = "wallet"
     updated_at: str
 
 @api_router.post("/salons/{salon_id}/customer-packages", response_model=CustomerPackage)
@@ -7761,17 +9264,19 @@ async def update_membership_plan(
     if not existing:
         raise HTTPException(status_code=404, detail="Membership plan not found")
 
-    # Update all fields but use existing price (locked)
+    # Update all editable fields (amount is now editable so owners can revise plans)
     await db.membership_plans.update_one(
         {"id": plan_id},
         {"$set": {
             "name": plan.name,
-            # "amount": existing["amount"],  # Price is LOCKED
+            "amount": plan.amount,
             "credit": plan.credit,
             "validity_months": plan.validity_months,
             "terms_conditions": plan.terms_conditions,
             "tier": plan.tier or existing.get("tier", "Custom"),
             "color": plan.color or existing.get("color"),
+            "plan_type": plan.plan_type or existing.get("plan_type", "credit"),
+            "discount_percent": plan.discount_percent if plan.discount_percent is not None else existing.get("discount_percent", 0),
             "updated_at": datetime.now(timezone.utc).isoformat()
         }}
     )
@@ -7867,7 +9372,14 @@ async def get_customer_membership_info(salon_id: str, phone: str):
     
     if not membership:
         raise HTTPException(status_code=404, detail="No active membership found")
-    
+
+    if membership.get("membership_plan_id") and (membership.get("plan_type") is None or membership.get("discount_percent") is None):
+        _p = await db.membership_plans.find_one({"id": membership["membership_plan_id"]}, {"_id": 0})
+        if _p:
+            membership["plan_type"] = membership.get("plan_type") or _p.get("plan_type", "credit")
+            if membership.get("discount_percent") is None:
+                membership["discount_percent"] = _p.get("discount_percent", 0)
+
     return membership
 
 @api_router.get("/salons/{salon_id}/customers/{phone}/bookings-public")
@@ -8059,6 +9571,8 @@ async def customer_buy_membership(
         "membership_name": plan["name"],
         "tier": plan.get("tier", "Custom"),
         "color": plan.get("color"),
+        "plan_type": plan.get("plan_type", "credit"),
+        "discount_percent": plan.get("discount_percent", 0),
         "payment_mode": membership.payment_mode,
         "paid_amount": membership.paid_amount,
         "credit_added": plan["credit"],
@@ -8170,6 +9684,13 @@ async def get_customer_membership(salon_id: str, phone: str):
             )
             return {"has_membership": False, "wallet_balance": 0, "expired": True, "pending_memberships": pending_memberships}
         
+        if membership.get("membership_plan_id") and (membership.get("plan_type") is None or membership.get("discount_percent") is None):
+            _p = await db.membership_plans.find_one({"id": membership["membership_plan_id"]}, {"_id": 0})
+            if _p:
+                membership["plan_type"] = membership.get("plan_type") or _p.get("plan_type", "credit")
+                if membership.get("discount_percent") is None:
+                    membership["discount_percent"] = _p.get("discount_percent", 0)
+
         return {"has_membership": True, **membership, "pending_memberships": pending_memberships}
     
     return {"has_membership": False, "wallet_balance": 0, "pending_memberships": pending_memberships}
@@ -8375,7 +9896,276 @@ async def get_loyalty_program(salon_id: str, current_user=Depends(get_current_sa
         }
     return program
 
-# ============ BOOKING/TOKEN ROUTES ============
+# ============ POINTS-BASED LOYALTY (earn on spend, redeem to wallet) ============
+
+LOYALTY_POINTS_DEFAULTS = {
+    "points_enabled": False,
+    "points_earn_per_100": 10.0,   # points earned per ₹100 spent
+    "points_redeem_rate": 10.0,    # points needed for ₹1 of wallet credit
+    "points_min_redeem": 100,      # minimum points before redemption is allowed
+}
+
+
+def resolve_loyalty_points_config(salon: dict) -> dict:
+    cfg = dict(LOYALTY_POINTS_DEFAULTS)
+    salon = salon or {}
+    for k in LOYALTY_POINTS_DEFAULTS:
+        if salon.get(k) is not None:
+            cfg[k] = salon[k]
+    cfg["points_enabled"] = bool(salon.get("points_enabled", False))
+    return cfg
+
+
+async def _credit_loyalty_points(salon_id: str, phone: str, delta: int, reason: str):
+    """Add (or subtract) points and write a ledger entry. Returns new balance."""
+    if not phone:
+        return None
+    if not phone.startswith("+91"):
+        phone = f"+91{phone}"
+    doc = await db.loyalty_points.find_one({"salon_id": salon_id, "customer_phone": phone})
+    current = int(doc.get("points", 0)) if doc else 0
+    new_balance = max(0, current + int(delta))
+    now = datetime.now(timezone.utc).isoformat()
+    if doc:
+        await db.loyalty_points.update_one({"salon_id": salon_id, "customer_phone": phone},
+                                           {"$set": {"points": new_balance, "updated_at": now}})
+    else:
+        await db.loyalty_points.insert_one({"id": str(uuid.uuid4()), "salon_id": salon_id,
+                                            "customer_phone": phone, "points": new_balance, "updated_at": now})
+    await db.loyalty_points_ledger.insert_one({
+        "id": str(uuid.uuid4()), "salon_id": salon_id, "customer_phone": phone,
+        "delta": int(delta), "reason": reason, "balance_after": new_balance, "created_at": now,
+    })
+    return new_balance
+
+
+@api_router.get("/salons/{salon_id}/loyalty-points-config")
+async def get_loyalty_points_config(salon_id: str):
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    return resolve_loyalty_points_config(salon)
+
+
+@api_router.put("/salons/{salon_id}/loyalty-points-config")
+async def update_loyalty_points_config(salon_id: str, body: dict = Body(...), current_user=Depends(get_current_salon_user)):
+    patch = {}
+    for k in LOYALTY_POINTS_DEFAULTS:
+        if k in body and body[k] is not None:
+            patch[k] = body[k]
+    if "points_enabled" in body:
+        patch["points_enabled"] = bool(body["points_enabled"])
+    if patch:
+        await db.salons.update_one({"id": salon_id}, {"$set": patch})
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    return resolve_loyalty_points_config(salon)
+
+
+@api_router.get("/salons/{salon_id}/customers/{phone}/loyalty-points")
+async def get_customer_loyalty_points(salon_id: str, phone: str):
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    if not phone.startswith("+91"):
+        phone = f"+91{phone}"
+    doc = await db.loyalty_points.find_one({"salon_id": salon_id, "customer_phone": phone}, {"_id": 0})
+    cfg = resolve_loyalty_points_config(salon)
+    points = int(doc.get("points", 0)) if doc else 0
+    rate = float(cfg.get("points_redeem_rate") or 10) or 10
+    return {
+        "points": points,
+        "config": cfg,
+        "redeemable_value": round(points / rate, 2),
+        "can_redeem": cfg.get("points_enabled") and points >= int(cfg.get("points_min_redeem") or 0),
+    }
+
+
+@api_router.post("/salons/{salon_id}/customers/{phone}/loyalty-points/redeem")
+async def redeem_loyalty_points(salon_id: str, phone: str, body: dict = Body(...)):
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    cfg = resolve_loyalty_points_config(salon)
+    if not cfg.get("points_enabled"):
+        raise HTTPException(status_code=400, detail="Loyalty points are not enabled")
+    if not phone.startswith("+91"):
+        phone = f"+91{phone}"
+    doc = await db.loyalty_points.find_one({"salon_id": salon_id, "customer_phone": phone})
+    balance = int(doc.get("points", 0)) if doc else 0
+    req_points = int(body.get("points") or 0)
+    if req_points <= 0:
+        req_points = balance  # redeem all by default
+    min_redeem = int(cfg.get("points_min_redeem") or 0)
+    if balance < min_redeem:
+        raise HTTPException(status_code=400, detail=f"You need at least {min_redeem} points to redeem")
+    if req_points > balance:
+        raise HTTPException(status_code=400, detail="Not enough points")
+    rate = float(cfg.get("points_redeem_rate") or 10) or 10
+    rupees = round(req_points / rate, 2)
+    if rupees <= 0:
+        raise HTTPException(status_code=400, detail="Points too low to convert")
+    # Deduct points
+    new_points = await _credit_loyalty_points(salon_id, phone, -req_points, "Redeemed to wallet")
+    # Credit the (loyalty) wallet
+    now = datetime.now(timezone.utc).isoformat()
+    wallet = await db.customer_wallets.find_one({"salon_id": salon_id, "customer_phone": phone})
+    if wallet:
+        new_wallet = round(float(wallet.get("wallet_balance", 0)) + rupees, 2)
+        await db.customer_wallets.update_one({"salon_id": salon_id, "customer_phone": phone},
+                                             {"$set": {"wallet_balance": new_wallet, "updated_at": now}})
+    else:
+        new_wallet = rupees
+        await db.customer_wallets.insert_one({"id": str(uuid.uuid4()), "salon_id": salon_id,
+                                              "customer_phone": phone, "wallet_balance": new_wallet, "created_at": now})
+    # Wallet transaction record (best-effort)
+    try:
+        await db.wallet_transactions.insert_one({
+            "id": str(uuid.uuid4()), "salon_id": salon_id, "customer_phone": phone,
+            "type": "credit", "amount": rupees, "balance_after": new_wallet,
+            "description": f"Redeemed {req_points} loyalty points", "created_at": now,
+        })
+    except Exception:
+        pass
+    return {"points": new_points, "credited": rupees, "wallet_balance": new_wallet}
+
+# ============ MESSAGES / CONVERSATIONS (WhatsApp + in-app + activity) ============
+
+_CONV_PALETTE = ["#6C4FE0", "#12A594", "#E8952B", "#3E93E8", "#E5484D", "#8B5CF6", "#0EA5E9", "#F59E0B"]
+
+
+def _fmt_time(dt_val):
+    try:
+        if isinstance(dt_val, str):
+            dt_val = datetime.fromisoformat(dt_val.replace("Z", "+00:00"))
+        return dt_val.strftime("%d %b · %I:%M %p").lstrip("0")
+    except Exception:
+        return ""
+
+
+def _activity_msg(token):
+    status = (token.get("status") or "").lower()
+    svc_ct = len(token.get("selected_services") or [])
+    amt = token.get("total_amount") or 0
+    if token.get("is_direct_invoice"):
+        return f"🧾 Invoice generated · ₹{round(float(amt))}", "activity"
+    if status in ("completed", "serviced", "done"):
+        return f"✅ Appointment completed · ₹{round(float(amt))}", "activity"
+    if status in ("cancelled", "canceled", "no_show", "no-show"):
+        return "❌ Appointment cancelled", "activity"
+    if status in ("in_service", "in-service", "in_progress", "serving"):
+        return "💈 Service in progress", "activity"
+    return f"📅 Appointment booked · {svc_ct} service{'s' if svc_ct != 1 else ''}", "activity"
+
+
+@api_router.get("/salons/{salon_id}/conversations")
+async def get_conversations(salon_id: str, current_user=Depends(get_current_salon_user)):
+    """Aggregate a per-customer conversation from bookings (activity), stored
+    WhatsApp/in-app messages, and marketing sends — for the Messages drawer."""
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    salon_name = (salon or {}).get("salon_name", "the salon")
+    convos = {}
+
+    def _conv(phone, name):
+        if phone not in convos:
+            idx = len(convos)
+            convos[phone] = {
+                "phone": phone, "name": name or "Guest",
+                "color": _CONV_PALETTE[idx % len(_CONV_PALETTE)],
+                "msgs": [], "unread": 0, "booking": "",
+            }
+        elif name and convos[phone]["name"] == "Guest":
+            convos[phone]["name"] = name
+        return convos[phone]
+
+    # 1) Booking / invoice activity
+    tokens = await db.tokens.find(
+        {"salon_id": salon_id, "phone": {"$nin": [None, ""]}}
+    ).sort("created_at", -1).to_list(400)
+    for t in tokens:
+        c = _conv(t.get("phone"), t.get("customer_name"))
+        text, kind = _activity_msg(t)
+        ts = t.get("updated_at") or t.get("created_at") or ""
+        c["msgs"].append({"f": "ref", "t": text, "kind": kind, "ts": ts, "tm": _fmt_time(ts)})
+        if not c["booking"]:
+            c["booking"] = text.split("·")[0].strip()
+
+    # 2) Stored chat messages (out = salon→guest, in = guest→salon)
+    stored = await db.whatsapp_messages.find({"salon_id": salon_id}).sort("created_at", 1).to_list(2000)
+    for m in stored:
+        c = _conv(m.get("customer_phone"), m.get("customer_name"))
+        ts = m.get("created_at") or ""
+        c["msgs"].append({
+            "f": "out" if m.get("direction") == "out" else "in",
+            "t": m.get("text") or "",
+            "kind": m.get("kind") or "message",
+            "channel": m.get("channel") or "whatsapp",
+            "provider": m.get("provider"),
+            "ts": ts, "tm": _fmt_time(ts),
+        })
+        if m.get("direction") == "in" and not m.get("read"):
+            c["unread"] += 1
+
+    # 3) Sort each thread + compute last message
+    out = []
+    for c in convos.values():
+        c["msgs"].sort(key=lambda x: x.get("ts") or "")
+        last = next((x for x in reversed(c["msgs"])), None)
+        c["last"] = (last or {}).get("t", "")
+        c["last_tm"] = (last or {}).get("tm", "")
+        c["last_ts"] = (last or {}).get("ts", "")
+        out.append(c)
+    out.sort(key=lambda x: x.get("last_ts") or "", reverse=True)
+    return {"conversations": out, "salon_name": salon_name}
+
+
+@api_router.get("/salons/{salon_id}/message-templates")
+async def get_message_templates(salon_id: str, current_user=Depends(get_current_salon_user)):
+    """Promotional templates for the composer dropdown — built from coupons + generics."""
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    salon_name = (salon or {}).get("salon_name", "our salon")
+    templates = []
+    async for cp in db.salon_coupons.find({"salon_id": salon_id, "is_active": True}).sort("created_at", -1).limit(20):
+        val = f"{cp.get('value')}% off" if cp.get("type") == "percent" else f"₹{cp.get('value')} off"
+        templates.append({
+            "id": f"coupon-{cp.get('id')}",
+            "label": f"🎁 {cp.get('title') or cp.get('code')} ({cp.get('code')})",
+            "text": f"Hi! 🎉 Use code *{cp.get('code')}* for {val} on your next visit at {salon_name}. Book now — see you soon! 💈",
+        })
+    templates += [
+        {"id": "gen-thanks", "label": "🙏 Thank you for visiting", "text": f"Thank you for visiting {salon_name}! ✨ We hope you loved your experience. We'd be grateful for a quick review. 🌟"},
+        {"id": "gen-winback", "label": "💜 We miss you", "text": f"We miss you at {salon_name}! It's been a while — book your next appointment and enjoy a special treat. 💇"},
+        {"id": "gen-reminder", "label": "⏰ Booking reminder", "text": f"This is a friendly reminder about your upcoming appointment at {salon_name}. Reply here if you'd like to reschedule. 🙂"},
+    ]
+    return {"templates": templates}
+
+
+@api_router.post("/salons/{salon_id}/conversations/{phone}/send")
+async def send_conversation_message(salon_id: str, phone: str, body: dict = Body(...), current_user=Depends(get_current_salon_user)):
+    """Send a WhatsApp message to a guest (via Twilio/Meta) and persist it in the thread."""
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message text is required")
+    customer_name = body.get("customer_name") or ""
+    result = {"status": "failed", "provider": "twilio"}
+    try:
+        from whatsapp_service import send_whatsapp_message
+        result = await send_whatsapp_message(phone, text=text)
+    except Exception as e:
+        logger.warning(f"[Messages] send failed: {e}")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()), "salon_id": salon_id, "customer_phone": phone,
+        "customer_name": customer_name, "direction": "out", "text": text,
+        "channel": "whatsapp", "provider": result.get("provider", "twilio"),
+        "kind": body.get("kind") or "message", "status": result.get("status"),
+        "read": True, "created_at": now,
+    }
+    await db.whatsapp_messages.insert_one(doc)
+    doc.pop("_id", None)
+    return {"message": {"f": "out", "t": text, "tm": _fmt_time(now), "channel": "whatsapp", "provider": doc["provider"]}, "send_status": result.get("status")}
+
+
+
 
 @api_router.get("/shifts")
 async def get_available_shifts():
@@ -8594,6 +10384,76 @@ async def create_booking(booking: BookingCreate):
             service = await db.services.find_one({"id": service_id}, {"_id": 0})
             if service:
                 total_amount += service.get("base_price", 0)
+
+    # -- Discount membership: auto-apply flat % off services (before coupon) --
+    membership_discount = 0.0
+    membership_disc_pct = 0.0
+    membership_name_applied = None
+    if phone:
+        _mem_phone = phone if phone.startswith("+91") else f"+91{phone}"
+        _active_mem = await db.customer_memberships.find_one({
+            "salon_id": booking.salon_id, "customer_phone": _mem_phone,
+            "is_active": True, "payment_confirmed": True
+        }, {"_id": 0})
+        if _active_mem:
+            membership_disc_pct = float(_active_mem.get("discount_percent") or 0)
+            if membership_disc_pct <= 0 and _active_mem.get("membership_plan_id"):
+                _plan = await db.membership_plans.find_one({"id": _active_mem["membership_plan_id"]}, {"_id": 0})
+                if _plan and (_plan.get("plan_type") == "discount"):
+                    membership_disc_pct = float(_plan.get("discount_percent") or 0)
+            if membership_disc_pct > 0:
+                membership_discount = round(float(total_amount) * membership_disc_pct / 100.0, 2)
+                membership_discount = max(0.0, min(membership_discount, float(total_amount)))
+                total_amount = round(float(total_amount) - membership_discount, 2)
+                membership_name_applied = _active_mem.get("membership_name")
+
+    # -- Coupon: subtract the salon's real coupon discount from what the guest pays --
+    coupon_discount = 0.0
+    coupon_doc_for_booking = None
+    coupon_code_norm = (booking.coupon_code or "").strip().upper() or None
+    if coupon_code_norm:
+        c = await db.salon_coupons.find_one({"salon_id": booking.salon_id, "code": coupon_code_norm})
+        if not c:
+            raise HTTPException(status_code=404, detail="Invalid coupon code")
+        try:
+            from marketing import _coupon_active as _ca, _compute_coupon_discount as _ccd
+        except Exception:
+            _ca = _ccd = None
+        if _ca and not _ca(c):
+            raise HTTPException(status_code=400, detail="Coupon expired or inactive")
+        if total_amount < float(c.get("min_bill_amount") or 0):
+            raise HTTPException(status_code=400, detail=f"Minimum bill amount for coupon is ₹{c.get('min_bill_amount')}")
+        if c.get("applicable_service_ids") and not any(sid in c["applicable_service_ids"] for sid in booking.selected_services):
+            raise HTTPException(status_code=400, detail="Coupon not applicable on selected services")
+        if _ccd:
+            coupon_discount = await _ccd(c, float(total_amount))
+        else:
+            coupon_discount = round(float(total_amount) * float(c.get("value") or 0) / 100.0, 2) if c.get("type") == "percent" else float(c.get("value") or 0)
+        coupon_discount = max(0.0, min(coupon_discount, float(total_amount)))
+        total_amount = round(float(total_amount) - coupon_discount, 2)
+        coupon_doc_for_booking = c
+
+    # -- Loyalty points redeemed at checkout (convert to bill discount) --
+    points_redeemed = 0
+    points_discount = 0.0
+    req_redeem = int(getattr(booking, "points_redeem", 0) or 0)
+    if req_redeem > 0:
+        salon_doc = await db.salons.find_one({"id": booking.salon_id}, {"_id": 0})
+        pcfg = resolve_loyalty_points_config(salon_doc or {})
+        if pcfg.get("points_enabled") and phone:
+            pnorm = phone if phone.startswith("+91") else f"+91{phone}"
+            pdoc = await db.loyalty_points.find_one({"salon_id": booking.salon_id, "customer_phone": pnorm})
+            bal = int(pdoc.get("points", 0)) if pdoc else 0
+            use = min(req_redeem, bal)
+            rate = float(pcfg.get("points_redeem_rate") or 10) or 10
+            if use >= int(pcfg.get("points_min_redeem") or 0) and use > 0:
+                points_discount = min(round(use / rate, 2), float(total_amount))
+                # only spend the points actually applied to the bill
+                use = int(round(points_discount * rate))
+                if use > 0:
+                    await _credit_loyalty_points(booking.salon_id, phone, -use, "Redeemed at checkout")
+                    points_redeemed = use
+                    total_amount = round(float(total_amount) - points_discount, 2)
     
     # Handle wallet payment
     payment_status = "pending"
@@ -8672,6 +10532,13 @@ async def create_booking(booking: BookingCreate):
         "barber_name": barber_name,
         "selected_services": booking.selected_services,
         "total_amount": total_amount,
+        "coupon_code": coupon_code_norm,
+        "coupon_discount": coupon_discount,
+        "membership_discount": membership_discount,
+        "membership_discount_percent": membership_disc_pct,
+        "points_redeemed": points_redeemed,
+        "points_discount": points_discount,
+        "order_discount_amount": round(coupon_discount + points_discount + membership_discount, 2),
         # 75%-rule bookkeeping (stored for consistent capacity math)
         "total_service_minutes": service_total_minutes,
         "blocked_minutes": required_blocked,
@@ -8689,7 +10556,21 @@ async def create_booking(booking: BookingCreate):
     }
     
     await db.tokens.insert_one(token_dict)
-    
+
+    # Record coupon redemption (best-effort)
+    if coupon_doc_for_booking:
+        try:
+            from marketing import record_coupon_redemption as _rec
+            await _rec(
+                salon_id=booking.salon_id,
+                coupon_id=coupon_doc_for_booking.get("id"),
+                customer_phone=phone,
+                booking_id=token_dict["id"],
+                amount=coupon_discount,
+            )
+        except Exception:
+            pass
+
     token = TokenModel(**token_dict)
     await broadcast_update("token_created", token.model_dump())
     
@@ -8958,6 +10839,18 @@ async def complete_token(token_id: str, current_salon=Depends(get_current_salon)
         # Auto-attendance must never block completing the booking. Log + continue.
         logger.warning(f"Auto-attendance upsert failed for token {token_id}: {auto_attn_err}")
 
+    # After completion the queue advances — ping guests that are now 1 or 2
+    # spots away so they can start heading over.
+    try:
+        salon_id_n = token.get("salon_id")
+        barber_id_n = token.get("barber_id")
+        date_n = token.get("date")
+        tok_num_n = token.get("token_number")
+        if salon_id_n and barber_id_n and date_n and tok_num_n:
+            await check_and_notify_nearby_tokens(salon_id_n, barber_id_n, date_n, str(tok_num_n))
+    except Exception as _e:
+        logger.warning(f"nearby-alert skipped on /complete: {_e}")
+
     # Notify customer of status change (in-app)
     if token.get("phone"):
         await create_in_app_notification(
@@ -9153,7 +11046,18 @@ async def call_token(token_id: str, current_salon=Depends(get_current_salon_user
     
     # Send notification
     await send_booking_notification(token, 'token_called')
-    
+
+    # Also ping guests waiting 2 and 1 spots away — they should start heading over.
+    try:
+        salon_id = token.get("salon_id")
+        barber_id = token.get("barber_id")
+        date = token.get("date")
+        tok_num = token.get("token_number")
+        if salon_id and barber_id and date and tok_num:
+            await check_and_notify_nearby_tokens(salon_id, barber_id, date, str(tok_num))
+    except Exception as _e:
+        logger.warning(f"nearby-alert skipped on /call: {_e}")
+
     return {"message": "Token called"}
 
 @api_router.post("/tokens/{token_id}/cancel")
@@ -10289,6 +12193,8 @@ async def get_financial_settings(salon_id: str, current_user=Depends(get_current
 @api_router.put("/salons/{salon_id}/financials/settings")
 async def update_financial_settings(salon_id: str, body: dict, current_user=Depends(get_current_salon_user)):
     """Update financial settings (opening balance)"""
+    if not has_module_permission(current_user, "financials", "edit_transaction"):
+        raise HTTPException(status_code=403, detail="Permission denied: financials.edit_transaction")
     opening_balance = body.get("opening_balance", 0)
     opening_balance_date = body.get("opening_balance_date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     
@@ -10318,6 +12224,8 @@ async def get_financial_transactions(
     current_user=Depends(get_current_salon_user)
 ):
     """Get financial transactions with filters"""
+    if not has_module_permission(current_user, "financials", "view_transactions"):
+        raise HTTPException(status_code=403, detail="Permission denied: financials.view_transactions")
     if is_branch_manager(current_user):
         branch_id = enforce_branch_for_manager(current_user, branch_id)
     query = {"salon_id": salon_id}
@@ -10345,6 +12253,8 @@ async def get_financial_transactions(
 @api_router.post("/salons/{salon_id}/financials/transactions")
 async def create_financial_transaction(salon_id: str, txn: FinancialTransactionCreate, current_user=Depends(get_current_salon_user)):
     """Create a manual financial transaction (expense, withdrawal, deposit, adjustment)"""
+    if not has_module_permission(current_user, "financials", "create_transaction"):
+        raise HTTPException(status_code=403, detail="Permission denied: financials.create_transaction")
     txn_date = txn.date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     
     txn_data = {
@@ -10373,6 +12283,8 @@ async def create_financial_transaction(salon_id: str, txn: FinancialTransactionC
 @api_router.delete("/salons/{salon_id}/financials/transactions/{txn_id}")
 async def delete_financial_transaction(salon_id: str, txn_id: str, current_user=Depends(get_current_salon_user)):
     """Delete a manual financial transaction (admin only)"""
+    if not has_module_permission(current_user, "financials", "delete_transaction"):
+        raise HTTPException(status_code=403, detail="Permission denied: financials.delete_transaction")
     txn = await db.financial_transactions.find_one({"id": txn_id, "salon_id": salon_id}, {"_id": 0})
     if not txn:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -10391,6 +12303,8 @@ async def get_financial_dashboard(
     current_user=Depends(get_current_salon_user)
 ):
     """Get financial dashboard data with cash in/out summary"""
+    if not has_module_permission(current_user, "financials", "view_dashboard"):
+        raise HTTPException(status_code=403, detail="Permission denied: financials.view_dashboard")
     if is_branch_manager(current_user):
         branch_id = enforce_branch_for_manager(current_user, branch_id)
     today = datetime.now(timezone.utc)
@@ -10646,6 +12560,8 @@ async def update_salon_notif_settings(
     current_user=Depends(get_current_salon_user),
 ):
     """Update salon notification preferences."""
+    if not has_module_permission(current_user, "salon_settings", "edit_notifications"):
+        raise HTTPException(status_code=403, detail="Permission denied: salon_settings.edit_notifications")
     update_doc = {k: bool(v) for k, v in body.items() if k in DEFAULT_SALON_NOTIFICATION_SETTINGS}
     update_doc["salon_id"] = salon_id
     update_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -11096,6 +13012,1176 @@ async def get_salon_token_status(salon_id: str, shift: Optional[str] = None, dat
 async def get_salon_live_status(salon_id: str, shift: Optional[str] = None, date: Optional[str] = None, branch_id: Optional[str] = None):
     """Get current live status for salon (alias for token-status)"""
     return await get_salon_token_status(salon_id, shift, date, branch_id)
+
+
+# ============ SALON HOME KPIs + DIRECT INVOICE ============
+
+@api_router.get("/salons/{salon_id}/home-kpis")
+async def get_salon_home_kpis(
+    salon_id: str,
+    date_mode: str = "today",
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_salon=Depends(get_current_salon_user)
+):
+    """One-shot KPIs for the redesigned salon Home page.
+
+    date_mode: today | yesterday | tomorrow | range | week
+      When date_mode='range', supply date_from / date_to (YYYY-MM-DD).
+    """
+    # -- date basis --
+    today = datetime.now(timezone.utc).date()
+    if date_mode == "yesterday":
+        start_date = end_date = today - timedelta(days=1)
+    elif date_mode == "tomorrow":
+        start_date = end_date = today + timedelta(days=1)
+    elif date_mode == "week":
+        start_date = today - timedelta(days=6)
+        end_date = today
+    elif date_mode == "range":
+        try:
+            start_date = date.fromisoformat(date_from) if date_from else today
+            end_date = date.fromisoformat(date_to) if date_to else today
+        except Exception:
+            start_date = end_date = today
+        if end_date < start_date:
+            start_date, end_date = end_date, start_date
+    else:
+        start_date = end_date = today
+    basis_date = end_date.isoformat()  # for legacy fields
+    date_start_iso = start_date.isoformat()
+    date_end_iso = end_date.isoformat()
+
+    # -- fetch tokens in the basis range --
+    tokens_basis = await db.tokens.find(
+        {"salon_id": salon_id, "date": {"$gte": date_start_iso, "$lte": date_end_iso}},
+        {"_id": 0}
+    ).to_list(20000)
+
+    completed_basis = [t for t in tokens_basis if t.get("status") == "completed"]
+    total_amounts = [float(t.get("total_amount") or 0) for t in completed_basis]
+
+    today_sales = round(sum(total_amounts), 2)
+    avg_ticket = round((today_sales / len(completed_basis)), 2) if completed_basis else 0.0
+
+    # no-show rate — skipped/cancelled over total tokens (today)
+    total_ct = len(tokens_basis)
+    ns_ct = sum(1 for t in tokens_basis if t.get("status") in ("skipped", "cancelled", "no_show"))
+    no_show_rate = round((ns_ct * 100.0 / total_ct), 1) if total_ct else 0.0
+
+    # -- rebooking / retention rate: fraction of completed today's customers
+    #    who had at least one earlier completed token (last 180 days) --
+    prior_start = (today - timedelta(days=180)).isoformat()
+    rebook_hit = 0
+    unique_phones = set()
+    for t in completed_basis:
+        ph = (t.get("phone") or "").strip()
+        if not ph:
+            continue
+        unique_phones.add(ph)
+    if unique_phones:
+        prior_agg = await db.tokens.find(
+            {
+                "salon_id": salon_id,
+                "phone": {"$in": list(unique_phones)},
+                "status": "completed",
+                "date": {"$gte": prior_start, "$lt": date_start_iso},
+            },
+            {"_id": 0, "phone": 1}
+        ).to_list(20000)
+        prior_phones = {p["phone"] for p in prior_agg}
+        rebook_hit = len(prior_phones & unique_phones)
+    rebooking_rate = round((rebook_hit * 100.0 / len(unique_phones)), 1) if unique_phones else 0.0
+    retention_rate = rebooking_rate  # alias (short-hand)
+
+    # -- new clients today: unique phones today with NO prior tokens ever --
+    new_clients_count = 0
+    if unique_phones:
+        seen_ever = await db.tokens.find(
+            {
+                "salon_id": salon_id,
+                "phone": {"$in": list(unique_phones)},
+                "date": {"$lt": date_start_iso},
+            },
+            {"_id": 0, "phone": 1}
+        ).to_list(20000)
+        prior_ever = {p["phone"] for p in seen_ever}
+        new_clients_count = sum(1 for p in unique_phones if p not in prior_ever)
+
+    # -- chair utilization: (completed service-minutes today) / (barbers * 8h * 60 min) --
+    barbers = await db.barbers.find({"salon_id": salon_id, "is_active": True}, {"_id": 0}).to_list(1000)
+    barber_count = max(1, len(barbers))
+    # Try to derive minutes from selected_services duration; fallback to 30m/service
+    service_dur_cache: Dict[str, int] = {}
+    used_minutes = 0
+    for t in completed_basis:
+        for svc_obj in (t.get("selected_services") or []):
+            # Handle both string ID and dict formats for backward compatibility
+            if isinstance(svc_obj, dict):
+                sid = svc_obj.get("service_id") or svc_obj.get("id")
+                dur = svc_obj.get("default_duration") or svc_obj.get("duration")
+            else:
+                sid = svc_obj
+                dur = None
+            if not sid:
+                continue
+            if sid not in service_dur_cache:
+                if dur is not None:
+                    service_dur_cache[sid] = int(dur or 30)
+                else:
+                    svc = await db.services.find_one({"id": sid}, {"_id": 0, "default_duration": 1})
+                    service_dur_cache[sid] = int((svc or {}).get("default_duration") or 30)
+            used_minutes += service_dur_cache[sid]
+    available_minutes = barber_count * 8 * 60
+    chair_utilization = round(min(100.0, used_minutes * 100.0 / available_minutes), 1) if available_minutes else 0.0
+
+    # -- retail sales (from salon_orders or salon_store_sales if exists) --
+    retail_sales = 0.0
+    try:
+        rs_cursor = db.salon_store_orders.find(
+            {"salon_id": salon_id, "created_at": {"$gte": date_start_iso}},
+            {"_id": 0, "total_amount": 1}
+        )
+        async for r in rs_cursor:
+            retail_sales += float(r.get("total_amount") or 0)
+    except Exception:
+        retail_sales = 0.0
+
+    # -- reminder / confirmation rate (marketing messages sent today: delivered/sent%) --
+    reminder_confirmation_rate = None
+    try:
+        sent = await db.marketing_messages.count_documents(
+            {"salon_id": salon_id, "sent_at": {"$regex": f"^{basis_date}"}}
+        )
+        delivered = await db.marketing_messages.count_documents(
+            {"salon_id": salon_id, "sent_at": {"$regex": f"^{basis_date}"},
+             "status": {"$in": ["delivered", "read"]}}
+        )
+        reminder_confirmation_rate = round((delivered * 100.0 / sent), 1) if sent else 0.0
+    except Exception:
+        reminder_confirmation_rate = 0.0
+
+    # -- waitlist (feature not present in DB yet) --
+    waitlist_count = 0
+    try:
+        waitlist_count = await db.salon_waitlist.count_documents(
+            {"salon_id": salon_id, "status": "waiting"}
+        )
+    except Exception:
+        waitlist_count = 0
+
+    # -- payment mix (today) --
+    payment_mix: Dict[str, float] = {}
+    for t in completed_basis:
+        pm = (t.get("payment_mode") or "unknown").lower()
+        payment_mix[pm] = payment_mix.get(pm, 0.0) + float(t.get("total_amount") or 0)
+    payment_mix = {k: round(v, 2) for k, v in payment_mix.items()}
+
+    # -- top services today (by count + revenue) --
+    svc_ct: Dict[str, Dict[str, Any]] = {}
+    for t in completed_basis:
+        for svc_obj in (t.get("selected_services") or []):
+            if isinstance(svc_obj, dict):
+                sid = svc_obj.get("service_id") or svc_obj.get("id")
+            else:
+                sid = svc_obj
+            if not sid:
+                continue
+            if sid not in svc_ct:
+                svc_ct[sid] = {"service_id": sid, "count": 0}
+            svc_ct[sid]["count"] += 1
+    if svc_ct:
+        svc_docs = await db.services.find(
+            {"id": {"$in": list(svc_ct.keys())}},
+            {"_id": 0, "id": 1, "service_name": 1, "base_price": 1}
+        ).to_list(200)
+        by_id = {s["id"]: s for s in svc_docs}
+        for sid, row in svc_ct.items():
+            info = by_id.get(sid) or {}
+            row["service_name"] = info.get("service_name") or "Service"
+            row["revenue"] = round(row["count"] * float(info.get("base_price") or 0), 2)
+    top_services = sorted(svc_ct.values(), key=lambda r: r.get("revenue", 0), reverse=True)[:5]
+
+    # -- staff leaderboard (today) --
+    staff_leaderboard: List[Dict[str, Any]] = []
+    barber_stats: Dict[str, Dict[str, Any]] = {}
+    for t in completed_basis:
+        bid = t.get("barber_id")
+        if not bid:
+            continue
+        row = barber_stats.setdefault(bid, {
+            "barber_id": bid,
+            "barber_name": t.get("barber_name") or "Barber",
+            "sales": 0.0,
+            "tips": 0.0,
+            "bookings": 0,
+            "rebook_count": 0,
+        })
+        row["sales"] += float(t.get("total_amount") or 0)
+        row["tips"] += float(t.get("tip_amount") or 0)
+        row["bookings"] += 1
+        # rebook: customer had past completed tokens with same barber (last 180d)
+        # keep this cheap — just flag if phone existed anywhere in prior set
+        if t.get("phone") and t["phone"] in unique_phones and rebook_hit:
+            pass  # aggregate rebook % below
+    # Compute rebook % per barber (simple)
+    for bid, row in barber_stats.items():
+        row["sales"] = round(row["sales"], 2)
+        row["tips"] = round(row["tips"], 2)
+        # % of returning customers among today's completed for this barber
+        row["rebook_pct"] = rebooking_rate
+    staff_leaderboard = sorted(barber_stats.values(), key=lambda r: r["sales"], reverse=True)
+
+    # -- reviews summary --
+    reviews_summary = {"avg_rating": 0.0, "total_reviews": 0, "distribution": {"5":0,"4":0,"3":0,"2":0,"1":0}}
+    try:
+        all_ratings = await db.ratings.find({"salon_id": salon_id}, {"_id": 0, "rating": 1}).to_list(5000)
+        if all_ratings:
+            total = len(all_ratings)
+            avg = sum(float(r.get("rating") or 0) for r in all_ratings) / total
+            dist = {"5":0,"4":0,"3":0,"2":0,"1":0}
+            for r in all_ratings:
+                k = str(int(round(float(r.get("rating") or 0))))
+                if k in dist:
+                    dist[k] += 1
+            reviews_summary = {"avg_rating": round(avg, 1), "total_reviews": total, "distribution": dist}
+    except Exception:
+        pass
+
+    # -- targets vs actual (from salon.settings.targets or fallback) --
+    salon_doc = await db.salons.find_one({"id": salon_id}, {"_id": 0}) or {}
+    targets = salon_doc.get("targets") or {}
+    daily_target = float(targets.get("daily_revenue") or 15000)
+    monthly_target = float(targets.get("monthly_revenue") or 300000)
+    membership_target = float(targets.get("monthly_memberships") or 20)
+
+    # month-to-date revenue
+    first_of_month = today.replace(day=1).isoformat()
+    mtd_docs = await db.tokens.find(
+        {"salon_id": salon_id, "status": "completed", "date": {"$gte": first_of_month, "$lte": today.isoformat()}},
+        {"_id": 0, "total_amount": 1}
+    ).to_list(20000)
+    mtd_revenue = round(sum(float(d.get("total_amount") or 0) for d in mtd_docs), 2)
+
+    # memberships sold this month
+    try:
+        mtd_memberships = await db.customer_memberships.count_documents({
+            "salon_id": salon_id,
+            "purchased_at": {"$gte": first_of_month}
+        })
+    except Exception:
+        mtd_memberships = 0
+
+    # -- revenue 7d sparkline --
+    revenue_7d: List[Dict[str, Any]] = []
+    for i in range(6, -1, -1):
+        d = (today - timedelta(days=i)).isoformat()
+        docs = await db.tokens.find(
+            {"salon_id": salon_id, "status": "completed", "date": d},
+            {"_id": 0, "total_amount": 1}
+        ).to_list(5000)
+        revenue_7d.append({"date": d, "total": round(sum(float(x.get("total_amount") or 0) for x in docs), 2)})
+
+    # -- busy hours histogram (last 7d) --
+    hist_start = (today - timedelta(days=6)).isoformat()
+    hist_docs = await db.tokens.find(
+        {"salon_id": salon_id, "date": {"$gte": hist_start, "$lte": today.isoformat()}},
+        {"_id": 0, "created_at": 1}
+    ).to_list(20000)
+    busy_hours = {str(h): 0 for h in range(24)}
+    for d in hist_docs:
+        try:
+            hh = datetime.fromisoformat((d.get("created_at") or "").replace("Z", "+00:00")).hour
+            busy_hours[str(hh)] += 1
+        except Exception:
+            continue
+
+    # ---- Customer count by source (new home page KPI) ------------------------
+    # customers.source enum: online | qr | owner | direct
+    #   online = booked from customer website / app
+    #   qr     = walked in via QR scan
+    #   owner  = booked by salon owner from admin panel
+    #   direct = direct invoice (walk-out, no queue)
+    # Falls back to token.source when customers doc is missing.
+    source_map = {"online": 0, "qr": 0, "owner": 0, "direct": 0}
+    _phone_source_cache: Dict[str, str] = {}
+    for t in tokens_basis:
+        # Prefer explicit source stored on the token, otherwise look up the
+        # customer's stored source, otherwise infer from token metadata.
+        src = (t.get("source") or "").lower().strip()
+        if src not in source_map:
+            ph = (t.get("phone") or "").strip()
+            if ph:
+                if ph not in _phone_source_cache:
+                    cust = await db.customers.find_one(
+                        {"phone": ph}, {"_id": 0, "source": 1}
+                    )
+                    _phone_source_cache[ph] = ((cust or {}).get("source") or "").lower().strip()
+                src = _phone_source_cache[ph]
+        if src not in source_map:
+            # Heuristic fallback: booking_type or direct_invoice flag
+            if t.get("is_direct_invoice") or t.get("booking_type") == "direct":
+                src = "direct"
+            elif t.get("booking_type") == "walk_in" or t.get("via_qr"):
+                src = "qr"
+            elif t.get("created_via_admin") or t.get("booking_type") == "admin":
+                src = "owner"
+            else:
+                src = "online"
+        source_map[src] = source_map.get(src, 0) + 1
+    customer_count_by_source = source_map
+    customer_count_total = sum(source_map.values())
+
+    # ---- Staff attendance (In / Late / Out for today) -------------------------
+    # attendance_mode.py stores docs in db.staff_attendance
+    #   {barber_id, salon_id, date, check_in_at, check_out_at, status}
+    attendance_today: List[Dict[str, Any]] = []
+    try:
+        att_rows = await db.staff_attendance.find(
+            {"salon_id": salon_id, "date": today.isoformat()},
+            {"_id": 0}
+        ).to_list(500)
+        att_by_barber = {a.get("barber_id"): a for a in att_rows}
+        # Build per-barber row from all active barbers so admin can toggle
+        for b in barbers:
+            a = att_by_barber.get(b.get("id")) or {}
+            ci = a.get("check_in_at")
+            co = a.get("check_out_at")
+            if co:
+                status = "out"
+            elif ci:
+                status = "in"
+            else:
+                status = "late"
+            attendance_today.append({
+                "barber_id": b.get("id"),
+                "name": b.get("name") or "Staff",
+                "status": status,
+                "check_in_at": ci,
+                "check_out_at": co,
+            })
+    except Exception:
+        attendance_today = []
+
+    # ---- Marketing performance for the period --------------------------------
+    marketing_perf: Dict[str, Any] = {
+        "sent": 0, "delivered": 0, "clicked": 0, "redeemed": 0, "revenue": 0.0,
+        "delivered_pct": 0.0, "click_pct": 0.0,
+        "campaigns": [], "channels": {},
+    }
+    try:
+        mm_query = {
+            "salon_id": salon_id,
+            "sent_at": {"$gte": date_start_iso, "$lte": date_end_iso + "T23:59:59Z"},
+        }
+        mm_docs = await db.marketing_messages.find(mm_query, {"_id": 0}).to_list(50000)
+        sent = len(mm_docs)
+        delivered = sum(1 for m in mm_docs if m.get("status") in ("delivered", "read", "clicked"))
+        clicked = sum(1 for m in mm_docs if m.get("clicked_at") or m.get("status") == "clicked")
+        redeemed = sum(1 for m in mm_docs if m.get("redeemed_at"))
+        revenue = sum(float(m.get("attributed_revenue") or 0) for m in mm_docs)
+        marketing_perf["sent"] = sent
+        marketing_perf["delivered"] = delivered
+        marketing_perf["clicked"] = clicked
+        marketing_perf["redeemed"] = redeemed
+        marketing_perf["revenue"] = round(revenue, 2)
+        marketing_perf["delivered_pct"] = round((delivered * 100.0 / sent), 1) if sent else 0.0
+        marketing_perf["click_pct"] = round((clicked * 100.0 / sent), 1) if sent else 0.0
+        # Channel mix (WhatsApp / SMS / Email)
+        chans: Dict[str, int] = {}
+        for m in mm_docs:
+            ch = (m.get("channel") or m.get("provider") or "WhatsApp").capitalize()
+            chans[ch] = chans.get(ch, 0) + 1
+        marketing_perf["channels"] = chans
+        # Active campaigns list (rolled up)
+        camp_rollup: Dict[str, Dict[str, Any]] = {}
+        for m in mm_docs:
+            cid = m.get("campaign_id") or "adhoc"
+            row = camp_rollup.setdefault(cid, {
+                "id": cid, "name": None, "channel": (m.get("channel") or "WhatsApp").capitalize(),
+                "sent": 0, "delivered": 0, "redeemed": 0, "revenue": 0.0
+            })
+            row["sent"] += 1
+            if m.get("status") in ("delivered", "read", "clicked"):
+                row["delivered"] += 1
+            if m.get("redeemed_at"):
+                row["redeemed"] += 1
+            row["revenue"] += float(m.get("attributed_revenue") or 0)
+        # Fetch campaign names
+        camp_ids = [c for c in camp_rollup.keys() if c != "adhoc"]
+        if camp_ids:
+            camp_docs = await db.marketing_campaigns.find(
+                {"id": {"$in": camp_ids}}, {"_id": 0, "id": 1, "name": 1, "channel": 1}
+            ).to_list(200)
+            for cd in camp_docs:
+                if cd["id"] in camp_rollup:
+                    camp_rollup[cd["id"]]["name"] = cd.get("name")
+                    camp_rollup[cd["id"]]["channel"] = (cd.get("channel") or camp_rollup[cd["id"]]["channel"]).capitalize()
+        for cid, row in camp_rollup.items():
+            if not row["name"]:
+                row["name"] = "Ad-hoc messages" if cid == "adhoc" else "Campaign"
+            row["revenue"] = round(row["revenue"], 2)
+        marketing_perf["campaigns"] = sorted(
+            camp_rollup.values(), key=lambda r: r["sent"], reverse=True
+        )[:6]
+    except Exception:
+        pass
+
+    # ---- Booking link URLs (used by the compact Send booking link chip) ------
+    # These are the 3 links the salon can share with a customer via WhatsApp.
+    frontend_origin = os.environ.get("PUBLIC_APP_URL") or (
+        # Fall back to REACT_APP_BACKEND_URL sans /api since ingress rewrites /api → :8001.
+        # The customer routes live at /(salons/:id), /(salons/:id/menu), /(salons/:id/book).
+        ""
+    )
+    salon_slug = salon_id  # keep simple; salons/{id} routes work everywhere
+    booking_links = {
+        "book_url":  f"{frontend_origin}/salons/{salon_slug}/book"  if frontend_origin else f"/salons/{salon_slug}/book",
+        "home_url":  f"{frontend_origin}/salons/{salon_slug}"       if frontend_origin else f"/salons/{salon_slug}",
+        "menu_url":  f"{frontend_origin}/salons/{salon_slug}/menu"  if frontend_origin else f"/salons/{salon_slug}/menu",
+    }
+
+    return {
+        "date_basis": basis_date,
+        "date_range": {"from": date_start_iso, "to": date_end_iso},
+        "primary": {
+            "today_sales": today_sales,
+            "avg_ticket": avg_ticket,
+            "rebooking_rate": rebooking_rate,
+            "no_show_rate": no_show_rate,
+            "chair_utilization": chair_utilization,
+        },
+        "customer_count": {
+            "total": customer_count_total,
+            "by_source": customer_count_by_source,
+        },
+        "staff_attendance": attendance_today,
+        "marketing_perf": marketing_perf,
+        "booking_links": booking_links,
+        "secondary": {
+            "appointments_count": total_ct,
+            "new_clients_count": new_clients_count,
+            "retention_rate": retention_rate,
+            "retail_sales": round(retail_sales, 2),
+            "reminder_confirmation_rate": reminder_confirmation_rate or 0.0,
+            "waitlist_count": waitlist_count,
+        },
+        "staff_leaderboard": staff_leaderboard,
+        "reviews": reviews_summary,
+        "targets": {
+            "daily_target": daily_target,
+            "daily_actual": today_sales,
+            "monthly_target": monthly_target,
+            "monthly_actual": mtd_revenue,
+            "membership_target": membership_target,
+            "membership_actual": mtd_memberships,
+        },
+        "revenue_7d": revenue_7d,
+        "payment_mix": payment_mix,
+        "top_services": top_services,
+        "busy_hours": busy_hours,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Send booking link — used by the compact "Send booking link" chip on Home.
+#   Sends one of 3 links (booking page / salon home / menu) to a guest via
+#   WhatsApp. Accepts either a saved customer's phone or a raw 10-digit mobile.
+# ---------------------------------------------------------------------------
+class SendBookingLinkIn(BaseModel):
+    phone: str                # 10-digit or +91-prefixed
+    link_type: str = "book"   # book | home | menu
+    name: Optional[str] = None
+    save_as_lead: Optional[bool] = False
+
+
+@api_router.post("/salons/{salon_id}/send-booking-link")
+async def send_booking_link(
+    salon_id: str,
+    body: SendBookingLinkIn,
+    current_salon=Depends(get_current_salon_user),
+):
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    # Normalize phone → +91 prefix (India only for now)
+    raw = (body.phone or "").strip().replace(" ", "").replace("-", "")
+    if not raw:
+        raise HTTPException(status_code=400, detail="Phone is required")
+    if not raw.startswith("+"):
+        digits = "".join(c for c in raw if c.isdigit())
+        if len(digits) < 10:
+            raise HTTPException(status_code=400, detail="Enter a valid 10-digit phone")
+        raw = f"+91{digits[-10:]}"
+
+    salon_name = salon.get("salon_name") or salon.get("name") or "our salon"
+    frontend_origin = os.environ.get("PUBLIC_APP_URL") or ""
+    kind = (body.link_type or "book").lower()
+    if kind not in ("book", "home", "menu"):
+        raise HTTPException(status_code=400, detail="link_type must be book|home|menu")
+    path_by_kind = {
+        "book": f"/salons/{salon_id}/book",
+        "home": f"/salons/{salon_id}",
+        "menu": f"/salons/{salon_id}/menu",
+    }
+    link_url = f"{frontend_origin}{path_by_kind[kind]}" if frontend_origin else path_by_kind[kind]
+    template = {
+        "book": f"Hi{(' ' + body.name) if body.name else ''}, book your next visit at {salon_name} here: {link_url}",
+        "home": f"Hi{(' ' + body.name) if body.name else ''}, check out {salon_name}: {link_url}",
+        "menu": f"Hi{(' ' + body.name) if body.name else ''}, here's our service menu at {salon_name}: {link_url}",
+    }
+    message = template[kind]
+
+    # Optionally record as a lead for later marketing
+    if body.save_as_lead:
+        try:
+            await db.customers.update_one(
+                {"phone": raw},
+                {"$setOnInsert": {
+                    "id": str(uuid.uuid4()),
+                    "phone": raw,
+                    "name": body.name or "",
+                    "source": "owner",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }},
+                upsert=True,
+            )
+        except Exception:
+            pass
+
+    # Send via WhatsApp
+    try:
+        from whatsapp_service import send_whatsapp_message
+        result = await send_whatsapp_message(raw, text=message)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"WhatsApp send failed: {exc}")
+    if isinstance(result, dict) and result.get("error"):
+        # Not fatal for UX — surface but 200 with delivery_status so the UI can show a hint
+        return {"ok": False, "sent_to": raw, "link_url": link_url, "delivery_status": "failed", "note": result.get("error")}
+    return {"ok": True, "sent_to": raw, "link_url": link_url, "delivery_status": "sent"}
+
+
+# ---------------------------------------------------------------------------
+# Home-page staff attendance toggle — one-tap Check-in / Check-out per staff.
+#   POST /api/salons/{salon_id}/home/staff-attendance/toggle
+#   body = {barber_id: str, action: "in" | "out"}
+#
+# RBAC:
+#   - Admins / branch_managers  → can toggle any staff (bypasses geo-fence).
+#   - Staff role with `staff.attendance` (module) + `staff.view_all` OR the
+#     legacy `can_view_all_staff` flag → can toggle any staff.
+#   - Staff role without `view_all` → can ONLY toggle their OWN linked staff_id
+#     (self check-in). Trying to toggle a peer returns 403.
+#   - Staff role without any staff-module access at all → 403 for everyone.
+#
+# Multi-session fix: after a full check-in → check-out, the same staff CAN
+# check in again the same day. We now maintain a `sessions[]` array (matching
+# attendance_mode.py) so a fresh "in" appends a new open session instead of
+# short-circuiting on `check_in_at`.
+# ---------------------------------------------------------------------------
+@api_router.post("/salons/{salon_id}/home/staff-attendance/toggle")
+async def home_toggle_attendance(
+    salon_id: str,
+    body: dict,
+    current_salon=Depends(get_current_salon_user),
+):
+    barber_id = (body or {}).get("barber_id")
+    action = ((body or {}).get("action") or "in").lower()
+    if not barber_id:
+        raise HTTPException(status_code=400, detail="barber_id required")
+    if action not in ("in", "out"):
+        raise HTTPException(status_code=400, detail="action must be in|out")
+
+    # ---- RBAC ----
+    role = current_salon.get("role")
+    is_admin_like = role in ("salon_admin", "admin", "salon", "salon_branch_manager")
+    if not is_admin_like:
+        own_staff_id = current_salon.get("staff_id")
+        is_own = bool(own_staff_id and own_staff_id == barber_id)
+        if not is_own:
+            # Toggling a peer requires the attendance module + view_all.
+            if not has_module_permission(current_salon, "staff", "attendance"):
+                raise HTTPException(status_code=403, detail="Permission denied: staff.attendance")
+            if not has_module_permission(current_salon, "staff", "view_all"):
+                raise HTTPException(status_code=403, detail="You can only check in/out your own attendance.")
+        # else: self check-in/out is always allowed (basic self-service).
+
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    doc = await db.staff_attendance.find_one(
+        {"salon_id": salon_id, "barber_id": barber_id, "date": today_iso},
+        {"_id": 0}
+    ) or {}
+
+    # Migrate legacy check_in_at / check_out_at (no sessions[]) into sessions[]
+    # so the multi-session logic works uniformly.
+    sessions = list(doc.get("sessions") or [])
+    if not sessions and (doc.get("check_in_at") or doc.get("check_out_at")):
+        sessions = [{
+            "ci": doc.get("check_in_at"),
+            "co": doc.get("check_out_at"),
+            "ci_method": doc.get("check_in_method") or "home_toggle",
+            "co_method": doc.get("check_out_method") or "home_toggle",
+        }]
+
+    last = sessions[-1] if sessions else None
+    has_open = bool(last and last.get("ci") and not last.get("co"))
+
+    if action == "in":
+        if has_open:
+            # Already checked in and not yet out — idempotent no-op.
+            return {"ok": True, "already_in": True, "check_in_at": last.get("ci"), "sessions": sessions}
+        # Append a new open session (allows re-check-in after a check-out today).
+        sessions.append({"ci": now_iso, "co": None, "ci_method": "home_toggle"})
+        await db.staff_attendance.update_one(
+            {"salon_id": salon_id, "barber_id": barber_id, "date": today_iso},
+            {"$set": {
+                "check_in_at": now_iso,   # keep legacy field pointing at latest CI
+                "check_out_at": None,     # clear legacy CO because we're back "in"
+                "status": "in",
+                "sessions": sessions,
+                "salon_id": salon_id, "barber_id": barber_id, "date": today_iso,
+            }},
+            upsert=True,
+        )
+        return {"ok": True, "check_in_at": now_iso, "status": "in", "sessions": sessions}
+
+    # action == "out"
+    if not has_open:
+        # No open session — record an "out" without altering sessions[] (defensive).
+        await db.staff_attendance.update_one(
+            {"salon_id": salon_id, "barber_id": barber_id, "date": today_iso},
+            {"$set": {"check_out_at": now_iso, "status": "out",
+                      "salon_id": salon_id, "barber_id": barber_id, "date": today_iso}},
+            upsert=True,
+        )
+        return {"ok": True, "check_out_at": now_iso, "status": "out", "sessions": sessions}
+
+    # Close the currently-open session.
+    sessions[-1]["co"] = now_iso
+    sessions[-1]["co_method"] = "home_toggle"
+    await db.staff_attendance.update_one(
+        {"salon_id": salon_id, "barber_id": barber_id, "date": today_iso},
+        {"$set": {"check_out_at": now_iso, "status": "out", "sessions": sessions}},
+    )
+    return {"ok": True, "check_out_at": now_iso, "status": "out", "sessions": sessions}
+
+
+@api_router.get("/salons/{salon_id}/barbers/{barber_id}/attendance/today")
+async def get_barber_attendance_today(
+    salon_id: str,
+    barber_id: str,
+    current_salon=Depends(get_current_salon_user),
+):
+    """Today's attendance status + sessions for one staff member (for the Staff Portal)."""
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    doc = await db.staff_attendance.find_one(
+        {"salon_id": salon_id, "barber_id": barber_id, "date": today_iso}, {"_id": 0}
+    ) or {}
+    sessions = list(doc.get("sessions") or [])
+    if not sessions and (doc.get("check_in_at") or doc.get("check_out_at")):
+        sessions = [{
+            "ci": doc.get("check_in_at"), "co": doc.get("check_out_at"),
+            "ci_method": doc.get("check_in_method") or "home_toggle",
+            "co_method": doc.get("check_out_method") or "home_toggle",
+        }]
+    last = sessions[-1] if sessions else None
+    is_in = bool(last and last.get("ci") and not last.get("co"))
+    return {
+        "date": today_iso,
+        "status": "in" if is_in else ("out" if sessions else "none"),
+        "is_checked_in": is_in,
+        "check_in_at": last.get("ci") if last else None,
+        "sessions": sessions,
+    }
+
+
+
+# ---------------------------------------------------------------------------
+# Guest profile aggregate — used by the New-Appointment drawer's right-hand
+# customer details panel and by the "View full details" popup.
+#   Returns: base master + last_visit / last_barber_name / last_invoice /
+#            membership_active / membership_name / wallet_balance /
+#            total_visits / total_spend / history (last 20 tokens)
+# ---------------------------------------------------------------------------
+@api_router.get("/salons/{salon_id}/customers/profile")
+async def get_customer_profile(
+    salon_id: str,
+    phone: str,
+    current_salon=Depends(get_current_salon_user),
+):
+    ph = (phone or "").strip()
+    if not ph:
+        raise HTTPException(status_code=400, detail="phone query param required")
+    alt = ph
+    if not ph.startswith("+"):
+        d = "".join(c for c in ph if c.isdigit())
+        if len(d) >= 10:
+            alt = f"+91{d[-10:]}"
+    or_phones = list({ph, alt})
+
+    master = await db.salon_customers.find_one(
+        {"salon_id": salon_id, "phone": {"$in": or_phones}}, {"_id": 0}
+    ) or {}
+
+    tks = await db.tokens.find(
+        {"salon_id": salon_id, "phone": {"$in": or_phones}},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(500)
+
+    total_visits = len(tks)
+    total_spend = 0.0
+    last_visit_iso = None
+    last_barber_id = None
+    last_barber_name = None
+    last_invoice_amount = None
+    last_invoice_date = None
+    for t in tks:
+        try:
+            total_spend += float(t.get("total_amount") or t.get("total") or 0)
+        except Exception:
+            pass
+        dt = t.get("date") or t.get("created_at") or ""
+        if isinstance(dt, str) and dt and (not last_visit_iso or dt > last_visit_iso):
+            last_visit_iso = dt
+            last_barber_id = t.get("barber_id")
+            last_barber_name = t.get("barber_name")
+            last_invoice_amount = t.get("total_amount") or t.get("total")
+            last_invoice_date = dt
+
+    wallet_doc = await db.salon_wallets.find_one(
+        {"salon_id": salon_id, "phone": {"$in": or_phones}}, {"_id": 0, "balance": 1}
+    ) or {}
+    wallet_balance = float(wallet_doc.get("balance") or 0)
+
+    mem = await db.customer_memberships.find_one(
+        {"salon_id": salon_id, "phone": {"$in": or_phones}, "status": {"$in": ["active", "Active"]}},
+        {"_id": 0}
+    )
+    membership_active = bool(mem)
+    membership_name = None
+    membership_expires = None
+    if mem:
+        plan_id = mem.get("plan_id")
+        if plan_id:
+            plan = await db.membership_plans.find_one({"id": plan_id}, {"_id": 0, "name": 1})
+            if plan:
+                membership_name = plan.get("name")
+        membership_expires = mem.get("expires_at") or mem.get("valid_till")
+
+    history_tokens = [{
+        "id": t.get("id"),
+        "date": t.get("date") or t.get("created_at"),
+        "barber_name": t.get("barber_name"),
+        "services_count": len(t.get("selected_services") or []),
+        "total": float(t.get("total_amount") or t.get("total") or 0),
+        "status": t.get("status"),
+    } for t in tks[:20]]
+
+    return {
+        "phone": master.get("phone") or (or_phones[0] if or_phones else ph),
+        "name": master.get("name") or (tks[0].get("customer_name") if tks else None),
+        "gender": master.get("gender"),
+        "email": master.get("email"),
+        "dob": master.get("dob") or master.get("date_of_birth"),
+        "anniversary": master.get("anniversary"),
+        "tags": master.get("tags") or [],
+        "notes": master.get("notes"),
+        "photo_url": master.get("photo_url"),
+        "instagram_id": master.get("instagram_id"),
+        "facebook_id": master.get("facebook_id"),
+        "preferred_barber_id": master.get("preferred_barber_id"),
+        "source": master.get("source"),
+        "last_visit": last_visit_iso,
+        "last_barber_id": last_barber_id,
+        "last_barber_name": last_barber_name,
+        "last_invoice_amount": last_invoice_amount,
+        "last_invoice_date": last_invoice_date,
+        "wallet_balance": wallet_balance,
+        "membership_active": membership_active,
+        "membership_name": membership_name,
+        "membership_expires": membership_expires,
+        "total_visits": total_visits,
+        "total_spend": round(total_spend, 2),
+        "history_tokens": history_tokens,
+    }
+
+
+
+
+
+
+@api_router.post("/salons/{salon_id}/direct-invoice")
+async def create_direct_invoice(
+    salon_id: str,
+    body: dict,
+    current_user=Depends(get_current_salon_user)
+):
+    """Create a direct invoice bypassing the queue.
+
+    Payload:
+      customer_name (str, required)
+      phone (str, optional)
+      gender (str, optional)
+      barber_id (str, optional)
+      selected_services (List[str], required)
+      payment_mode (str, required) — cash|upi|card|wallet
+      coupon_code (str, optional)
+      membership_plan_id (str, optional) — sold + discount applied to THIS order
+      tip_amount (float, optional)
+      notes (str, optional)
+
+    Effect:
+      - Computes bill with services + optional membership benefit + optional coupon
+      - Creates a `completed` token record (status=completed, payment_confirmed=True)
+        so it shows in sales/analytics/history.
+      - Generates the invoice PDF via generate_and_send_invoice(token_id).
+      - If membership_plan_id provided, sells the membership (credits wallet) and
+        applies the plan's discount % to this order (top-up wallet or discount).
+      - Records coupon redemption.
+    Returns invoice_id + token_id.
+    """
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+
+    customer_name = (body.get("customer_name") or "Walk-in").strip() or "Walk-in"
+    phone = (body.get("phone") or "").strip()
+    if phone:
+        phone = phone.replace(" ", "").replace("-", "")
+        if not phone.startswith("+91"):
+            phone = f"+91{phone}"
+    gender = body.get("gender") or "Men"
+    barber_id = body.get("barber_id") or "any"
+    selected_services = body.get("selected_services") or []
+    selected_products = body.get("selected_products") or []  # [{product_id, name, qty, unit_price}]
+    payment_mode = (body.get("payment_mode") or "cash").lower()
+    coupon_code = (body.get("coupon_code") or "").strip().upper() or None
+    membership_plan_id = body.get("membership_plan_id") or None
+    tip_amount = float(body.get("tip_amount") or 0)
+    manual_discount_pct = float(body.get("discount_percent") or 0)
+    manual_discount_flat = float(body.get("discount_flat") or 0)
+    final_amount_override = body.get("final_amount_override")
+    notes = body.get("notes") or ""
+
+    if not selected_services and not selected_products:
+        raise HTTPException(status_code=400, detail="Add at least one service or product")
+
+    # -- Per-service barber map (Module 7 split): service_id -> barber_id --
+    services_payload = body.get("services_payload") or []
+    line_barber_map = {}
+    for sp in services_payload:
+        if isinstance(sp, dict) and sp.get("service_id"):
+            line_barber_map[sp.get("service_id")] = sp.get("barber_id") or barber_id
+
+    # -- Compute base subtotal (services) --
+    subtotal = 0.0
+    service_details = []
+    service_assignments = []
+    _distinct_line_barbers = set()
+    for sid in selected_services:
+        # Accept either a raw string ID or a dict {service_id, price?}
+        if isinstance(sid, dict):
+            svc_id = sid.get("service_id") or sid.get("id")
+            fallback_price = sid.get("price") or sid.get("base_price")
+        else:
+            svc_id = sid
+            fallback_price = None
+        if not svc_id:
+            continue
+        # Per-service barber (falls back to the main barber)
+        line_barber = line_barber_map.get(svc_id) or barber_id
+        # Barber-specific pricing (use the line barber)
+        price = None
+        if line_barber and line_barber != "any":
+            barber = await db.barbers.find_one({"id": line_barber}, {"_id": 0})
+            if barber:
+                bs = next((s for s in (barber.get("services") or []) if s.get("service_id") == svc_id), None)
+                if bs:
+                    price = float(bs.get("price") or 0)
+        if price is None or price == 0:
+            svc = await db.services.find_one({"id": svc_id}, {"_id": 0})
+            if svc:
+                # Robust price lookup — try multiple field names
+                price = float(
+                    svc.get("base_price")
+                    or svc.get("price")
+                    or svc.get("selling_price")
+                    or svc.get("default_price")
+                    or 0
+                )
+        if (price is None or price == 0) and fallback_price:
+            price = float(fallback_price)
+        price = float(price or 0)
+        subtotal += price
+        service_details.append({"service_id": svc_id, "price": price})
+        if line_barber and line_barber != "any":
+            lb = await db.barbers.find_one({"id": line_barber}, {"_id": 0, "name": 1})
+            service_assignments.append({
+                "service_id": svc_id,
+                "barber_id": line_barber,
+                "barber_name_snapshot": (lb or {}).get("name", ""),
+                "service_price": round(price, 2),
+            })
+            _distinct_line_barbers.add(line_barber)
+    # Only keep assignments when they represent a real split across ≥2 barbers.
+    if len(_distinct_line_barbers) <= 1:
+        service_assignments = []
+
+    # -- Product subtotal (also decrements inventory) --
+    product_subtotal = 0.0
+    product_details = []
+    for p in selected_products:
+        pid = p.get("product_id") or p.get("id")
+        qty = int(p.get("qty") or 0)
+        unit_price = float(p.get("unit_price") or 0)
+        if not pid or qty <= 0:
+            continue
+        item = None
+        if unit_price <= 0 or True:  # always look up for stock check
+            item = await db.salon_inventory.find_one({"id": pid, "salon_id": salon_id}, {"_id": 0})
+            if item and unit_price <= 0:
+                unit_price = float(item.get("retail_price") or item.get("selling_price") or 0)
+        # Stock validation — soft guard (does not block sale for a non-existent item)
+        if item is not None:
+            available = int(item.get("stock_quantity") or 0)
+            if available < qty:
+                # Allow but log; UI should ideally block this
+                logger.warning(f"Insufficient stock for {pid}: requested {qty}, have {available}")
+        line_total = qty * unit_price
+        product_subtotal += line_total
+        product_details.append({
+            "product_id": pid,
+            "name": p.get("name") or (item or {}).get("name"),
+            "qty": qty,
+            "unit_price": unit_price,
+            "line_total": line_total,
+        })
+        # Decrement inventory (best effort)
+        try:
+            await db.salon_inventory.update_one(
+                {"id": pid, "salon_id": salon_id},
+                {"$inc": {"stock_quantity": -qty}}
+            )
+        except Exception:
+            pass
+    subtotal += product_subtotal
+
+    membership_discount = 0.0
+    membership_sale_amount = 0.0
+    membership_info = None
+
+    # -- Optional membership upsell: sell membership + apply discount to THIS order --
+    if membership_plan_id:
+        plan = await db.membership_plans.find_one({"id": membership_plan_id}, {"_id": 0})
+        if not plan:
+            raise HTTPException(status_code=404, detail="Membership plan not found")
+        if not phone:
+            raise HTTPException(status_code=400, detail="Customer phone required to sell membership")
+
+        # Apply plan's service discount to THIS order (services only, not products)
+        disc_pct = float(plan.get("discount_percentage") or plan.get("service_discount_pct") or 0)
+        service_only_subtotal = subtotal - product_subtotal
+        membership_discount = round(service_only_subtotal * disc_pct / 100.0, 2)
+        # The membership itself is a paid line (paid_amount from plan price)
+        membership_sale_amount = float(plan.get("price") or plan.get("plan_price") or 0)
+
+        expiry_date = datetime.now(timezone.utc) + timedelta(days=int(plan.get("validity_months") or 6) * 30)
+        existing = await db.customer_memberships.find_one({
+            "salon_id": salon_id, "customer_phone": phone, "is_active": True
+        }, {"_id": 0})
+        if existing:
+            new_balance = float(existing.get("wallet_balance") or 0) + float(plan.get("credit") or 0)
+            await db.customer_memberships.update_one(
+                {"id": existing["id"]},
+                {"$set": {
+                    "wallet_balance": new_balance,
+                    "expiry_date": expiry_date.isoformat(),
+                    "tier": plan.get("tier", existing.get("tier", "Custom")),
+                    "color": plan.get("color") or existing.get("color"),
+                }}
+            )
+        else:
+            await db.customer_memberships.insert_one({
+                "id": str(uuid.uuid4()),
+                "salon_id": salon_id,
+                "customer_phone": phone,
+                "customer_name": customer_name,
+                "membership_plan_id": plan["id"],
+                "membership_name": plan.get("name"),
+                "tier": plan.get("tier", "Custom"),
+                "color": plan.get("color"),
+                "payment_mode": payment_mode,
+                "paid_amount": membership_sale_amount,
+                "credit_added": float(plan.get("credit") or 0),
+                "wallet_balance": float(plan.get("credit") or 0),
+                "expiry_date": expiry_date.isoformat(),
+                "is_active": True,
+                "cancelled": False,
+                "payment_confirmed": True,
+                "purchased_at": datetime.now(timezone.utc).isoformat(),
+            })
+        membership_info = {
+            "plan_id": plan["id"],
+            "name": plan.get("name"),
+            "discount_pct": disc_pct,
+            "discount_amount": membership_discount,
+            "sold_at": membership_sale_amount,
+        }
+
+    # -- Optional coupon --
+    coupon_discount = 0.0
+    coupon_doc = None
+    if coupon_code:
+        try:
+            from marketing import _coupon_active as _coupon_active_fn  # type: ignore
+            from marketing import _compute_coupon_discount as _compute_coupon_discount_fn  # type: ignore
+        except Exception:
+            _coupon_active_fn = None
+            _compute_coupon_discount_fn = None
+        c = await db.salon_coupons.find_one({"salon_id": salon_id, "code": coupon_code})
+        if not c:
+            raise HTTPException(status_code=404, detail="Invalid coupon code")
+        if _coupon_active_fn and not _coupon_active_fn(c):
+            raise HTTPException(status_code=400, detail="Coupon expired or inactive")
+        bill_before_coupon = max(0.0, subtotal - membership_discount)
+        if bill_before_coupon < float(c.get("min_bill_amount") or 0):
+            raise HTTPException(status_code=400, detail=f"Minimum bill amount for coupon is ₹{c.get('min_bill_amount')}")
+        if _compute_coupon_discount_fn:
+            coupon_discount = await _compute_coupon_discount_fn(c, bill_before_coupon)
+        else:
+            # Fallback: percentage
+            if c.get("type") == "percentage":
+                coupon_discount = round(bill_before_coupon * float(c.get("value") or 0) / 100.0, 2)
+            else:
+                coupon_discount = float(c.get("value") or 0)
+        coupon_doc = c
+
+    # -- Manual discount entered by the salon (separate from coupon) --
+    manual_discount = round(min(subtotal, subtotal * manual_discount_pct / 100.0 + manual_discount_flat), 2)
+
+    services_total = round(max(0.0, subtotal - membership_discount - coupon_discount - manual_discount), 2)
+    grand_total = round(services_total + membership_sale_amount + tip_amount, 2)
+    if final_amount_override is not None:
+        try:
+            grand_total = round(float(final_amount_override), 2)
+        except (TypeError, ValueError):
+            pass
+
+    # -- Auto-assign a barber if 'any' so history displays a name --
+    if not barber_id or barber_id == "any":
+        anyb = await db.barbers.find_one({"salon_id": salon_id, "is_active": True}, {"_id": 0})
+        barber_id = anyb["id"] if anyb else None
+
+    barber_name = "Direct Invoice"
+    if barber_id:
+        b = await db.barbers.find_one({"id": barber_id}, {"_id": 0})
+        if b:
+            barber_name = b.get("name") or barber_name
+
+    # -- Create synthetic completed token --
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    from datetime import datetime as _dt
+    _h = _dt.now().hour
+    shift = "Morning" if _h < 12 else ("Noon" if _h < 16 else "Evening")
+
+    token_id = str(uuid.uuid4())
+    token_number = await get_next_token_number(salon_id, today_str, shift)
+
+    token_doc = {
+        "id": token_id,
+        "salon_id": salon_id,
+        "branch_id": body.get("branch_id") or salon.get("main_branch_id"),
+        "token_number": token_number,
+        "customer_name": customer_name,
+        "phone": phone,
+        "gender": gender,
+        "barber_id": barber_id,
+        "barber_name": barber_name,
+        "selected_services": selected_services,
+        "service_assignments": service_assignments,
+        "order_discount_amount": round(membership_discount + coupon_discount + manual_discount, 2),
+        "selected_products": product_details,
+        "total_amount": grand_total,
+        "subtotal": subtotal,
+        "membership_discount": membership_discount,
+        "coupon_discount": coupon_discount,
+        "manual_discount": manual_discount,
+        "coupon_code": coupon_code,
+        "tip_amount": tip_amount,
+        "membership_sale_amount": membership_sale_amount,
+        "date": today_str,
+        "shift": shift,
+        "status": "completed",
+        "payment_mode": payment_mode,
+        "payment_confirmed": True,
+        "payment_status": "paid",
+        "is_direct_invoice": True,
+        "notes": notes,
+        "created_at": now_iso,
+        "completed_at": now_iso,
+    }
+    await db.tokens.insert_one(token_doc)
+
+    # Coupon redemption record
+    if coupon_doc:
+        try:
+            from marketing import record_coupon_redemption as _rec
+            await _rec(
+                salon_id=salon_id,
+                coupon_id=coupon_doc.get("id"),
+                customer_phone=phone,
+                booking_id=token_id,
+                amount=coupon_discount,
+            )
+        except Exception:
+            pass
+
+    # Upsert customer master
+    if phone:
+        try:
+            await db.customer_master.update_one(
+                {"salon_id": salon_id, "phone": phone},
+                {
+                    "$set": {"name": customer_name, "gender": gender, "last_visit_at": now_iso},
+                    "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now_iso},
+                    "$inc": {"total_visits": 1, "total_spent": grand_total},
+                },
+                upsert=True,
+            )
+        except Exception:
+            pass
+
+    # Generate invoice PDF (best-effort; DB stores invoice even if WhatsApp fails)
+    invoice_id = None
+    try:
+        await generate_and_send_invoice(token_id)
+        refreshed = await db.tokens.find_one({"id": token_id}, {"_id": 0, "invoice_id": 1})
+        invoice_id = (refreshed or {}).get("invoice_id")
+    except Exception as e:
+        logger.warning(f"Direct-invoice PDF gen/send failed for token {token_id}: {e}")
+
+    return {
+        "success": True,
+        "token_id": token_id,
+        "token_number": token_number,
+        "invoice_id": invoice_id,
+        "totals": {
+            "subtotal": round(subtotal, 2),
+            "membership_discount": membership_discount,
+            "coupon_discount": coupon_discount,
+            "services_total": services_total,
+            "membership_sale": membership_sale_amount,
+            "tip_amount": tip_amount,
+            "grand_total": grand_total,
+        },
+        "membership": membership_info,
+        "coupon": {"code": coupon_code, "discount": coupon_discount} if coupon_code else None,
+    }
+
 
 # ============ RATING/REVIEW ROUTES ============
 
@@ -11630,12 +14716,30 @@ async def _get_effective_plan_for_barber(salon_id: str, barber_id: str) -> Optio
     return None
 
 
+def _barber_base_salary(barber: dict) -> float:
+    """Return numeric base salary from a barber doc.
+
+    `compensation` may be a plain number (legacy) or a dict like
+    {base_salary, commission_pct, incentive_pct, pay_cycle} (newer seed/UI).
+    """
+    comp = (barber or {}).get("compensation")
+    if isinstance(comp, dict):
+        try:
+            return float(comp.get("base_salary") or comp.get("salary") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    try:
+        return float(comp or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 async def _get_barber_target(plan_config: dict, barber: dict) -> float:
     """Compute monthly target from plan + barber salary."""
     target_type = (plan_config or {}).get("target_type", "salary_multiplier")
     if target_type == "manual":
         return float(plan_config.get("manual_target") or 0)
-    salary = float(barber.get("compensation") or 0)
+    salary = _barber_base_salary(barber)
     multiplier = float(plan_config.get("multiplier") or 0)
     return salary * multiplier
 
@@ -11711,7 +14815,7 @@ async def _recompute_incentive_payout(salon_id: str, barber_id: str, year_month:
         "barber_id": barber_id,
         "barber_name": barber.get("name", ""),
         "month": year_month,
-        "salary": float(barber.get("compensation") or 0),
+        "salary": _barber_base_salary(barber),
         "target": round(float(target), 2),
         "actual_sales": round(actual_sales, 2),
         "achievement_pct": calc["achievement_pct"],
@@ -11751,9 +14855,8 @@ async def get_reward_plan(salon_id: str, current_user=Depends(get_current_salon_
 @api_router.post("/salons/{salon_id}/reward-plan")
 async def save_reward_plan(salon_id: str, body: RewardPlanCreate, current_user=Depends(get_current_salon_user)):
     """Save the salon's reward plan configuration (admin only)."""
-    role = (current_user or {}).get("role")
-    if role not in ("admin", "salon", "salon_admin"):
-        raise HTTPException(status_code=403, detail="Only admin can configure reward plan")
+    if not has_module_permission(current_user, "staff", "access_control"):
+        raise HTTPException(status_code=403, detail="Permission denied: staff.access_control")
 
     if body.mode not in ("all", "individual", "partial"):
         raise HTTPException(status_code=400, detail="mode must be one of: all, individual, partial")
@@ -11836,10 +14939,9 @@ async def update_incentive_status(
     if body.status not in ("Pending", "Approved", "Paid", "Hold"):
         raise HTTPException(status_code=400, detail="Invalid status")
 
-    # Only admin may change status
-    role = (current_user or {}).get("role")
-    if role not in ("admin", "salon", "salon_admin"):
-        raise HTTPException(status_code=403, detail="Only admin can change payout status")
+    # RBAC: staff.salary_pay
+    if not has_module_permission(current_user, "staff", "salary_pay"):
+        raise HTTPException(status_code=403, detail="Permission denied: staff.salary_pay")
 
     payout = await db.incentive_payouts.find_one(
         {"salon_id": salon_id, "barber_id": barber_id, "month": month}, {"_id": 0}
@@ -12357,51 +15459,159 @@ async def get_invoice(invoice_id: str):
     invoice_data = {k: v for k, v in invoice.items() if k != 'pdf_base64'}
     return invoice_data
 
+def _legacy_render_from_invoice(invoice: dict) -> dict:
+    """Build a render payload for old invoices that predate the HTML renderer."""
+    data = invoice.get('invoice_data', {}) or {}
+    if data.get('render'):
+        return data['render']
+    salon = data.get('salon', {}) or {}
+    cust = data.get('customer', {}) or {}
+    items = []
+    for s in (data.get('services') or []):
+        items.append({
+            "name": s.get('name'), "desc": "", "sac": s.get('hsn_code'),
+            "qty": 1, "rate": s.get('price'), "amount": s.get('amount', s.get('price')),
+        })
+    is_gst = bool(data.get('is_tax_invoice'))
+    cgst = float(data.get('cgst') or 0)
+    sgst = float(data.get('sgst') or 0)
+    return {
+        "invoice_no": data.get('invoice_no'),
+        "date": data.get('date', ''), "time": '',
+        "salon": {
+            "name": salon.get('salon_name', 'Salon'), "address": salon.get('address', ''),
+            "gstin": salon.get('gstin'), "logo_url": salon.get('logo_url'),
+        },
+        "customer": {"name": cust.get('name'), "phone": cust.get('phone')},
+        "served_by": {"name": "Salon"},
+        "items": items,
+        "subtotal": data.get('subtotal', 0), "discount_amount": 0,
+        "taxable_value": data.get('subtotal', 0),
+        "cgst_rate": data.get('tax_rate', 0), "cgst": cgst,
+        "sgst_rate": data.get('tax_rate', 0), "sgst": sgst,
+        "tip": 0, "round_off": 0,
+        "grand_total": data.get('total', 0),
+        "payment_mode": data.get('payment_method', 'Cash'),
+        "settings": {**INVOICE_SETTINGS_DEFAULTS, "is_gst_registered": is_gst},
+    }
+
+
 @api_router.get("/invoices/{invoice_id}/view")
 async def view_invoice(invoice_id: str):
-    """View invoice PDF in browser"""
-    
+    """View the customer invoice as a styled HTML page (WhatsApp link target)."""
     invoice = await db.invoices.find_one({"id": invoice_id}, {"_id": 0})
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
-    if not invoice.get('pdf_base64'):
-        raise HTTPException(status_code=404, detail="Invoice PDF not found")
-    
-    # Decode base64 PDF
-    import base64
-    pdf_bytes = base64.b64decode(invoice['pdf_base64'])
-    
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"inline; filename=invoice_{invoice['invoice_no']}.pdf"
-        }
-    )
+    render_inv = _legacy_render_from_invoice(invoice)
+    html_str = render_invoice_html(render_inv)
+    return Response(content=html_str, media_type="text/html")
 
 @api_router.get("/invoices/{invoice_id}/download")
 async def download_invoice(invoice_id: str):
-    """Download invoice PDF"""
-    
+    """Download invoice — serves the HTML invoice for print-to-PDF."""
     invoice = await db.invoices.find_one({"id": invoice_id}, {"_id": 0})
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
-    if not invoice.get('pdf_base64'):
-        raise HTTPException(status_code=404, detail="Invoice PDF not found")
-    
-    # Decode base64 PDF
-    import base64
-    pdf_bytes = base64.b64decode(invoice['pdf_base64'])
-    
+    render_inv = _legacy_render_from_invoice(invoice)
+    html_str = render_invoice_html(render_inv)
     return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"attachment; filename=invoice_{invoice['invoice_no']}.pdf"
-        }
+        content=html_str,
+        media_type="text/html",
+        headers={"Content-Disposition": f"attachment; filename=invoice_{invoice['invoice_no']}.html"}
     )
+
+@api_router.get("/salons/{salon_id}/invoice-settings")
+async def get_invoice_settings(salon_id: str):
+    """Merged invoice settings (defaults + salon overrides)."""
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    return resolve_invoice_settings(salon)
+
+
+@api_router.get("/salons/{salon_id}/invoice-offers")
+async def get_invoice_offers(salon_id: str):
+    """Active coupons/offers flagged 'Show on invoice' (capped by max_offers)."""
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    settings = resolve_invoice_settings(salon)
+    cap = int(settings.get('max_offers') or 4)
+    now_iso_ = datetime.now(timezone.utc).isoformat()
+    q = {
+        "salon_id": salon_id, "show_on_invoice": True, "is_active": True,
+        "$and": [
+            {"$or": [{"valid_from": None}, {"valid_from": {"$exists": False}}, {"valid_from": {"$lte": now_iso_}}]},
+            {"$or": [{"valid_to": None}, {"valid_to": {"$exists": False}}, {"valid_to": {"$gte": now_iso_}}]},
+        ],
+    }
+    out = []
+    async for c in db.salon_coupons.find(q, {"_id": 0}).sort("created_at", -1).limit(cap):
+        out.append({"title": c.get('title') or c.get('code'), "description": c.get('description') or '', "code": c.get('code')})
+    return {"offers": out}
+
+
+@api_router.api_route("/salons/{salon_id}/invoice-preview", methods=["GET", "POST"])
+async def preview_invoice(salon_id: str, body: dict = Body(default={})):
+    """Render a sample invoice HTML using the (unsaved) settings from the body."""
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    # Merge saved settings with the unsaved overrides posted from the form
+    settings = resolve_invoice_settings(salon)
+    for k in INVOICE_SETTINGS_DEFAULTS:
+        if k in body and body[k] is not None:
+            settings[k] = body[k]
+    is_gst = bool(settings.get('is_gst_registered'))
+    gst = float(settings.get('gst_rate') or 0)
+    # Sample line items
+    items = [
+        {"name": "Global Hair Colour", "desc": "90 min · Ammonia-free", "sac": settings.get('sac_code'), "qty": 1, "rate": 1800, "amount": 1800},
+        {"name": "Gold Facial", "desc": "60 min", "sac": settings.get('sac_code'), "qty": 1, "rate": 1500, "amount": 1500},
+        {"name": "Beard Trim & Shape", "desc": "15 min", "sac": settings.get('sac_code'), "qty": 1, "rate": 150, "amount": 150},
+    ]
+    subtotal = 3450.0
+    discount = 345.0
+    net = subtotal - discount
+    tip = 100.0
+    if is_gst and gst > 0:
+        taxable = net
+        gst_total = round(taxable * gst / 100.0, 2)
+        cgst = round(gst_total / 2.0, 2)
+        sgst = round(gst_total - cgst, 2)
+        pre = taxable + gst_total + tip
+    else:
+        taxable = net
+        cgst = sgst = 0
+        pre = net + tip
+    grand = round(pre) if settings.get('round_off_invoice') else round(pre, 2)
+    render_inv = {
+        "invoice_no": (settings.get('invoice_prefix') or 'INV-') + str(settings.get('next_invoice_no') or 1000),
+        "date": datetime.now().strftime('%d %b %Y'), "time": datetime.now().strftime('%I:%M %p').lstrip('0'),
+        "salon": {
+            "name": salon.get('salon_name', 'Salon'), "sub": salon.get('description') or '',
+            "address": salon.get('address', ''), "phone": salon.get('phone', ''), "email": salon.get('email', ''),
+            "gstin": settings.get('gstin'), "logo_url": salon.get('logo_url'),
+            "place_of_supply": salon.get('city') or '', "branch_name": salon.get('city') or 'Main Branch',
+        },
+        "customer": {"name": "Rohit Sharma", "phone": "+91 98123 45601", "tier": "Member · Gold"},
+        "served_by": {"name": "Imran", "role": "Master Stylist"},
+        "items": items,
+        "subtotal": subtotal, "discount_label": "Discount · Gold member — 10%", "discount_amount": discount,
+        "taxable_value": taxable, "cgst_rate": round(gst / 2, 2), "cgst": cgst,
+        "sgst_rate": round(gst / 2, 2), "sgst": sgst, "igst_rate": 0, "igst": 0,
+        "tip": tip, "round_off": round(grand - pre, 2), "grand_total": grand, "payment_mode": "UPI",
+        "amount_in_words": number_to_words_inr(grand),
+        "loyalty_points": 37, "wallet_balance": 0.0,
+        "offers": [
+            {"title": "15% off any Hair Colour", "description": "on your next visit — valid till 25 Aug", "code": "COLOUR15"},
+            {"title": "Refer a friend", "description": "you both get ₹200 salon wallet credit", "code": "REFER200"},
+        ],
+        "qr_url": make_qr_data_url(f"{os.getenv('REACT_APP_BACKEND_URL','')}/i/preview") if settings.get('show_qr') else "",
+        "settings": settings,
+    }
+    return Response(content=render_invoice_html(render_inv), media_type="text/html")
+
 
 @api_router.get("/tokens/{token_id}/invoice")
 async def get_token_invoice(token_id: str):
@@ -12697,9 +15907,9 @@ async def calculate_daily_attendance(
     current_user=Depends(get_current_salon_user)
 ):
     """Calculate attendance for all barbers for a specific date based on completed bookings."""
-    # Verify admin (salon_admin or admin role)
-    if current_user.get("role") not in ["admin", "salon_admin"]:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    # RBAC: staff.attendance
+    if not has_module_permission(current_user, "staff", "attendance"):
+        raise HTTPException(status_code=403, detail="Permission denied: staff.attendance")
     
     # Get all active barbers
     barbers = await db.barbers.find({
@@ -12772,9 +15982,9 @@ async def override_attendance(
     current_user=Depends(get_current_salon_user)
 ):
     """Admin override for attendance. Click on calendar date to change status."""
-    # Verify admin (legacy "salon" role is also treated as admin)
-    if current_user.get("role") not in ["admin", "salon_admin", "salon"]:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    # RBAC: staff.attendance
+    if not has_module_permission(current_user, "staff", "attendance"):
+        raise HTTPException(status_code=403, detail="Permission denied: staff.attendance")
     
     # Validate status
     if body.status not in ["present", "half_day", "absent", "holiday", "on_leave"]:
@@ -12856,8 +16066,8 @@ async def clear_attendance_override(
     Used by the calendar's status cycle:
         present → half_day → absent → holiday → blank (this endpoint).
     """
-    if current_user.get("role") not in ["admin", "salon_admin", "salon"]:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    if not has_module_permission(current_user, "staff", "attendance"):
+        raise HTTPException(status_code=403, detail="Permission denied: staff.attendance")
 
     # Module 4 — lock-on-paid.
     locked = await attendance_mode_mod.is_attendance_locked(db, salon_id, barber_id, date)
@@ -13376,7 +16586,7 @@ async def get_monthly_salary(
                 unpaid_leave_days += qty
 
         # ---- Salary math (prorated to actual attendance) ----
-        base_compensation = float(barber.get("compensation") or 0)
+        base_compensation = _barber_base_salary(barber)
         per_day_rate = base_compensation / working_days_in_month if working_days_in_month > 0 else 0
         lop_deduction = round(per_day_rate * unpaid_leave_days, 2)  # informational
 
@@ -13461,9 +16671,9 @@ async def mark_salary_paid(
     current_user=Depends(get_current_salon_user)
 ):
     """Mark salary as paid and create financial transaction."""
-    # Verify admin
-    if current_user.get("role") not in ["admin", "salon_admin"]:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    # RBAC: staff.salary_pay
+    if not has_module_permission(current_user, "staff", "salary_pay"):
+        raise HTTPException(status_code=403, detail="Permission denied: staff.salary_pay")
     
     if body.payment_method not in ["cash", "upi", "bank"]:
         raise HTTPException(status_code=400, detail="Invalid payment method. Use: cash, upi, bank")
@@ -13486,18 +16696,24 @@ async def mark_salary_paid(
     
     # Create financial transaction
     transaction_id = str(uuid.uuid4())
+    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     transaction = {
         "id": transaction_id,
         "salon_id": salon_id,
         "type": "expense",
         "category": "staff_salary",
+        "payment_type": "salary",
         "amount": salary_record["total_payable"],
         "payment_method": body.payment_method,
         "description": f"Salary payment for {barber_name} - {month}",
         "narration": f"Monthly salary paid to {barber_name} for {month}. Base: ₹{salary_record['calculated_salary']}, Incentive: ₹{salary_record['incentive_amount']}",
         "linked_salary_id": salary_id,
+        "barber_id": barber_id,
+        "barber_name": barber_name,
+        "month": month,
+        "date": today_iso,
         "created_at": now,
-        "updated_at": now
+        "updated_at": now,
     }
     await db.financial_transactions.insert_one(transaction)
     transaction.pop("_id", None)  # avoid leaking BSON ObjectId in JSON response
@@ -13519,6 +16735,433 @@ async def mark_salary_paid(
     updated["transaction"] = transaction
     
     return updated
+
+
+class OneOffPaymentRequest(BaseModel):
+    payment_type: str  # 'advance' | 'ff'
+    amount: float
+    payment_method: str  # cash/upi/bank
+    note: Optional[str] = None
+    month: Optional[str] = None  # YYYY-MM, informational only
+
+
+@api_router.post("/salons/{salon_id}/barbers/{barber_id}/one-off-payment")
+async def create_one_off_staff_payment(
+    salon_id: str,
+    barber_id: str,
+    body: OneOffPaymentRequest,
+    current_user=Depends(get_current_salon_user),
+):
+    """Record a one-off staff payment (advance or full & final).
+    Writes ONLY to `financial_transactions` — does NOT touch salary_records
+    (advance/F&F are month-independent).
+    """
+    # RBAC: staff.salary_pay (same as regular salary payout)
+    if not has_module_permission(current_user, "staff", "salary_pay"):
+        raise HTTPException(status_code=403, detail="Permission denied: staff.salary_pay")
+
+    ptype = (body.payment_type or "").lower().strip()
+    if ptype not in ("advance", "ff"):
+        raise HTTPException(status_code=400, detail="payment_type must be 'advance' or 'ff'")
+    if body.payment_method not in ("cash", "upi", "bank"):
+        raise HTTPException(status_code=400, detail="Invalid payment method. Use: cash, upi, bank")
+    if not body.amount or float(body.amount) <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than zero")
+
+    barber = await db.barbers.find_one({"id": barber_id, "salon_id": salon_id}, {"_id": 0, "name": 1})
+    if not barber:
+        raise HTTPException(status_code=404, detail="Staff not found")
+    barber_name = barber.get("name") or "Staff"
+
+    category = "staff_advance" if ptype == "advance" else "staff_ff"
+    human = "Advance" if ptype == "advance" else "Full & Final"
+
+    now = datetime.now(timezone.utc).isoformat()
+    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    txn_id = str(uuid.uuid4())
+    txn = {
+        "id": txn_id,
+        "salon_id": salon_id,
+        "type": "expense",
+        "category": category,
+        "payment_type": ptype,
+        "amount": float(body.amount),
+        "payment_method": body.payment_method,
+        "description": f"{human} paid to {barber_name}"
+        + (f" ({body.month})" if body.month else ""),
+        "narration": body.note or f"{human} payment to {barber_name}",
+        "barber_id": barber_id,
+        "barber_name": barber_name,
+        "month": body.month or "",
+        "date": today_iso,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.financial_transactions.insert_one(txn)
+    txn.pop("_id", None)
+    return {"success": True, "transaction": txn}
+
+
+@api_router.get("/salons/{salon_id}/barbers/{barber_id}/payment-history")
+async def get_staff_payment_history(
+    salon_id: str,
+    barber_id: str,
+    limit: int = 50,
+    current_user=Depends(get_current_salon_user),
+):
+    """List recent staff payments (salary + advance + F&F) for one staff.
+    Merges `financial_transactions` rows that either carry `barber_id`
+    directly OR are linked to a salary record via `linked_salary_id`
+    prefixed with `{salon_id}_{barber_id}_`.
+    """
+    # RBAC: at least salary_view
+    if not has_module_permission(current_user, "staff", "salary_view"):
+        raise HTTPException(status_code=403, detail="Permission denied: staff.salary_view")
+
+    prefix = f"{salon_id}_{barber_id}_"
+    query = {
+        "salon_id": salon_id,
+        "category": {"$in": ["staff_salary", "staff_advance", "staff_ff"]},
+        "$or": [
+            {"barber_id": barber_id},
+            {"linked_salary_id": {"$regex": f"^{re.escape(prefix)}"}},
+        ],
+    }
+    cur = db.financial_transactions.find(query, {"_id": 0}).sort("created_at", -1)
+    rows = await cur.to_list(int(limit))
+
+    def _label(cat: str) -> str:
+        return {
+            "staff_salary": "Salary",
+            "staff_advance": "Advance",
+            "staff_ff": "Full & Final",
+        }.get(cat, cat)
+
+    payments = []
+    for r in rows:
+        payments.append(
+            {
+                "id": r.get("id"),
+                "date": r.get("date")
+                or (r.get("created_at", "")[:10] if r.get("created_at") else ""),
+                "created_at": r.get("created_at"),
+                "type": r.get("payment_type")
+                or ("salary" if r.get("category") == "staff_salary" else r.get("category", "").replace("staff_", "")),
+                "type_label": _label(r.get("category", "")),
+                "category": r.get("category"),
+                "amount": float(r.get("amount") or 0),
+                "payment_method": r.get("payment_method"),
+                "month": r.get("month") or "",
+                "description": r.get("description") or "",
+                "narration": r.get("narration") or "",
+                "linked_salary_id": r.get("linked_salary_id") or None,
+            }
+        )
+
+    return {"barber_id": barber_id, "payments": payments}
+
+
+# ============================================================================
+# PHASE 2 — Staff stats (date-range), credentials, login history, branch xfer
+# ============================================================================
+
+@api_router.get("/salons/{salon_id}/barbers/{barber_id}/stats")
+async def get_barber_stats(
+    salon_id: str,
+    barber_id: str,
+    from_date: Optional[str] = None,  # YYYY-MM-DD
+    to_date: Optional[str] = None,    # YYYY-MM-DD
+    current_user=Depends(get_current_salon_user),
+):
+    """Live stats for one staff member in a date range.
+    Aggregates over `tokens` (completed / paid bookings) between from_date and
+    to_date (inclusive). Returns { revenue, incentives, customers_served,
+    bookings, avg_ticket, from, to }.
+    Defaults to the current month when no range is given.
+    """
+    today = datetime.now(timezone.utc).date()
+    if not from_date:
+        from_date = today.replace(day=1).isoformat()
+    if not to_date:
+        to_date = today.isoformat()
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from_date must be on or before to_date")
+
+    # Match completed bookings for this barber via any of the common shapes
+    # used across the codebase (barber_id vs stylist_id / assigned_barber_id).
+    q_or = [
+        {"barber_id": barber_id},
+        {"stylist_id": barber_id},
+        {"assigned_barber_id": barber_id},
+    ]
+    match = {
+        "salon_id": salon_id,
+        "$or": q_or,
+        "$and": [
+            {"$or": [{"booking_date": {"$gte": from_date}}, {"date": {"$gte": from_date}}]},
+            {"$or": [{"booking_date": {"$lte": to_date}}, {"date": {"$lte": to_date}}]},
+        ],
+    }
+    tokens = await db.tokens.find(match, {"_id": 0}).to_list(5000)
+
+    revenue = 0.0
+    customers = set()
+    bookings = 0
+    for t in tokens:
+        status = (t.get("status") or "").lower()
+        if status in ("cancelled", "no_show", "pending", "in_service"):
+            continue
+        revenue += float(t.get("total_amount") or t.get("grand_total") or 0)
+        bookings += 1
+        phone = (t.get("customer_phone") or t.get("phone") or "").strip()
+        if phone:
+            customers.add(phone)
+
+    # Incentives from salary_records for months fully covered by the range.
+    incentives = 0.0
+    try:
+        # find any salary rows whose "month" falls within [from,to)
+        cursor = db.salary_records.find(
+            {"salon_id": salon_id, "barber_id": barber_id},
+            {"_id": 0, "month": 1, "incentive_amount": 1},
+        )
+        async for row in cursor:
+            m = (row.get("month") or "")  # YYYY-MM
+            if m and (m + "-01") >= from_date and (m + "-01") <= to_date:
+                incentives += float(row.get("incentive_amount") or 0)
+    except Exception:
+        pass
+
+    return {
+        "barber_id": barber_id,
+        "from": from_date,
+        "to": to_date,
+        "revenue": round(revenue, 2),
+        "incentives": round(incentives, 2),
+        "customers_served": len(customers),
+        "bookings": bookings,
+        "avg_ticket": round(revenue / bookings, 2) if bookings else 0.0,
+    }
+
+
+# ---------- Staff login credentials (Access sub-tab) ----------
+
+class StaffCredentialsUpdate(BaseModel):
+    login_id: Optional[str] = None
+    password: Optional[str] = None
+
+
+@api_router.get("/salons/{salon_id}/barbers/{barber_id}/credentials")
+async def get_staff_credentials(
+    salon_id: str,
+    barber_id: str,
+    current_user=Depends(get_current_salon_user),
+):
+    """Return the linked login account status for a staff member (from salon_users)."""
+    if current_user.get("role") not in ("admin", "salon_admin", "salon", "salon_admin", "salon_branch_manager"):
+        if not has_module_permission(current_user, "staff", "access_control"):
+            raise HTTPException(status_code=403, detail="Permission denied")
+    account = await db.salon_users.find_one(
+        {"staff_id": barber_id, "salon_id": salon_id}, {"_id": 0}
+    )
+    if not account:
+        return {"has_account": False, "login_id": None, "has_password": False,
+                "status": None, "role_id": None, "role": None,
+                "assigned_branch_ids": [], "permissions": {"modules": {}},
+                "user_id": None}
+    return {
+        "has_account": True,
+        "user_id": account["id"],
+        "login_id": account.get("login_id"),
+        "has_password": bool(account.get("password_hash")),
+        "status": account.get("status"),
+        "role_id": account.get("role_id"),
+        "role": account.get("role"),
+        "assigned_branch_ids": account.get("assigned_branch_ids") or [],
+        "permissions": account.get("permissions") or {"modules": {}},
+        "password_updated_at": account.get("password_updated_at"),
+    }
+
+
+
+@api_router.put("/salons/{salon_id}/barbers/{barber_id}/credentials")
+async def update_staff_credentials(
+    salon_id: str,
+    barber_id: str,
+    body: StaffCredentialsUpdate,
+    current_user=Depends(get_current_salon_user),
+):
+    """Set / update the staff's login_id + password (admin-only).
+
+    Upserts into `salon_users` (the single auth store). If no login account is
+    linked to this barber yet, one is created (name/mobile copied from the barber,
+    role = system 'Staff' role). login_id uniqueness is checked against
+    `salon_users` only.
+    """
+    if current_user.get("role") not in ("admin", "salon_admin", "salon"):
+        raise HTTPException(status_code=403, detail="Only salon admin can update staff credentials")
+
+    barber = await db.barbers.find_one({"id": barber_id, "salon_id": salon_id}, {"_id": 0})
+    if not barber:
+        raise HTTPException(status_code=404, detail="Staff not found")
+
+    # Locate (or prepare to create) the linked salon_users account.
+    account = await db.salon_users.find_one(
+        {"staff_id": barber_id, "salon_id": salon_id}, {"_id": 0}
+    )
+
+    updates: Dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
+
+    if body.login_id is not None:
+        lid = (body.login_id or "").strip()
+        if len(lid) < 6:
+            raise HTTPException(status_code=400, detail="login_id must be at least 6 characters")
+        # Uniqueness — case-insensitive, salon_users only.
+        rx = f"^{re.escape(lid)}$"
+        q = {"login_id": {"$regex": rx, "$options": "i"}}
+        if account:
+            q["id"] = {"$ne": account["id"]}
+        collide = await db.salon_users.find_one(q, {"_id": 0, "id": 1})
+        if collide:
+            raise HTTPException(status_code=400, detail=f"login_id '{lid}' is already taken")
+        updates["login_id"] = lid
+
+    if body.password is not None:
+        pwd = body.password or ""
+        if len(pwd) < 8:
+            raise HTTPException(status_code=400, detail="password must be at least 8 characters")
+        updates["password_hash"] = pwd_context.hash(pwd)
+        updates["password_updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    if len(updates) <= 1:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+
+    if account:
+        await db.salon_users.update_one({"id": account["id"]}, {"$set": updates})
+        # Re-activate if it had been deactivated.
+        if account.get("status") != "active":
+            await db.salon_users.update_one({"id": account["id"]}, {"$set": {"status": "active"}})
+        account_id = account["id"]
+    else:
+        # Need a login_id to create the account.
+        login_id = updates.get("login_id")
+        if not login_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Set a login ID first before setting a password for a new account",
+            )
+        staff_role = await get_system_role(salon_id, "staff")
+        mobile = barber.get("mobile") or ""
+        if mobile and not str(mobile).startswith("+91") and str(mobile).isdigit():
+            mobile = f"+91{mobile}"
+        account_id = str(uuid.uuid4())
+        new_account = {
+            "id": account_id,
+            "salon_id": salon_id,
+            "branch_id": barber.get("branch_id"),
+            "name": barber.get("name") or "Staff",
+            "mobile": mobile,
+            "login_id": login_id,
+            "password_hash": updates.get("password_hash", ""),
+            "role": "staff",
+            "role_id": staff_role["id"] if staff_role else None,
+            "staff_id": barber_id,
+            "assigned_branch_ids": [],
+            "permissions": SalonUserPermissions().dict(),
+            "status": "active",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": updates["updated_at"],
+            "password_updated_at": updates.get("password_updated_at"),
+        }
+        await db.salon_users.insert_one(new_account)
+
+    fresh = await db.salon_users.find_one({"id": account_id}, {"_id": 0})
+    return {
+        "success": True,
+        "login_id": fresh.get("login_id") or None,
+        "has_password": bool(fresh.get("password_hash")),
+        "password_updated_at": fresh.get("password_updated_at"),
+    }
+
+
+# ---------- Staff login history + active devices ----------
+
+@api_router.get("/salons/{salon_id}/barbers/{barber_id}/login-history")
+async def get_staff_login_history(
+    salon_id: str,
+    barber_id: str,
+    limit: int = 25,
+    current_user=Depends(get_current_salon_user),
+):
+    """Recent login/logout events for the staff. Reads from
+    staff_login_events (structured) with a graceful fallback to `staff_sessions`
+    if only sessions are available."""
+    if not has_module_permission(current_user, "staff", "view"):
+        # Fall back — admins always allowed
+        if current_user.get("role") not in ("admin", "salon_admin", "salon"):
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+    events = []
+    try:
+        cur = db.staff_login_events.find(
+            {"salon_id": salon_id, "barber_id": barber_id},
+            {"_id": 0},
+        ).sort("timestamp", -1)
+        events = await cur.to_list(int(limit))
+    except Exception:
+        events = []
+
+    # Active sessions (best-effort — collection may not exist yet).
+    active_devices = []
+    try:
+        cur = db.staff_sessions.find(
+            {"salon_id": salon_id, "barber_id": barber_id, "revoked": {"$ne": True}},
+            {"_id": 0},
+        ).sort("last_seen", -1)
+        active_devices = await cur.to_list(20)
+    except Exception:
+        pass
+
+    return {
+        "barber_id": barber_id,
+        "history": events,
+        "active_devices": active_devices,
+    }
+
+
+class RevokeSessionReq(BaseModel):
+    session_id: str
+
+
+@api_router.post("/salons/{salon_id}/barbers/{barber_id}/revoke-session")
+async def revoke_staff_session(
+    salon_id: str,
+    barber_id: str,
+    body: RevokeSessionReq,
+    current_user=Depends(get_current_salon_user),
+):
+    """Revoke an active session/device for the staff (admin-only)."""
+    if current_user.get("role") not in ("admin", "salon_admin", "salon"):
+        raise HTTPException(status_code=403, detail="Only salon admin can revoke sessions")
+    now = datetime.now(timezone.utc).isoformat()
+    res = await db.staff_sessions.update_one(
+        {"id": body.session_id, "salon_id": salon_id, "barber_id": barber_id},
+        {"$set": {"revoked": True, "revoked_at": now}},
+    )
+    # Also log a revoke event so history reflects it.
+    try:
+        await db.staff_login_events.insert_one({
+            "id": str(uuid.uuid4()),
+            "salon_id": salon_id,
+            "barber_id": barber_id,
+            "event": "revoked",
+            "session_id": body.session_id,
+            "timestamp": now,
+            "by": current_user.get("id") or current_user.get("sub"),
+        })
+    except Exception:
+        pass
+    return {"success": True, "matched": res.matched_count, "modified": res.modified_count}
 
 
 @api_router.get("/salons/{salon_id}/staff-holidays")
@@ -14424,6 +18067,16 @@ async def cashfree_webhook(request: Request):
     if not order_id:
         return {"received": True, "verified": True}
 
+    # Customer → salon service payments (Cashfree Easy Split) share this
+    # webhook URL. Route them first; if handled, we're done. Any handler error
+    # is logged but does NOT block subscription handling below.
+    try:
+        svc_result = await service_payments_mod.handle_service_payment_webhook(payload)
+        if svc_result:
+            return {"received": True, "verified": True, **svc_result}
+    except Exception as e:
+        logger.error(f"[Cashfree Webhook] service payment handler error: {e}")
+
     sub = await db.salon_subscriptions.find_one(
         {"cashfree_order_id": order_id}, {"_id": 0}
     )
@@ -14549,6 +18202,11 @@ import marketplace as marketplace_mod  # noqa: E402
 marketplace_mod.init_marketplace_router(db=db, get_current_salon_user=get_current_salon_user)
 fastapi_app.include_router(marketplace_mod.marketplace_router)
 
+# Jul 2026 (continuation_request) — Global salon-side search (ribbon → magnifier)
+import salon_search as salon_search_mod  # noqa: E402
+salon_search_mod.init_search_router(db=db, get_current_salon_user=get_current_salon_user)
+fastapi_app.include_router(salon_search_mod.search_router)
+
 # Phase 10/11/12 — Salon Store (browse + cart + checkout + order lifecycle)
 import salon_store as salon_store_mod  # noqa: E402
 from supplier_auth import require_supplier as _require_supplier_dep  # noqa: E402
@@ -14560,6 +18218,18 @@ salon_store_mod.init_salon_store_router(
 )
 fastapi_app.include_router(salon_store_mod.salon_store_router)
 
+# Customer → salon service payments (Cashfree Easy Split). Shares the Cashfree
+# webhook mounted above; routes registered under /api/... via its own router.
+import service_payments as service_payments_mod  # noqa: E402
+service_payments_mod.init_service_payments_router(
+    db=db,
+    get_current_salon_user=get_current_salon_user,
+    create_in_app_notification=create_in_app_notification,
+    check_salon_admin_for_salon=_check_salon_admin_for_salon,
+    broadcast_update=broadcast_update,
+)
+fastapi_app.include_router(service_payments_mod.service_payments_router)
+
 # Phase 14 — Salon Inventory (browse + lifecycle + movement history)
 import salon_inventory as salon_inventory_mod  # noqa: E402
 salon_inventory_mod.init_salon_inventory_router(
@@ -14568,6 +18238,19 @@ salon_inventory_mod.init_salon_inventory_router(
     resolve_branch_id=resolve_branch_id,
 )
 fastapi_app.include_router(salon_inventory_mod.salon_inventory_router)
+
+# Reports Router (merged Financials + Analytics)
+import reports_router as reports_router_mod  # noqa: E402
+_reports_router = reports_router_mod.init_reports_router(
+    db=db,
+    get_current_salon_user=get_current_salon_user,
+    has_module_permission=has_module_permission,
+    is_branch_manager=is_branch_manager,
+    enforce_branch_for_manager=enforce_branch_for_manager,
+    attribute_token_revenue_to_barbers=attribute_token_revenue_to_barbers,
+    attribute_token_revenue_to_services=attribute_token_revenue_to_services,
+)
+fastapi_app.include_router(_reports_router)
 
 # Phase 13 — wire auto-post hook into salon_store.supplier_deliver_order
 salon_store_mod.set_auto_post_hook(
@@ -14607,6 +18290,24 @@ attendance_mode_mod.init_attendance_mode(
     get_current_salon_admin=get_current_salon_admin,
 )
 fastapi_app.include_router(attendance_mode_mod.attendance_mode_router)
+
+# Marketing Module (SalonHub 2.0) — segments, coupons, channels, webhook, overview
+import marketing as marketing_mod  # noqa: E402
+marketing_mod.init_marketing_router(
+    db=db,
+    get_current_salon_user=get_current_salon_user,
+    get_current_salon_admin=get_current_salon_admin,
+)
+fastapi_app.include_router(marketing_mod.marketing_router)
+
+# Marketing Settings Module (Twilio sub-account, Cashfree wallet, DLT, email, sending windows)
+import salon_marketing_settings as mkt_settings_mod  # noqa: E402
+mkt_settings_mod.init_marketing_settings_router(
+    db=db,
+    get_current_salon_user=get_current_salon_user,
+    get_current_salon_admin=get_current_salon_admin,
+)
+fastapi_app.include_router(mkt_settings_mod.settings_router)
 
 # Health check endpoint for Kubernetes liveness/readiness probes
 @fastapi_app.get("/health")
@@ -14668,10 +18369,48 @@ async def _attendance_auto_close_wrapper():
 
 scheduler.add_job(_attendance_auto_close_wrapper, 'cron', hour=18, minute=25)
 
+async def cleanup_legacy_predefined_services():
+    """One-time cleanup for the July 2026 "reduce predefined services" change.
+    
+    Removes all GLOBAL (i.e. `salon_id` missing/null) predefined services whose
+    category is not "General" from the `db.services` collection, and clears any
+    salon_service mappings that pointed at them so the salon services list is
+    not left with dangling references.
+    
+    Idempotent: the flag doc `db.system_migrations.cleanup_predefined_v1` stops
+    re-runs.
+    """
+    marker = await db.system_migrations.find_one({"_id": "cleanup_predefined_v1"})
+    if marker:
+        return
+    # 1) Delete global (unowned) services outside General
+    stale = await db.services.find(
+        {"$or": [{"salon_id": {"$exists": False}}, {"salon_id": None}], "category": {"$ne": "General"}},
+        {"_id": 0, "id": 1},
+    ).to_list(length=None)
+    stale_ids = [s["id"] for s in stale if s.get("id")]
+    if stale_ids:
+        res_svc = await db.services.delete_many({"id": {"$in": stale_ids}})
+        res_ss = await db.salon_services.delete_many({"service_id": {"$in": stale_ids}})
+        res_bs = await db.barber_services.delete_many({"service_id": {"$in": stale_ids}})
+        logger.info(
+            f"[cleanup_predefined_v1] Removed {res_svc.deleted_count} legacy services, "
+            f"{res_ss.deleted_count} salon_service links, {res_bs.deleted_count} barber_service links."
+        )
+    else:
+        logger.info("[cleanup_predefined_v1] No legacy predefined services found.")
+    await db.system_migrations.insert_one({"_id": "cleanup_predefined_v1", "at": datetime.now(timezone.utc).isoformat()})
+
+
 @fastapi_app.on_event("startup")
 async def startup_event():
     await initialize_data()
     await migrate_branches()
+    # Jul 2026 — cleanup legacy predefined services (all non-General global services)
+    try:
+        await cleanup_legacy_predefined_services()
+    except Exception as e:
+        logger.error(f"[STARTUP] cleanup_legacy_predefined_services failed: {e}")
     # Phase 2 (Part C) — per-branch pricing migration (idempotent)
     try:
         await migrate_subscription_pricing_v2()
@@ -14689,12 +18428,106 @@ async def startup_event():
         logger.info(f"[STARTUP] Seeded {n} supplier product samples")
     except Exception as e:
         logger.error(f"[STARTUP] product samples seed failed: {e}")
+    # Also seed a minimal set of live supplier_products so the salon-store
+    # Shop tab has real product cards to browse (idempotent).
+    try:
+        from seed_store_fixtures import SUPPLIER_FIXTURES, _now_iso
+        from passlib.context import CryptContext as _CC
+        _pwd = _CC(schemes=["bcrypt"], deprecated="auto")
+        seeded_p = 0
+        for sup in SUPPLIER_FIXTURES:
+            await db.suppliers.update_one(
+                {"id": sup["id"]},
+                {"$set": {
+                    "id": sup["id"],
+                    "business_name": sup["business_name"],
+                    "owner_name": sup["owner_name"],
+                    "phone": sup["phone"],
+                    "mobile": sup["phone"],
+                    "email": sup["email"],
+                    "city": sup["city"],
+                    "state": sup["state"],
+                    "country": "India",
+                    "rating_avg": sup["rating_avg"],
+                    "rating_count": sup["rating_count"],
+                    "status": "active",
+                    "approved_at": _now_iso(),
+                    "password_hash": _pwd.hash("supplier123"),
+                    "login_id": sup["phone"],
+                    "created_at": _now_iso(),
+                    "updated_at": _now_iso(),
+                }},
+                upsert=True,
+            )
+            for p in sup["products"]:
+                pid = f"{sup['id']}::{p['name']}".replace(" ", "_")[:80]
+                await db.supplier_products.update_one(
+                    {"id": pid},
+                    {"$set": {
+                        "id": pid,
+                        "supplier_id": sup["id"],
+                        "name": p["name"],
+                        "brand": p["brand"],
+                        "category": p["category"],
+                        "description": f"Sample product from {sup['business_name']} — {p['name']}.",
+                        "images": [],
+                        "selling_price": p["selling_price"],
+                        "mrp": p["mrp"],
+                        "gst_percent": p["gst_percent"],
+                        "inventory_available": p["inventory_available"],
+                        "inventory_reserved": 0,
+                        "min_order_qty": 1,
+                        "pack_size": None,
+                        "unit": p["unit"],
+                        "is_active": True,
+                        "is_deleted": False,
+                        "created_at": _now_iso(),
+                        "updated_at": _now_iso(),
+                    }},
+                    upsert=True,
+                )
+                seeded_p += 1
+        logger.info(f"[STARTUP] Seeded {seeded_p} live supplier products for Shop")
+    except Exception as e:
+        logger.error(f"[STARTUP] live supplier products seed failed: {e}")
     scheduler.start()
+    # Register marketing scheduler jobs (M6 automations daily + M5 scheduled campaigns every 5m)
+    try:
+        marketing_mod.register_marketing_jobs(scheduler)
+    except Exception as _e:
+        logger.error(f"[STARTUP] marketing scheduler registration failed: {_e}")
+    # Marketing M0 — one-time migration to add can_access_marketing=true to
+    # admin/branch-manager records. We overwrite existing values (default:
+    # admins/BM = True) because the field was added AFTER their records were
+    # created — the previous default was implicitly "true" via role-based
+    # checks. Staff records keep their explicit value if already set.
+    try:
+        r_admin = await db.salon_users.update_many(
+            {"role": {"$in": ["salon_admin", "admin", "platform_admin", "branch_manager"]}},
+            {"$set": {"permissions.can_access_marketing": True}},
+        )
+        r_staff = await db.salon_users.update_many(
+            {"role": "staff", "permissions.can_access_marketing": {"$exists": False}},
+            {"$set": {"permissions.can_access_marketing": False}},
+        )
+        logger.info(
+            f"[STARTUP] can_access_marketing migration: admins/managers={r_admin.modified_count} staff={r_staff.modified_count}"
+        )
+    except Exception as e:
+        logger.error(f"[STARTUP] can_access_marketing migration failed: {e}")
     # Phase 10/11 — start the salon-store reservation sweeper
     try:
         salon_store_mod.start_sweeper()
     except Exception as e:
         logger.error(f"[STARTUP] salon_store sweeper failed: {e}")
+    # Jul 2026 (continuation) — auto-seed a few services, active barbers and
+    # 3 sample bookings for the admin salon so testers can immediately
+    # explore the UI. Safe & idempotent (see seed_test_data.py).
+    try:
+        from seed_test_data import main as seed_test_data_main
+        await seed_test_data_main()
+    except Exception as e:
+        logger.error(f"[STARTUP] seed_test_data failed: {e}")
     logger.info("Application started with multi-salon support")
 
 @fastapi_app.on_event("shutdown")

@@ -20,7 +20,7 @@ import { toast } from 'sonner';
 import { useCart } from '@/contexts/CartContext';
 import { extractErrorMessage } from '@/utils/apiError';
 import CartDrawer from '@/components/store/CartDrawer';
-import SalonHamburgerMenu from '@/components/salon/SalonHamburgerMenu';
+import HomeV2Shell from '@/pages/salon/home_v2/HomeV2Shell';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -37,6 +37,10 @@ const SORT_OPTIONS = [
 export default function MarketplacePage() {
   const navigate = useNavigate();
   const { addItem, openDrawer, summary, items } = useCart();
+
+  // Salon meta (for shell topbar branding)
+  const [salon, setSalon] = useState(null);
+  const [salonId, setSalonId] = useState(null);
 
   const [products, setProducts] = useState([]);
   const [total, setTotal] = useState(0);
@@ -101,6 +105,29 @@ export default function MarketplacePage() {
   useEffect(() => { fetchFilters(); }, [fetchFilters]);
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
+  // Load current salon (from auth) so the shell topbar shows the brand/branch chip.
+  useEffect(() => {
+    let sid = null;
+    try {
+      const raw = localStorage.getItem('salon_user_auth');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        sid = parsed?.salon_id || parsed?.salonId || null;
+      }
+    } catch (e) { /* ignore parse */ }
+    if (!sid) sid = localStorage.getItem('salon_admin_id');
+    if (!sid) return;
+    setSalonId(sid);
+    (async () => {
+      try {
+        const r = await axios.get(`${API}/salons/${sid}`);
+        setSalon(r.data);
+      } catch (e) { /* non-fatal — shell falls back to "Your Salon" */ }
+    })();
+  }, []);
+
+  const getAuthHeaders = () => authHeaders;
+
   const onSearch = (e) => { e?.preventDefault(); setSearch(searchDraft.trim()); setPage(1); };
   const onCategoryChange = (c) => { setCategory(c); setPage(1); };
   const onBrandChange = (b) => { setBrand(b); setPage(1); };
@@ -139,13 +166,18 @@ export default function MarketplacePage() {
   };
 
   return (
+    <HomeV2Shell
+      salon={salon}
+      salonId={salonId}
+      getAuthHeaders={getAuthHeaders}
+      activeTab="marketplace"
+    >
     <div className="min-h-screen bg-background text-foreground">
       <CartDrawer />
 
       {/* Header */}
       <header className="sticky top-0 z-30 bg-background/80 backdrop-blur border-b border-border">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center gap-3">
-          <SalonHamburgerMenu activeId="marketplace" />
+        <div className="w-full px-3 sm:px-5 h-14 flex items-center gap-3">
           <Button variant="ghost" size="sm" onClick={() => navigate(-1)} data-testid="store-back-btn">
             <ArrowLeft className="w-4 h-4 mr-1" /> Back
           </Button>
@@ -170,7 +202,7 @@ export default function MarketplacePage() {
         </div>
 
         {/* Search bar */}
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-3">
+        <div className="w-full px-3 sm:px-5 pb-3">
           <form onSubmit={onSearch} className="flex items-center gap-2">
             <div className="flex-1 relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -187,7 +219,7 @@ export default function MarketplacePage() {
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 grid grid-cols-12 gap-6">
+      <div className="w-full px-3 sm:px-5 py-6 grid grid-cols-12 gap-6">
         {/* Sidebar filters */}
         <aside className="col-span-12 lg:col-span-3 space-y-5">
           <FilterBlock label="Categories">
@@ -308,6 +340,7 @@ export default function MarketplacePage() {
         />
       )}
     </div>
+    </HomeV2Shell>
   );
 }
 

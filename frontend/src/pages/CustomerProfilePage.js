@@ -108,6 +108,12 @@ export default function CustomerProfilePage() {
         address: profile.address || '',
         city: profile.city || '',
         pincode: profile.pincode || '',
+        wedding_anniversary: profile.wedding_anniversary || '',
+        spouse_name: profile.spouse_name || '',
+        spouse_date_of_birth: profile.spouse_date_of_birth || '',
+        important_dates: Array.isArray(profile.important_dates)
+          ? profile.important_dates.filter(d => d && (d.label || d.date))
+          : [],
       };
       const res = await axios.put(`${API}/users/by-phone/${cleanPhone}`, payload);
       setProfile(res.data);
@@ -266,6 +272,104 @@ export default function CustomerProfilePage() {
                 />
               </div>
             </div>
+
+            {/* Marketing / relationship fields (M1) */}
+            <div className="pt-4 mt-2 border-t border-border">
+              <div className="mb-2">
+                <p className="text-sm font-semibold text-foreground">Special Dates</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Optional — helps your salon send you personalised offers on the right day.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="wedding_anniversary">Wedding Anniversary</Label>
+                  <Input
+                    id="wedding_anniversary"
+                    type="date"
+                    value={profile.wedding_anniversary || ''}
+                    onChange={(e) => setProfile({ ...profile, wedding_anniversary: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="spouse_name">Spouse Name</Label>
+                  <Input
+                    id="spouse_name"
+                    value={profile.spouse_name || ''}
+                    onChange={(e) => setProfile({ ...profile, spouse_name: e.target.value })}
+                    placeholder="Optional"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="spouse_dob">Spouse Date of Birth</Label>
+                  <Input
+                    id="spouse_dob"
+                    type="date"
+                    value={profile.spouse_date_of_birth || ''}
+                    onChange={(e) => setProfile({ ...profile, spouse_date_of_birth: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <Label>Other Important Dates</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setProfile({
+                        ...profile,
+                        important_dates: [...(profile.important_dates || []), { label: '', date: '' }],
+                      })
+                    }
+                  >
+                    + Add
+                  </Button>
+                </div>
+                {(profile.important_dates || []).length === 0 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    No custom dates added. Kids&apos; birthdays, engagement, etc.
+                  </p>
+                )}
+                {(profile.important_dates || []).map((d, idx) => (
+                  <div key={idx} className="flex gap-2 mb-2">
+                    <Input
+                      placeholder="Label (e.g. Kid's birthday)"
+                      value={d.label || ''}
+                      onChange={(e) => {
+                        const arr = [...(profile.important_dates || [])];
+                        arr[idx] = { ...arr[idx], label: e.target.value };
+                        setProfile({ ...profile, important_dates: arr });
+                      }}
+                    />
+                    <Input
+                      type="date"
+                      value={d.date || ''}
+                      onChange={(e) => {
+                        const arr = [...(profile.important_dates || [])];
+                        arr[idx] = { ...arr[idx], date: e.target.value };
+                        setProfile({ ...profile, important_dates: arr });
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        const arr = [...(profile.important_dates || [])];
+                        arr.splice(idx, 1);
+                        setProfile({ ...profile, important_dates: arr });
+                      }}
+                    >
+                      ✕
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <Button
               className="w-full bg-gold text-black hover:bg-gold/90"
               onClick={handleProfileSave}

@@ -28,7 +28,6 @@ export default function OfferingsModule({ salonId, token }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [genderFilter, setGenderFilter] = useState('all');
   const [loading, setLoading] = useState(false);
-  const [initialized, setInitialized] = useState(false);
   
   // Modal states
   const [showServiceModal, setShowServiceModal] = useState(false);
@@ -50,6 +49,11 @@ export default function OfferingsModule({ salonId, token }) {
   const [csvFile, setCsvFile] = useState(null);
   const [csvUploading, setCsvUploading] = useState(false);
   const [csvResult, setCsvResult] = useState(null);
+
+  // Bulk-delete selection state (Jul 2026)
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedServiceIds, setSelectedServiceIds] = useState([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const handleParseMenu = async () => {
     if (!menuFile) {
@@ -165,48 +169,35 @@ export default function OfferingsModule({ salonId, token }) {
   };
 
   useEffect(() => {
-    initializeSalonServices();
+    if (salonId) fetchAllData();
   }, [salonId]);
 
-  const initializeSalonServices = async () => {
-    if (!salonId) return;
-    
-    setLoading(true);
-    try {
-      // Try to initialize predefined services for this salon
-      const response = await axios.post(
-        `${API}/salons/${salonId}/initialize`,
-        {},
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (response.data.new_services_added > 0) {
-        toast.success(`Added ${response.data.new_services_added} new services!`);
-      }
-      setInitialized(true);
-    } catch (error) {
-      // Initialization error — fetchAllData below will re-read the current state.
-    } finally {
-      fetchAllData();
-    }
+  // Bulk-delete: toggle selection and issue POST /salons/{id}/services/bulk-delete
+  const toggleServiceSelected = (sid) => {
+    setSelectedServiceIds((prev) => (prev.includes(sid) ? prev.filter((x) => x !== sid) : [...prev, sid]));
   };
-
-  const forceReinitialize = async () => {
-    if (!window.confirm('This will reset and re-add all predefined services. Continue?')) return;
-    
+  const clearSelection = () => {
+    setSelectionMode(false);
+    setSelectedServiceIds([]);
+  };
+  const bulkDeleteSelected = async () => {
+    if (selectedServiceIds.length === 0) { toast.error('Select at least one service to delete'); return; }
+    if (!window.confirm(`Delete ${selectedServiceIds.length} selected service(s)? This cannot be undone.`)) return;
+    setBulkDeleting(true);
     try {
-      // Reset initialization flag
-      await axios.post(
-        `${API}/salons/${salonId}/reset-initialization`,
-        {},
+      const res = await axios.post(
+        `${API}/salons/${salonId}/services/bulk-delete`,
+        { service_ids: selectedServiceIds },
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      
-      // Re-initialize
-      await initializeSalonServices();
-      toast.success('Services reinitialized successfully!');
-    } catch (error) {
-      console.error('Error reinitializing:', error);
-      toast.error('Failed to reinitialize services');
+      const removed = (res.data?.hard_deleted || 0) + (res.data?.disabled_for_salon || 0);
+      toast.success(`Removed ${removed} service(s)`);
+      clearSelection();
+      fetchAllData();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Bulk delete failed');
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -380,15 +371,37 @@ export default function OfferingsModule({ salonId, token }) {
             <FileText className="w-3 h-3 mr-1" />
             Upload CSV
           </Button>
-          <Button
-            onClick={forceReinitialize}
-            variant="outline"
-            size="sm"
-            className="text-xs"
-          >
-            <Sparkles className="w-3 h-3 mr-1" />
-            Load Predefined Services
-          </Button>
+          {activeTab === 'services' && (
+            selectionMode ? (
+              <>
+                <Button
+                  onClick={bulkDeleteSelected}
+                  size="sm"
+                  variant="destructive"
+                  disabled={bulkDeleting || selectedServiceIds.length === 0}
+                  className="text-xs"
+                  data-testid="bulk-delete-confirm-btn"
+                >
+                  {bulkDeleting ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Trash2 className="w-3 h-3 mr-1" />}
+                  Delete Selected ({selectedServiceIds.length})
+                </Button>
+                <Button onClick={clearSelection} size="sm" variant="outline" className="text-xs" data-testid="bulk-delete-cancel-btn">
+                  <X className="w-3 h-3 mr-1" /> Cancel
+                </Button>
+              </>
+            ) : (
+              <Button
+                onClick={() => setSelectionMode(true)}
+                variant="outline"
+                size="sm"
+                className="text-xs"
+                data-testid="bulk-delete-mode-btn"
+              >
+                <Trash2 className="w-3 h-3 mr-1" />
+                Bulk Delete
+              </Button>
+            )
+          )}
         </div>
       </div>
 
@@ -784,15 +797,27 @@ export default function OfferingsModule({ salonId, token }) {
                   {expandedCategories[category] && (
                     <div className="p-4 space-y-2">
                       {servicesList.map((service) => (
-                        <div key={service.id} className="bg-background border border-border rounded-lg p-4 hover:border-gold/50 transition-colors">
-                          <ServiceCardContent 
-                            service={service} 
-                            onToggleFavorite={toggleFavorite}
-                            onToggleEnabled={toggleServiceEnabled}
-                            onEdit={handleEditService}
-                            onDelete={deleteService}
-                            salonId={salonId}
-                          />
+                        <div key={service.id} className={`bg-background border rounded-lg p-4 transition-colors ${selectionMode && selectedServiceIds.includes(service.id) ? 'border-rose-500 bg-rose-500/5' : 'border-border hover:border-gold/50'}`}>
+                          <div className="flex items-center gap-3">
+                            {selectionMode && (
+                              <Checkbox
+                                checked={selectedServiceIds.includes(service.id)}
+                                onCheckedChange={() => toggleServiceSelected(service.id)}
+                                data-testid={`bulk-delete-checkbox-${service.id}`}
+                                className="data-[state=checked]:bg-rose-500 data-[state=checked]:border-rose-500"
+                              />
+                            )}
+                            <div className="flex-1">
+                              <ServiceCardContent 
+                                service={service} 
+                                onToggleFavorite={toggleFavorite}
+                                onToggleEnabled={toggleServiceEnabled}
+                                onEdit={handleEditService}
+                                onDelete={deleteService}
+                                salonId={salonId}
+                              />
+                            </div>
+                          </div>
                         </div>
                       ))}
                     </div>

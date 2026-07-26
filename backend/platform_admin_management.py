@@ -59,7 +59,8 @@ class SuspendRequest(BaseModel):
 
 
 class GrantProRequest(BaseModel):
-    duration_months: int = Field(..., gt=0, le=120)
+    duration_months: Optional[int] = Field(default=None, ge=0, le=120)
+    duration_days: Optional[int] = Field(default=None, ge=0, le=3650)
     max_branches: Optional[int] = Field(default=None, ge=1, le=1000)
     reason: str = Field(..., min_length=2, max_length=500)
 
@@ -529,7 +530,19 @@ async def grant_pro_access(
         raise HTTPException(status_code=404, detail="Salon not found")
 
     previous_state = (await _existing_active_sub(salon_id)) or {}
-    expiry_iso = _add_months_iso(body.duration_months)
+    # Compute expiry from days OR months. Explicit days take precedence so admins
+    # can grant sub-month durations (e.g. "100 days" instead of ~3 months).
+    total_days = 0
+    if body.duration_days:
+        total_days += int(body.duration_days)
+    if body.duration_months:
+        total_days += 30 * int(body.duration_months)
+    if total_days <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Grant duration must be at least 1 day (provide duration_days and/or duration_months)."
+        )
+    expiry_iso = (datetime.now(timezone.utc) + timedelta(days=total_days)).isoformat()
     sub = await _create_granted_sub(
         salon_id=salon_id, plan_name="Platform Granted Pro", plan_id="PLATFORM_GRANT",
         expiry_iso=expiry_iso, max_branches=body.max_branches, grant_type="grant_pro",
@@ -539,6 +552,8 @@ async def grant_pro_access(
         salon_id=salon_id, admin=admin, override_type="grant_pro",
         override_details={
             "duration_months": body.duration_months,
+            "duration_days": body.duration_days,
+            "total_days": total_days,
             "max_branches": body.max_branches,
         },
         previous_state={
@@ -560,6 +575,8 @@ async def grant_pro_access(
         payload={
             "override_id": override["id"],
             "duration_months": body.duration_months,
+            "duration_days": body.duration_days,
+            "total_days": total_days,
             "max_branches": body.max_branches,
         },
     )

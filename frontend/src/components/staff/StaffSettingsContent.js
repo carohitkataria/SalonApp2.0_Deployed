@@ -16,7 +16,7 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import axios from 'axios';
-import { Briefcase, CalendarCheck, MapPin, CalendarRange, Loader2 } from 'lucide-react';
+import { Briefcase, CalendarCheck, MapPin, CalendarRange, Loader2, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';

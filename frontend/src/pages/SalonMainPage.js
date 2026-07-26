@@ -9,7 +9,7 @@ import CustomerOtpVerification from '@/components/CustomerOtpVerification';
 import {
   Scissors, Calendar, User, MapPin, Star, Clock,
   ArrowLeft, Users, CheckCircle, AlertCircle, ChevronRight, X, Wallet, History,
-  ChevronDown, Quote, Phone, Share2, Sparkles, TrendingUp, Package as PackageIcon, Flame
+  ChevronDown, Quote, Phone, Share2, Sparkles, TrendingUp, Package as PackageIcon, Flame, Crown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Footer from '@/components/Footer';
@@ -55,6 +55,31 @@ export default function SalonMainPage() {
   const [reviewsTotal, setReviewsTotal] = useState(0);
   const [showBranchDropdown, setShowBranchDropdown] = useState(false);
   const [packages, setPackages] = useState([]);
+  const [membershipPlans, setMembershipPlans] = useState([]);
+  const [buyingPlanId, setBuyingPlanId] = useState(null);
+
+  const buyMembership = async (plan) => {
+    if (!isUserLoggedIn || !user?.phone) {
+      toast.info('Please log in to buy a membership');
+      navigate(`/user/login?redirect=/salon/${salonId}`);
+      return;
+    }
+    setBuyingPlanId(plan.id);
+    try {
+      await axios.post(`${API}/salons/${salonId}/customers/${user.phone}/buy-membership`, {
+        membership_plan_id: plan.id,
+        customer_name: user.name || user.full_name || 'Customer',
+        customer_phone: user.phone,
+        payment_mode: 'pay_at_salon',
+        paid_amount: plan.amount,
+      });
+      toast.success(`${plan.name} requested! Pay ₹${Math.round(plan.amount)} at the salon — ₹${Math.round(plan.credit)} credit is added once they confirm.`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || 'Could not submit membership purchase');
+    } finally {
+      setBuyingPlanId(null);
+    }
+  };
   const [shiftWindows, setShiftWindows] = useState([]);
   // A1: Most booked service IDs (computed from completed bookings count, frontend-fallback to is_favorite)
   const [mostBookedIds, setMostBookedIds] = useState([]);
@@ -127,7 +152,8 @@ export default function SalonMainPage() {
         axios.get(`${API}/salons/${salonId}/ratings?limit=10`),
         axios.get(`${API}/salons/${salonId}/packages/with-services`),
         axios.get(`${API}/salons/${salonId}/shift-windows`),
-      ]).then(([sv, br, rv, pk, sw]) => {
+        axios.get(`${API}/salons/${salonId}/membership-plans`),
+      ]).then(([sv, br, rv, pk, sw, mp]) => {
         if (sv.status === 'fulfilled') {
           const list = Array.isArray(sv.value.data) ? sv.value.data : (sv.value.data?.services || []);
           setServices(list);
@@ -154,6 +180,10 @@ export default function SalonMainPage() {
         if (sw.status === 'fulfilled') {
           const shifts = Array.isArray(sw.value.data?.shifts) ? sw.value.data.shifts : (Array.isArray(sw.value.data) ? sw.value.data : []);
           setShiftWindows(shifts);
+        }
+        if (mp.status === 'fulfilled') {
+          const plans = Array.isArray(mp.value.data?.plans) ? mp.value.data.plans : [];
+          setMembershipPlans(plans.filter(p => p.is_active !== false));
         }
       });
     } catch (error) {
@@ -910,6 +940,73 @@ export default function SalonMainPage() {
                       </div>
                     </div>
                   </button>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* === MEMBERSHIPS (themed) === */}
+      {membershipPlans.length > 0 && (
+        <section className="space-y-4" data-testid="salon-memberships-section">
+          <header className="flex items-end justify-between">
+            <div>
+              <span className="eyebrow-brass">Save more, every visit</span>
+              <h2 className="font-fraunces text-2xl font-medium mt-1 leading-none">Memberships</h2>
+            </div>
+          </header>
+          <div className="-mx-4 sm:-mx-6 px-4 sm:px-6 overflow-x-auto pb-2 scrollbar-thin">
+            <div className="flex gap-4 snap-x snap-mandatory">
+              {membershipPlans.map((plan, idx) => {
+                const TIER_COLORS = { Diamond: '#38bdf8', Gold: '#f59e0b', Silver: '#94a3b8', Platinum: '#64748b', Custom: '#a855f7' };
+                const accent = plan.color || TIER_COLORS[plan.tier] || TIER_COLORS.Custom;
+                const bonus = Math.max(0, Number(plan.credit || 0) - Number(plan.amount || 0));
+                return (
+                  <div
+                    key={plan.id || idx}
+                    className="snap-start flex-shrink-0 w-[280px] sm:w-[300px] rounded-3xl overflow-hidden border shadow-lux text-left"
+                    style={{ borderColor: accent + '55', background: `linear-gradient(160deg, ${accent}14, ${accent}05)` }}
+                    data-testid={`membership-card-${plan.id}`}
+                  >
+                    <div className="p-5" style={{ borderBottom: `1px solid ${accent}22` }}>
+                      <div className="flex items-center justify-between">
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full border font-bold uppercase tracking-wider px-2.5 py-1 text-[11px]"
+                          style={{ color: accent, borderColor: accent, backgroundColor: accent + '1A' }}
+                          data-testid={`membership-tier-${plan.id}`}
+                        >
+                          <Crown className="w-3.5 h-3.5" style={{ color: accent }} />
+                          {plan.tier || 'Member'}
+                        </span>
+                        <span className="text-[11px] text-muted-foreground">{plan.validity_months} mo</span>
+                      </div>
+                      <h3 className="font-fraunces text-xl font-medium text-foreground mt-3 leading-tight">{plan.name}</h3>
+                    </div>
+                    <div className="p-5 space-y-2">
+                      <div className="flex items-end gap-2">
+                        <p className="font-bebas text-3xl leading-none" style={{ color: accent }}>₹{Math.round(plan.amount)}</p>
+                        <span className="text-xs text-muted-foreground mb-0.5">one-time</span>
+                      </div>
+                      <p className="text-sm text-foreground">
+                        Get <b style={{ color: accent }}>₹{Math.round(plan.credit)}</b> wallet credit
+                        {bonus > 0 && <span className="text-green-600 dark:text-green-400 font-semibold"> · ₹{Math.round(bonus)} bonus</span>}
+                      </p>
+                      {plan.terms_conditions && (
+                        <p className="text-[11px] text-muted-foreground line-clamp-2">{plan.terms_conditions}</p>
+                      )}
+                      <button
+                        onClick={() => buyMembership(plan)}
+                        disabled={buyingPlanId === plan.id}
+                        data-testid={`membership-buy-${plan.id}`}
+                        className="mt-3 w-full h-10 rounded-xl font-semibold text-sm text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+                        style={{ backgroundColor: accent }}
+                      >
+                        {buyingPlanId === plan.id ? 'Submitting…' : `Buy for ₹${Math.round(plan.amount)}`}
+                      </button>
+                      <div className="pt-1 text-[11px] text-muted-foreground text-center">Confirm &amp; pay at the salon to activate.</div>
+                    </div>
+                  </div>
                 );
               })}
             </div>

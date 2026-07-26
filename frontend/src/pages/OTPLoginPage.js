@@ -48,7 +48,7 @@ export default function OTPLoginPage() {
   // Check for existing session on mount
   useEffect(() => {
     if (isSessionValid()) {
-      navigate('/salon/dashboard');
+      try { const a = JSON.parse(localStorage.getItem('salon_user_auth')||'null'); navigate(a && a.role === 'staff' ? '/salon/staff-portal' : '/salon/dashboard'); } catch { navigate('/salon/dashboard'); }
     }
   }, [navigate]);
 
@@ -111,7 +111,7 @@ export default function OTPLoginPage() {
       broadcastAuthChange();
 
       toast.success('Login successful!');
-      navigate('/salon/dashboard');
+      navigate(response.data.role === 'staff' ? '/salon/staff-portal' : '/salon/dashboard');
     } catch (error) {
       // Normalise the error shape so we never render an object as a React child.
       // FastAPI can return detail as a string OR as a structured object like
@@ -378,7 +378,6 @@ export default function OTPLoginPage() {
 
                 <Button 
                   type="submit" 
-                  onClick={handlePasswordLogin}
                   className="w-full bg-gold text-black hover:bg-gold/90 h-12"
                   disabled={loading}
                 >

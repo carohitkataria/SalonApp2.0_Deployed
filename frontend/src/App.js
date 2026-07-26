@@ -29,13 +29,19 @@ import SalonRatingsPage from '@/pages/SalonRatingsPage';
 import CustomerWalletPage from '@/pages/CustomerWalletPage';
 import CustomerNotificationsPage from '@/pages/CustomerNotificationsPage';
 import CustomerProfilePage from '@/pages/CustomerProfilePage';
+import ReelsFeed from '@/pages/ReelsFeed';
 
 // Salon Pages
 import OTPLoginPage from '@/pages/OTPLoginPage';
 import SalonSignupPage from '@/pages/SalonSignupPage';
 import EnhancedSalonDashboard from '@/pages/EnhancedSalonDashboard';
+import StaffPortal from '@/pages/salon/StaffPortal';
+import QuickInvoicePage from '@/pages/salon/QuickInvoicePage';
+import AddCustomerPage from '@/pages/salon/AddCustomerPage';
+import SellMembershipPage from '@/pages/salon/SellMembershipPage';
 import StaffProfilePage from '@/pages/StaffProfilePage';
 import PaymentCallbackPage from '@/pages/PaymentCallbackPage';
+import ServicePaymentCallbackPage from '@/pages/ServicePaymentCallbackPage';
 
 // Platform Admin (HIDDEN — bookmark /platform/login only, no links from landing)
 import PlatformLoginPage from '@/pages/PlatformLoginPage';
@@ -84,6 +90,7 @@ function App() {
                   {/* Customer Routes with Layout */}
                   <Route path="/salons" element={<CustomerLayout><SalonSelectionPage /></CustomerLayout>} />
                   <Route path="/history" element={<CustomerLayout><HistoryPage /></CustomerLayout>} />
+                  <Route path="/reels" element={<CustomerLayout><ReelsFeed /></CustomerLayout>} />
                   <Route path="/profile" element={<CustomerLayout><CustomerProfilePage /></CustomerLayout>} />
                   
                   {/* Salon Main Page - New Hub after selecting a salon */}
@@ -103,6 +110,10 @@ function App() {
                   <Route path="/salon/login" element={<OTPLoginPage />} />
                   <Route path="/salon/signup" element={<SalonSignupPage />} />
                   <Route path="/salon/dashboard" element={<EnhancedSalonDashboard />} />
+                  <Route path="/salon/staff-portal" element={<StaffPortal />} />
+                  <Route path="/salon/dashboard/quick-invoice" element={<QuickInvoicePage />} />
+                  <Route path="/salon/dashboard/add-customer" element={<AddCustomerPage />} />
+                  <Route path="/salon/dashboard/sell-membership" element={<SellMembershipPage />} />
                   <Route path="/salon/staff/:staffId" element={<StaffProfilePage />} />
                   <Route path="/salon/marketplace" element={<MarketplacePage />} />
                   <Route path="/salon/checkout" element={<CheckoutPage />} />
@@ -114,6 +125,7 @@ function App() {
 
                   {/* Subscription / Payment */}
                   <Route path="/subscription/callback" element={<PaymentCallbackPage />} />
+                  <Route path="/pay/callback" element={<ServicePaymentCallbackPage />} />
 
                   {/* HIDDEN — Platform Admin (Part A). Not linked from anywhere. */}
                   <Route path="/platform/login" element={<PlatformLoginPage />} />
