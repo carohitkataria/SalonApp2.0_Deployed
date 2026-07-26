@@ -24,6 +24,22 @@ A multi-tenant salon management SaaS (React + FastAPI + MongoDB). Most recent fe
 
 ## Implemented (CHANGELOG)
 
+### Feb 26, 2026 — CSS namespace collision hotfix (chip layout & drawers) ✅
+User reported after previous fix: (a) the Home dashboard chip layout was ruined, (b) Reports non-snapshot tabs still had the 4th chip too wide + 5th wrapping to a 2nd row, (c) all Reports drawers invisible when clicked.
+
+**Root cause**: `reportsTheme.css` used the `.shv2` namespace, which collided with `home_v2/styles.js`. The Home V2 CSS is injected as a runtime `<style>` tag AFTER the build-imported Reports CSS, so identical-specificity `.shv2 .strip`, `.shv2 .kgrid` and `.shv2-drawer` selectors from Home won by source order — pushing my Reports drawer off-screen (`transform:translateX(100%)`) and applying Home's 4-column strip layout to Reports.
+
+**Fix applied**:
+- Renamed the entire Reports CSS namespace `.shv2*` → `.shrpt*` (root wrapper, drawer, overlay). No more class-name collision.
+- Added dual selectors (`.shrpt X, .shrpt-drawer X`) for utility classes used inside portalled drawers (`.field`, `.toggle`, `.btn-primary`, `.btn-ghost`, `.cfg-row`, `.strip`, `.sc`, `.dtable`, `.bar-mini`) so they cascade into portalled content correctly.
+- Added `!important` to `.shrpt .strip{grid-template-columns:repeat(5,minmax(0,1fr))}` and all responsive breakpoints, defeating the equal-specificity Home rule that loads later.
+- Chip content: `.shrpt .sc` gets `min-width:0; overflow:hidden`, `.sc b/span` truncate with ellipsis so long values (₹, %) no longer expand the track beyond 1fr.
+
+**Testing agent iteration_29 verdict: FIXED, 100% frontend pass rate**. Measured at 1600×900:
+- Reports Sales/Payments/P&L/Staff Overview/Clients/Marketing/Inventory: **5 equal chips @ 248.8px each on one row** across all 7 tabs.
+- Home dashboard: unchanged Home layout (234/234/234/556 for its 4-col grid).
+- All 5 Reports drawers (Configure cards, Targets, Add entry, Metric drill, Target edit) + New Appointment drawer: **visible and interactive**.
+
 ### Feb 26, 2026 — 8 of 9 user-reported bugs fixed & verified by testing agent ✅
 Testing agent iteration_26 report: **17/17 backend targeted tests PASS**, 6/7 frontend spot-checks PASS. Follow-up iteration_27 confirmed the Shop empty-state fix on the live route. Verdict: **fixed**.
 
