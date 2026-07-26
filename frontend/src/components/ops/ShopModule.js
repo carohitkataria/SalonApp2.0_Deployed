@@ -179,7 +179,11 @@ export default function ShopModule({ salonId, salonProfile, getAuthHeaders }) {
             )}
 
             {filtered.length === 0 ? (
-              <div className="z-empty z-card"><Icon name="bag" size={40} /><br />No products found.</div>
+              <div className="z-empty z-card" data-testid="shop-empty-state">
+                <Icon name="bag" size={40} /><br />
+                <div style={{ fontSize: 16, fontWeight: 700, marginTop: 8 }}>No products added yet</div>
+                <div style={{ fontSize: 13, color: 'var(--z-muted)', marginTop: 4 }}>Products will appear here as suppliers add them.</div>
+              </div>
             ) : (
               <div className="z-shop-grid">
                 {filtered.map((p) => (

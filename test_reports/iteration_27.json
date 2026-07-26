@@ -1,0 +1,39 @@
+{
+  "verdict": "fixed",
+  "user_reported_bug": "5. remove the sample data from Shop section. Actual inventory should come from the Supplier login side. If the supplier is Creating the product then those products only visible here in the shop.",
+  "summary": "No relevant testing skill found. Focused verification passed: with zero supplier_products, /api/salon/store/products returned products=[]/total=0 and the live /salon/dashboard?tab=shop route rendered data-testid='shop-empty-state' with 'No products added yet' only. I also created a temporary supplier product through the supplier-authenticated API, confirmed it appeared in the salon Shop UI, deleted it, and confirmed the empty state returned.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/bug_verification_27_shop_test.py",
+    "/app/test_reports/verify_iter27_shop_db.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ShopModule.js now contains data-testid='shop-empty-state' and the required copy in the live /salon/dashboard Shop component.",
+    "server.py startup fixture purge targets the 7 legacy seed_store_fixtures supplier_products IDs. Runtime DB check after testing showed fixture_supplier_products_count=0, visible_supplier_products_count=0, total_supplier_products_count=0.",
+    "git status before testing showed frontend/src/components/ops/ShopModule.js modified and frontend/yarn.lock untracked; no product code was edited by this testing agent."
+  ],
+  "updated_files": [
+    "/app/test_reports/bug_verification_27.json",
+    "/app/test_reports/iteration_27.json",
+    "/app/test_reports/bug_verification_27_shop_test.py",
+    "/app/test_reports/verify_iter27_shop_db.py"
+  ],
+  "success_rate": {
+    "backend": "API/DB evidence PASS: salon store products empty when no supplier products exist; temporary supplier-created product appeared in salon store API; fixture count 0 after cleanup",
+    "frontend": "PASS: shop empty-state copy/testid verified; old 'No products found.' and 'Coming soon' not visible; supplier-created product displayed then empty state returned after deletion"
+  },
+  "seed_data_creation": "Created one temporary supplier product named 'QA Supplier Product 20260726 1749' through /api/supplier/products, verified it in Shop, soft-deleted it via supplier API, then hard-cleaned matching QA rows from supplier_products. Final DB counts: fixture=0, visible=0, total=0.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Only this reported Shop sample-data/empty-state bug was tested. Browser verification used salon admin login admin/salon123 and supplier login +919000000001/supplier123. Final state was cleaned to zero supplier_products so future empty-state tests should start clean.",
+  "rca_of_the_issue": "Previous iteration found the empty-state fix was applied to dead code. This iteration verified the live ShopModule.js route now has the correct empty-state block and that supplier_products, not fixtures, drives Shop visibility. Repro/proof: login salon admin, open /salon/dashboard?tab=shop with zero supplier_products, observe data-testid='shop-empty-state' and 'No products added yet'; create supplier product, observe it appears; delete it, observe empty state returns. No MOCKED APIs used."
+}
