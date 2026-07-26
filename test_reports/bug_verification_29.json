@@ -1,0 +1,39 @@
+{
+  "verdict": "fixed",
+  "user_reported_bug": "in the second screenshot, the 4th chip is too long and 5th chip is still going in the 2nd row. this problem is in all the tabs under reports.",
+  "summary": "No relevant testing skill found. Inspected the Reports CSS fix and verified through the real UI at 1600x900 that Reports KPI strips no longer inherit the Home V2 4-column strip: Sales, Payments & GST, Expenses & P&L, Staff Overview, Clients, Marketing, and Inventory all render 5 equal-width KPI chips in one row. Quick regressions for Home strip layout, Reports drawers, and New Appointment drawer passed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/tests/bug_verification/reports_chip_layout_bug_test.py",
+    "/app/test_reports/bug_verification_29.json",
+    "/app/test_reports/iteration_29.json"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Code inspection confirmed /app/frontend/src/components/ops/reportsTheme.css now sets .shrpt .strip grid-template-columns: repeat(5,minmax(0,1fr)) !important, with responsive media query overrides also marked !important.",
+    "Runtime proof: while Home V2 runtime style #shv2-styles was present, Reports strips computed as five ~248.8px columns; Home dashboard .shv2 .strip still computed as 234px/234px/234px/556px (expected Home layout).",
+    "Observed unrelated git status item: untracked frontend/yarn.lock; not tested as part of this CSS verification."
+  ],
+  "updated_files": [
+    "/app/tests/bug_verification/reports_chip_layout_bug_test.py",
+    "/app/test_reports/bug_verification_29.json",
+    "/app/test_reports/iteration_29.json"
+  ],
+  "success_rate": {
+    "backend": "N/A",
+    "frontend": "100%"
+  },
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Focused UI verification only. Logged in as admin/salon123, opened /salon/dashboard?tab=reports at 1600x900, and measured .shrpt .strip after Home V2 CSS was dynamically injected. Sales, Payments & GST, Expenses & P&L, Staff Overview, Clients, Marketing, and Inventory all had cardCount=5, uniqueTopCount=1, maxWidthDelta=0.01, computedGridTemplateColumns='248.797px 248.797px 248.797px 248.797px 248.812px'. Reports drawers configure/targets/add-entry/metric-drill/target-edit and Home New Appointment drawer were visible and on-screen. No mocked APIs were used.",
+  "rca_of_the_issue": "The previous symptom was caused by equal-specificity .shv2 .strip Home CSS being injected after reportsTheme.css, overriding Reports grid columns. The !important Reports override now wins at runtime, so the 4th KPI is no longer oversized and the 5th KPI stays in the first row."
+}

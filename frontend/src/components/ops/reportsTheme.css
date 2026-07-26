@@ -128,7 +128,7 @@
 .shrpt .sec{display:none}
 .shrpt .sec.on{display:block;animation:shv2SecFade .22s}
 @keyframes shv2SecFade{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
-.shrpt .strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:14px}
+.shrpt .strip{display:grid !important;grid-template-columns:repeat(5,minmax(0,1fr)) !important;gap:12px;margin-bottom:14px}
 .shrpt .sc{background:var(--surface);border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow);padding:14px;min-width:0;overflow:hidden}
 .shrpt .sc .ci{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;margin-bottom:9px}
 .shrpt .sc .ci svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2}
@@ -227,7 +227,7 @@
    ribbon) squeezes the reports area under 900px, we can't fit the split
    layout so we collapse to stacked. */
 @media(max-width:1300px){
-  .shrpt .strip{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .shrpt .strip{grid-template-columns:repeat(3,minmax(0,1fr)) !important}
 }
 @media(max-width:1200px){
   .shrpt .dbody{grid-template-columns:1fr}
@@ -236,9 +236,9 @@
   .shrpt .snap{grid-template-columns:1fr !important}
   .shrpt .snap-l{border-right:none;border-bottom:1px solid var(--line);max-height:none}
   .shrpt .g2{grid-template-columns:1fr}
-  .shrpt .strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .shrpt .strip{grid-template-columns:repeat(2,minmax(0,1fr)) !important}
 }
 @media(max-width:700px){
   .shrpt .kgrid{grid-template-columns:1fr !important}
-  .shrpt .strip{grid-template-columns:1fr}
+  .shrpt .strip{grid-template-columns:1fr !important}
 }
