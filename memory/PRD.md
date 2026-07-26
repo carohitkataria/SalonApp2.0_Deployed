@@ -24,6 +24,15 @@ A multi-tenant salon management SaaS (React + FastAPI + MongoDB). Most recent fe
 
 ## Implemented (CHANGELOG)
 
+### Jul 26, 2026 — Full Re-sync from SalonApp2.0_Deployed (main) + Deployment-ready ✅
+- ✅ **Code re-fetched** from `https://github.com/carohitkataria/SalonApp2.0_Deployed.git` (branch `main`, head `5615665`): `backend/server.py` 14,707 → **18,540 lines**; frontend 121 → **166 JS files**. Root `tests/`, `scripts/`, `test_result.md` also synced.
+- ✅ **Preserved**: `backend/.env` (Twilio WABA prod + Cashfree prod + `PLATFORM_OWNER_MOBILE="+917503070727"`), `frontend/.env` (preview `REACT_APP_BACKEND_URL`), `/app/memory/*`, MongoDB data.
+- ✅ **New frontend env key added**: `REACT_APP_CASHFREE_MODE=production` (read by `CheckoutPage.js` for Cashfree JS SDK mode).
+- ✅ New backend supports dual WhatsApp providers (`WHATSAPP_PROVIDER=twilio|meta`, defaults to twilio — no env change needed).
+- ✅ **Verified**: `/health` 200, `GET /api/subscription-plans` returns plans, legacy salon login (`+917503070727`/`salon123`) returns JWT, platform owner seeded active in `platform_admins`, landing page renders (screenshot).
+- ✅ **deployment_agent scan: PASS** — no hardcoded secrets/URLs, CORS ok, supervisor config valid, no blockers.
+- ℹ️ Note: `salon_users` multi-user login `identifier="admin"` no longer exists in DB (only a `Test-2` staff user). Use legacy `POST /api/salon/password-login` for admin.
+
 ### Feb 18, 2026 — 8 bug/feature fixes batch ✅
 - 🔒 **#1a — Staff can no longer view other staff profiles by URL paste**  
   `StaffProfilePage.js` now reads `salon_user_auth` and if `role === 'staff'` and the URL `staffId` ≠ their own `staffId`, redirects to `/salon/dashboard` with an error toast. Backend already blocks *modifications* so this closes the browser-URL-paste read hole client-side.
