@@ -24,6 +24,16 @@ A multi-tenant salon management SaaS (React + FastAPI + MongoDB). Most recent fe
 
 ## Implemented (CHANGELOG)
 
+### Jul 26, 2026 — Reports UI rebuilt 1:1 to `salon_reports.html` design + E2E booking verified ✅
+- ✅ **Root cause of layout drift found & fixed permanently**: previous rebuilds ported design ideas into the wrong `.zen` CSS namespace. New solution ships the design's exact `.shv2` CSS as a scoped stylesheet (`/app/frontend/src/components/ops/reportsTheme.css`) and rewrites JSX to match the design HTML structure — future edits cannot regress the layout because CSS + markup are the single source of truth.
+- ✅ **`ReportsModule.js` rebuilt** (`/app/frontend/src/components/ops/ReportsModule.js`, 1,283 lines) with 8 tabs matching the design order: **Business snapshot / Sales / Payments & GST / Expenses & P&L / Staff / Clients / Marketing / Inventory**. Snapshot = left `kgrid` KPI cards + right detail panel (gauge, animated pie/bar, breakdown table, "Give feedback / View details" footer). Ctrlbar with view select + date stepper + Compare toggle + Configure cards + Targets.
+- ✅ **Staff tab now has 4 sub-sections**: **Overview** (NEW, `.shv2` themed — Active staff, Revenue attributed, Avg ticket, Utilization %, Guest rating, Top performer card, Retention KV, Staff scorecard with revenue-share bars) + **Performance / Attendance / Incentives** (kept verbatim under `/app/frontend/src/components/ops/StaffReportSubs.js`, no behaviour change).
+- ✅ **Drawers fully functional**: Configure cards (uses `/api/salons/{id}/reports/prefs` GET/PUT with reorder + toggle), Targets (uses `/api/salons/{id}/reports/targets` PUT per metric), Metric drill-down, Target-edit, Add finance entry.
+- ✅ **Metrics reconciled via curl**: Snapshot revenue = Sales revenue, Snapshot collections = Payments collected, Snapshot appointments count reflects new bookings within 1s. Verified with token N2 booking on 2026-07-26 (appointments=2, source=2 on day view).
+- ✅ **E2E booking test PASS**: `POST /api/bookings` with `+917503070727` on 2026-07-26 → token `N2` (`3504b955-1012-4aa9-a46e-d899c92a6739`, ₹250) created → Twilio WhatsApp `booking_confirmation` template sent (SID `MM58836dc51c31d6a63d33e361cb11967d`, HTTP 201, status `sent`). Cashfree order not auto-created (`payment_mode=upi` = in-salon; Cashfree order flow only fires on customer online-checkout path, which is unchanged).
+- ✅ **Backend untouched** — all `/reports/*` endpoints and computation logic in `reports_router.py` already correct; this pass was frontend-only.
+- ℹ️ Test service seeded to unblock booking flow: `E2E Test Haircut` (`7846b7e2-f3c2-471b-8e34-ff64f127b8ad`, ₹250, category Hair, gender_tag Men). Safe to leave in DB.
+
 ### Jul 26, 2026 — Full Re-sync from SalonApp2.0_Deployed (main) + Deployment-ready ✅
 - ✅ **Code re-fetched** from `https://github.com/carohitkataria/SalonApp2.0_Deployed.git` (branch `main`, head `5615665`): `backend/server.py` 14,707 → **18,540 lines**; frontend 121 → **166 JS files**. Root `tests/`, `scripts/`, `test_result.md` also synced.
 - ✅ **Preserved**: `backend/.env` (Twilio WABA prod + Cashfree prod + `PLATFORM_OWNER_MOBILE="+917503070727"`), `frontend/.env` (preview `REACT_APP_BACKEND_URL`), `/app/memory/*`, MongoDB data.
