@@ -2,15 +2,12 @@
 Invoice Generation Service
 Generates PDF invoices for completed bookings
 """
-from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
-from reportlab.pdfgen import canvas
+from reportlab.lib.enums import TA_CENTER
 from datetime import datetime
-import os
 import io
 import logging
 
@@ -195,7 +192,7 @@ def generate_invoice_pdf(invoice_data):
         totals_data.extend([
             ['', '', '', Paragraph(f'<b>CGST @ {tax_rate}%:</b>', styles['Normal']), f"₹ {cgst:.2f}"],
             ['', '', '', Paragraph(f'<b>SGST @ {tax_rate}%:</b>', styles['Normal']), f"₹ {sgst:.2f}"],
-            ['', '', '', Paragraph(f'<b>Total Tax:</b>', styles['Normal']), f"₹ {cgst + sgst:.2f}"]
+            ['', '', '', Paragraph('<b>Total Tax:</b>', styles['Normal']), f"₹ {cgst + sgst:.2f}"]
         ])
     
     totals_data.append(['', '', '', '', ''])  # Spacer row

@@ -7,7 +7,6 @@ Phase 3 Branch Model — extra edge cases & regression coverage.
 - /api/public/salons/{id}/branches has no auth requirement (no header)
 """
 import os
-import uuid
 from datetime import datetime, timezone
 
 import pytest

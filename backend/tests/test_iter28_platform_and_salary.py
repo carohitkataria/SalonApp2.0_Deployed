@@ -44,14 +44,12 @@ class TestPlatformAuth:
 
     def test_login_password_bruteforce_lockout(self):
         """5 wrong attempts on an unregistered mobile should produce 429 lockout."""
-        last = None
         statuses = []
         for i in range(7):
             r = requests.post(f"{API}/platform/auth/login-password",
                               json={"mobile": LOCKOUT_TEST_MOBILE, "password": f"bad{i}"},
                               timeout=15)
             statuses.append(r.status_code)
-            last = r
             if r.status_code == 429:
                 break
             time.sleep(0.05)

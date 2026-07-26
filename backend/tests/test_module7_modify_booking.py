@@ -15,7 +15,6 @@ Covers:
 import os
 import sys
 import uuid
-import asyncio
 from datetime import datetime, timezone
 
 import pytest
@@ -128,7 +127,7 @@ def _create_booking(session, customer, barber_id=BARBER_A, services=None, shift=
         "booking_for_self": True,
     }
     # Booking limit: 1 self + 1 other per day. Cancel existing first.
-    rcan = session.get(f"{BASE_URL}/api/user/{customer['id']}/active-bookings")
+    session.get(f"{BASE_URL}/api/user/{customer['id']}/active-bookings")
     # not all servers expose that; best-effort. We instead cancel via tokens listing.
     r = session.post(f"{BASE_URL}/api/bookings", json=body)
     if r.status_code == 400 and "already have an active booking" in r.text:

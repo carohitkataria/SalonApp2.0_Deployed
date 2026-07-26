@@ -12,7 +12,6 @@ already exercised explicitly:
 
 import os
 import uuid
-from datetime import datetime, timezone, timedelta
 
 import pytest
 import requests
@@ -119,7 +118,6 @@ class TestLeaveTypeSnapshot:
         day = secrets.randbelow(27) + 1  # 1..27
         leave_date = f"2070-06-{day:02d}"
         # FY for 2070-06-15 is 2070-71
-        adj_fy = "2070-71"
         lr = requests.post(
             f"{BASE_URL}/api/salons/{SALON_ID}/leave-records",
             headers=auth,

@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Query, status as http_status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 # Import the platform admin JWT dependency directly — this is the same

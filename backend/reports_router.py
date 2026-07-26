@@ -41,7 +41,6 @@ def init_reports_router(*, db, get_current_salon_user, has_module_permission,
         "discounts": "Discounts given (₹)",
     }
     MONEY_CARDS = {"collections", "revenue", "avgticket", "products", "addons", "membership", "discounts"}
-    BAR_CARDS = {"wait", "feedback", "utilization"}
     LOWER_BETTER = {"wait", "noshow", "discounts"}
     STOCK_CARDS = {"membership"}  # no projection
 

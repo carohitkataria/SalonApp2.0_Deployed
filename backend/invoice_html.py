@@ -18,7 +18,7 @@ from __future__ import annotations
 import base64
 import io
 import html
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 # ---------------------------------------------------------------------------
 # Settings defaults (mirrors INVOICE_SETTINGS_BUILD.md §2)

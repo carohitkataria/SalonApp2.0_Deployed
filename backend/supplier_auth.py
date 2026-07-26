@@ -16,7 +16,6 @@ with the actual status in the detail so the frontend can route to /supplier/pend
 from __future__ import annotations
 
 import logging
-import random
 import secrets
 import re
 import string
@@ -25,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, status as http_status
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field, field_validator

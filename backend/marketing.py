@@ -34,7 +34,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -225,7 +225,7 @@ async def whatsapp_webhook_event(request: Request):
                 for s in statuses:
                     wa_msg_id = s.get("id")
                     status = s.get("status")  # sent/delivered/read/failed
-                    ts = s.get("timestamp")
+                    s.get("timestamp")
                     if not wa_msg_id or not status:
                         continue
                     fields: Dict[str, Any] = {"status": status}
@@ -290,7 +290,7 @@ class SegmentIn(BaseModel):
 
 
 def _matches_customer(customer: Dict[str, Any], stats: Dict[str, Any], cond: SegmentCondition, salon_id: str) -> bool:
-    f, op, val = cond.field, cond.op, cond.value
+    f, _op, val = cond.field, cond.op, cond.value
 
     def _int(v, default=None):
         try:

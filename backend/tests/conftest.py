@@ -3,7 +3,6 @@
 Use a single session-scoped event loop so motor (AsyncIOMotorClient) — which
 caches its loop on first IO — works across all async tests in the suite.
 """
-import pytest
 
 
 def pytest_collection_modifyitems(config, items):

@@ -20,7 +20,6 @@ in the module teardown.  We never touch real user tokens.
 import os
 import sys
 import uuid
-import asyncio
 import pytest
 import pytest_asyncio
 import requests

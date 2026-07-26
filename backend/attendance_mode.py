@@ -34,7 +34,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 # Module globals injected by init_attendance_mode().

@@ -416,3 +416,19 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+# Jul 2026 — cleanup additions
+test_result.md
+test_result_temp.md
+image_testing.md
+SalonApp-main/
+backend/server_backup_*.py
+debug_test*.py
+minimal_test.py
+quick_otp_test.py
+extended_test.py
+final_test.py
+backend_test*.py
+test_customer_view_*.py
+test_is_barber_available.py
+check_sold_memberships.py

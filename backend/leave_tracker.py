@@ -46,7 +46,7 @@ import calendar
 import logging
 import uuid
 from datetime import datetime, date, timedelta, timezone
-from typing import Optional, List
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials

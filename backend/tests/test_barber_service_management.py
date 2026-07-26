@@ -164,7 +164,7 @@ class TestServiceManagement(TestAuthSetup):
         service_ids = [s["id"] for s in services]
         assert service_id not in service_ids
         
-        print(f"✓ Service deleted successfully")
+        print("✓ Service deleted successfully")
     
     def test_create_service_without_auth_fails(self):
         """Test that creating service without auth fails"""
@@ -317,7 +317,7 @@ class TestBarberManagement(TestAuthSetup):
         barber_ids = [b["id"] for b in barbers]
         assert barber_id not in barber_ids
         
-        print(f"✓ Barber deleted successfully")
+        print("✓ Barber deleted successfully")
     
     def test_create_barber_without_auth_fails(self, auth_headers):
         """Test that creating barber without auth fails"""
@@ -529,7 +529,7 @@ class TestBarberServiceIntegration(TestAuthSetup):
         assert update_response.status_code == 200
         updated_barber = update_response.json()
         assert updated_barber["category"] == "master"
-        print(f"  Step 5: Updated barber to master category")
+        print("  Step 5: Updated barber to master category")
         
         # Step 6: Clean up - delete the test barber
         delete_response = requests.delete(
@@ -537,7 +537,7 @@ class TestBarberServiceIntegration(TestAuthSetup):
             headers={"Authorization": auth_headers["Authorization"]}
         )
         assert delete_response.status_code == 200
-        print(f"  Step 6: Cleaned up test barber")
+        print("  Step 6: Cleaned up test barber")
         
         print("✓ Full barber-service workflow completed successfully")
 

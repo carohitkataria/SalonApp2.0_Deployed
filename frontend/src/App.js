@@ -7,6 +7,7 @@ import { SupplierAuthProvider } from '@/contexts/SupplierAuthContext';
 import { CartProvider } from '@/contexts/CartContext';
 import { BookingIntentProvider } from '@/contexts/BookingIntentContext';
 import { Toaster } from '@/components/ui/sonner';
+import ErrorBoundary from '@/ErrorBoundary';
 
 // Layout
 import CustomerLayout from '@/components/CustomerLayout';
@@ -68,6 +69,7 @@ import '@/App.css';
 
 function App() {
   return (
+    <ErrorBoundary>
     <ThemeProvider>
       <AuthProvider>
         <BranchProvider>
@@ -156,6 +158,7 @@ function App() {
         </BranchProvider>
       </AuthProvider>
     </ThemeProvider>
+    </ErrorBoundary>
   );
 }
 

@@ -4,6 +4,7 @@ from fastapi.responses import Response, HTMLResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+import asyncio
 import socketio
 import os
 import logging
@@ -13,7 +14,7 @@ from typing import List, Optional, Dict, Any
 from enum import Enum
 import uuid
 import re
-from datetime import datetime, timezone, time, timedelta, date
+from datetime import datetime, timezone, timedelta, date
 import calendar
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import io
@@ -21,7 +22,6 @@ import base64
 import qrcode
 import jwt
 from passlib.context import CryptContext
-import random
 import secrets  # Secure random number generation
 import math
 import json
@@ -36,18 +36,13 @@ from twilio_service import (
     send_your_turn_now_template,
     send_token_approaching_template,
     verify_whatsapp_otp,
-    is_verify_configured,
-    format_booking_confirmation,
-    format_queue_status,
-    format_token_near,
-    format_token_called,
     format_token_cancelled,
     format_token_rescheduled,
     format_salon_calling,
 )
 
 # Import invoice service
-from invoice_service import generate_invoice_pdf, save_invoice_pdf
+from invoice_service import generate_invoice_pdf
 from invoice_html import (
     resolve_invoice_settings,
     render_invoice_html,
@@ -79,8 +74,14 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# JWT Configuration
-SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'your-secret-key-change-in-production')
+# JWT Configuration — fail fast if not configured (no insecure fallback).
+try:
+    SECRET_KEY = os.environ['JWT_SECRET_KEY']
+except KeyError as _e:
+    raise RuntimeError(
+        "JWT_SECRET_KEY is not set. Refusing to boot with an insecure default. "
+        "Set JWT_SECRET_KEY in the environment before starting the backend."
+    ) from _e
 ALGORITHM = "HS256"
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
@@ -2945,7 +2946,7 @@ async def generate_and_send_invoice(token_id: str):
         if not discount_amount:
             discount_amount = float(token.get('membership_discount') or 0) + float(token.get('coupon_discount') or 0)
         tip_amount = float(token.get('tip_amount') or 0)
-        coupon_code = token.get('coupon_code')
+        token.get('coupon_code')
         if token.get('coupon_code'):
             discount_label = f"Discount \u00b7 {token.get('coupon_code')}"
         elif token.get('membership_discount'):
@@ -10388,7 +10389,6 @@ async def create_booking(booking: BookingCreate):
     # -- Discount membership: auto-apply flat % off services (before coupon) --
     membership_discount = 0.0
     membership_disc_pct = 0.0
-    membership_name_applied = None
     if phone:
         _mem_phone = phone if phone.startswith("+91") else f"+91{phone}"
         _active_mem = await db.customer_memberships.find_one({
@@ -10405,7 +10405,7 @@ async def create_booking(booking: BookingCreate):
                 membership_discount = round(float(total_amount) * membership_disc_pct / 100.0, 2)
                 membership_discount = max(0.0, min(membership_discount, float(total_amount)))
                 total_amount = round(float(total_amount) - membership_discount, 2)
-                membership_name_applied = _active_mem.get("membership_name")
+                _active_mem.get("membership_name")
 
     # -- Coupon: subtract the salon's real coupon discount from what the guest pays --
     coupon_discount = 0.0
@@ -18406,6 +18406,33 @@ async def cleanup_legacy_predefined_services():
 async def startup_event():
     await initialize_data()
     await migrate_branches()
+    # Jul 2026 — ensure minimum viable indexes for the hot query paths.
+    # All non-unique + background so a slow build never blocks startup.
+    try:
+        await asyncio.gather(
+            db.tokens.create_index([("salon_id", 1), ("date", -1)], background=True),
+            db.tokens.create_index([("salon_id", 1), ("status", 1)], background=True),
+            db.tokens.create_index([("salon_id", 1), ("phone", 1)], background=True),
+            db.tokens.create_index([("phone", 1), ("date", -1)], background=True),
+            db.tokens.create_index("id", background=True),
+            db.salons.create_index("id", background=True),
+            db.salon_users.create_index([("salon_id", 1), ("phone", 1)], background=True),
+            db.salon_users.create_index("login_id", background=True),
+            db.salon_customers.create_index([("salon_id", 1), ("phone", 1)], background=True),
+            db.services.create_index([("salon_id", 1), ("is_enabled", 1)], background=True),
+            db.services.create_index("id", background=True),
+            db.barbers.create_index([("salon_id", 1), ("is_active", 1)], background=True),
+            db.barbers.create_index("id", background=True),
+            db.attendance.create_index([("salon_id", 1), ("date", -1)], background=True),
+            db.attendance.create_index([("staff_id", 1), ("date", -1)], background=True),
+            db.financial_transactions.create_index([("salon_id", 1), ("date", -1)], background=True),
+            db.invoices.create_index([("salon_id", 1), ("date", -1)], background=True),
+            db.customers.create_index("phone", background=True),
+            db.salon_branches.create_index([("salon_id", 1), ("is_active", 1)], background=True),
+        )
+        logger.info("[STARTUP] MongoDB indexes ensured for hot query paths")
+    except Exception as _idx_e:
+        logger.warning(f"[STARTUP] index creation reported: {_idx_e}")
     # Jul 2026 — cleanup legacy predefined services (all non-General global services)
     try:
         await cleanup_legacy_predefined_services()

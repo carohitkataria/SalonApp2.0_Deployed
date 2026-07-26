@@ -4,7 +4,6 @@ Idempotent: re-running just upserts. Safe in CI/dev.
 """
 import asyncio
 import os
-import uuid
 from datetime import datetime, timezone
 
 from motor.motor_asyncio import AsyncIOMotorClient

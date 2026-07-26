@@ -6,7 +6,6 @@ uses upsert-like logic (skip if code/name already exists).
 """
 import asyncio
 import os
-import sys
 import uuid
 from datetime import datetime, timezone, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -107,7 +106,7 @@ async def main():
             "source": "demo_seed",
             "consent_whatsapp": True,
         }
-        res = await db.salon_customers.update_one(
+        await db.salon_customers.update_one(
             {"salon_id": sid, "phone": phone},
             {"$setOnInsert": doc},
             upsert=True,

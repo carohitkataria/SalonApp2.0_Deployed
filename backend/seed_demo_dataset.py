@@ -282,7 +282,7 @@ async def seed_bookings(
     barbers: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """Seed 10 tokens spread across today and the last 30 days."""
-    today = ist_date(0)
+    ist_date(0)
 
     def _svc(name: str, qty: int = 1) -> Dict[str, Any]:
         s = services_by_name[name]

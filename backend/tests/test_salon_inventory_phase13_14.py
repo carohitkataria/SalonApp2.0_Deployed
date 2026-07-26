@@ -392,7 +392,7 @@ class TestPhase13AutoPost:
         assert aps.get("finance_posted") is True
         assert aps.get("inventory_items_touched", 0) >= 1
         # Order total used for finance
-        order_total = delivered["total_amount"]
+        delivered["total_amount"]
 
         # Verify finance txn exists
         time.sleep(0.5)

@@ -4,7 +4,6 @@ Add extra demo services (across categories) to the default salon so the Home v2
 Appointment drawer chips + category filter have variety to exercise. Idempotent.
 """
 import asyncio, os, uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
