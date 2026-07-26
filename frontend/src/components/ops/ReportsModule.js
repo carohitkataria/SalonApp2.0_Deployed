@@ -152,7 +152,7 @@ export default function ReportsModule({ salonId, canManageFinancials = true, get
   const [snapshotData, setSnapshotData] = useState({ cards: [], window: null });
 
   return (
-    <div className="shv2" data-testid="reports-module">
+    <div className="shrpt" data-testid="reports-module">
       <div className="content">
         {/* Page header */}
         <div className="phead">
@@ -599,8 +599,8 @@ function ConfigDrawer({ salonId, getAuthHeaders, onClose }) {
 
   return (
     <Drawer>
-      <div className="shv2-ov" onClick={onClose} />
-      <aside className="shv2-drawer" data-testid="reports-config-drawer">
+      <div className="shrpt-ov" onClick={onClose} />
+      <aside className="shrpt-drawer" data-testid="reports-config-drawer">
         <div className="dh">
           <div className="tt">
             <div className="ic"><Icon name="filter" /></div>
@@ -667,8 +667,8 @@ function TargetsDrawer({ salonId, view, date, getAuthHeaders, onClose }) {
 
   return (
     <Drawer>
-      <div className="shv2-ov" onClick={onClose} />
-      <aside className="shv2-drawer" data-testid="reports-targets-drawer">
+      <div className="shrpt-ov" onClick={onClose} />
+      <aside className="shrpt-drawer" data-testid="reports-targets-drawer">
         <div className="dh">
           <div className="tt">
             <div className="ic"><Icon name="gauge" /></div>
@@ -714,8 +714,8 @@ function TargetEditDrawer({ card, salonId, view, getAuthHeaders, onClose, onSave
   };
   return (
     <Drawer>
-      <div className="shv2-ov" onClick={onClose} />
-      <aside className="shv2-drawer narrow" data-testid="reports-target-edit-drawer">
+      <div className="shrpt-ov" onClick={onClose} />
+      <aside className="shrpt-drawer narrow" data-testid="reports-target-edit-drawer">
         <div className="dh">
           <div className="tt">
             <div className="ic"><Icon name="gauge" /></div>
@@ -761,8 +761,8 @@ function MetricDrillDrawer({ card, salonId, view, date, branchId, getAuthHeaders
 
   return (
     <Drawer>
-      <div className="shv2-ov" onClick={onClose} />
-      <aside className="shv2-drawer" data-testid="reports-drill-drawer">
+      <div className="shrpt-ov" onClick={onClose} />
+      <aside className="shrpt-drawer" data-testid="reports-drill-drawer">
         <div className="dh">
           <div className="tt">
             <div className="ic"><Icon name="chart" /></div>
@@ -831,8 +831,8 @@ function AddEntryDrawer({ salonId, getAuthHeaders, onClose }) {
   };
   return (
     <Drawer>
-      <div className="shv2-ov" onClick={onClose} />
-      <aside className="shv2-drawer narrow" data-testid="reports-add-entry-drawer">
+      <div className="shrpt-ov" onClick={onClose} />
+      <aside className="shrpt-drawer narrow" data-testid="reports-add-entry-drawer">
         <div className="dh">
           <div className="tt">
             <div className="ic"><Icon name="wallet" /></div>

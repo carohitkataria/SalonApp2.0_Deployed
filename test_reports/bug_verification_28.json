@@ -1,0 +1,56 @@
+{
+  "verdict": "not_fixed",
+  "user_reported_bug": "you ruin the dashboard. the chips are not in place. check what you changed. it should be as per the attached screenshot. in the second screenshot, the 4th chip is too long and 5th chip is still going in the 2nd row. this problem is in all the tabs under reports. Also, no drawer is working. the shaded screenshot is after i clicked 'add entry' it is not opening the drawer.",
+  "summary": "No relevant testing skill found. Focused UI verification on /salon/dashboard with admin/salon123: Home dashboard chip layout now renders correctly, Reports drawers are visible/on-screen, and New Appointment drawer still opens. However the Reports Sales KPI strip still reproduces the reported layout bug: the 4th chip is too wide and the 5th chip wraps to row 2 at 1600x900, so the user-visible bug is not fixed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "ReportsModule non-snapshot KPI strips",
+        "issue": "Sales tab KPI strip still uses the Home dashboard .shv2 .strip grid (0.8fr 0.8fr 0.8fr 1.9fr), causing the 4th chip to be ~556px wide and the 5th chip to wrap to a second row. Measured Sales chip rows: [252, 395], widths min ~234px / max ~556px.",
+        "selector": ".shv2 .shrpt .strip > .sc",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Reports > Sales",
+        "issues": [
+          "Expected 5 KPI chips on one row; actual has first four on row 1 and Selling days on row 2.",
+          "Expected equal chip widths; actual 4th chip is much wider than the others."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/tests/bug_verification/reports_dashboard_regression_test.py",
+    "/app/test_reports/bug_verification_28.json",
+    "/app/test_reports/iteration_28.json"
+  ],
+  "action_items": [
+    "Fix Reports KPI strip selectors so Home .shv2 .strip cannot match Reports strips. The current .shrpt root is still nested inside .shv2, so .shv2 .strip still matches and wins by later source order/equal specificity. Use a unique Reports strip class or higher-specificity rule such as .shv2 .shrpt .strip/.shrpt .strip with !important, then retest all non-snapshot tabs.",
+    "After fixing, verify Sales, Payments & GST, Expenses & P&L, Clients, Marketing, and Inventory each render exactly 5 equal-width KPI chips on one row at 1600px width."
+  ],
+  "critical_code_review_comments": [
+    "reportsTheme.css renamed the root to .shrpt, but Reports still uses the generic class name .strip inside a parent .shv2 shell. home_v2/styles.js has .shv2 .strip with equal specificity and later injected order, so it overrides .shrpt .strip in Reports.",
+    "Drawer namespace fix appears correct: .shrpt-drawer computed transform is none, z-index 9999, overlay z-index 9998 for Add entry, Configure, Targets, Metric drill, and Target edit."
+  ],
+  "updated_files": [
+    "/app/tests/bug_verification/reports_dashboard_regression_test.py",
+    "/app/test_reports/bug_verification_28.json",
+    "/app/test_reports/iteration_28.json"
+  ],
+  "success_rate": {
+    "backend": "not_tested_frontend_only",
+    "frontend": "60%"
+  },
+  "seed_data_creation": "None",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Login with admin/salon123 or 7503070727/salon123. First verify Reports > Sales strip at 1600x900 before doing the full drawer pass. In this run Home dashboard passed, all five Reports drawers passed, and New Appointment drawer passed; Reports Sales strip failed deterministically.",
+  "rca_of_the_issue": "The previous namespace fix is incomplete for generic child classes. Reports root is .shrpt but it is rendered inside the Home V2 .shv2 shell, so home_v2/styles.js selector .shv2 .strip still matches every Reports .strip. Since .shv2 .strip and .shrpt .strip have equal specificity and the Home CSS is injected later, Reports strips use the Home four-column grid (0.8fr 0.8fr 0.8fr 1.9fr), reproducing the too-wide 4th chip and wrapped 5th chip. Drawers no longer inherit .shv2-drawer and are visible."
+}
