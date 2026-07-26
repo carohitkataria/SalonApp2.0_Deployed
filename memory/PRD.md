@@ -24,6 +24,20 @@ A multi-tenant salon management SaaS (React + FastAPI + MongoDB). Most recent fe
 
 ## Implemented (CHANGELOG)
 
+### Feb 26, 2026 — 8 of 9 user-reported bugs fixed & verified by testing agent ✅
+Testing agent iteration_26 report: **17/17 backend targeted tests PASS**, 6/7 frontend spot-checks PASS. Follow-up iteration_27 confirmed the Shop empty-state fix on the live route. Verdict: **fixed**.
+
+- ✅ **#1 Logout / account switching** — `OTPLoginPage.js` `useEffect` purges all stale auth on mount and no longer auto-forwards to the dashboard. Clicking "I run a salon" always shows the login form.
+- ✅ **#2 New Appointment drawer UI** — Guest row shows title + search + "+ New guest" on one row; Services & Membership title row includes inline search + picked-count pill; category chips scroll horizontally on a single line; drawer header shrunk to `padding:10px 20px`.
+- ✅ **#3 Reports** — (a) Snapshot `.kgrid` forced 2-per-row with `!important`; (b) `.strip` is `repeat(auto-fit,minmax(180px,1fr))` — no overflow; (c) All 5 drawers portalled to `document.body` via `createPortal`, z-index 9998/9999 — Configure/Targets/Add entry/Metric drill/Target edit all open on top; (d) Month view verified: `view=month&date=...` returns 13 cards with correct window.
+- ✅ **#4 Ribbon Help WhatsApp** — Help button in `SalonHomeV2.js` and `HomeV2Shell.js` opens `https://wa.me/917503070727` in a new tab.
+- ✅ **#5 Shop empty state** — Startup purges the 7 legacy `SUPPLIER_FIXTURES` products; `ShopModule.js` renders `data-testid='shop-empty-state'` with "No products added yet". Verified with a full supplier-create → visible → delete → empty lifecycle by testing agent.
+- ✅ **#6 Queue range filter + auto-refresh** — Backend `/salons/{id}/queue` and per-barber queue accept `date_from`/`date_to` (`$gte`/`$lte` Mongo query). Frontend polling every 10s, deps include `dateFrom`/`dateTo` so range changes fire immediately.
+- ✅ **#7 Admin permissions / Settings visibility** — `initialize_data()` upserts a full-permission `admin` `salon_users` row for every salon on every boot; existing admin rows are also repaired if perms were reduced.
+- ✅ **#8 admin/salon123 preserved** — Available via both `identifier=admin` and `identifier=7503070727` on `/api/salon/users/login`. Idempotent.
+- ✅ **#9b Services bulk actions** — Checkbox per card + "Select all" per group + floating bar with Enable/Disable/Delete/Clear. Backend `POST /salons/{id}/services/bulk-toggle` handles both salon-owned and global services.
+- ⏸️ **#9a Services category migration** — Deferred pending user's old→new category mapping. Current DB categories: Beard, Facial, General, Hair, Hair Colour, Haircut, Manicure.
+
 ### Jul 26, 2026 — Code-review hardening (agreed subset) + Deployment scan PASS ✅
 - 🔒 **Removed insecure JWT fallback** — `server.py` line 83 now does `SECRET_KEY = os.environ['JWT_SECRET_KEY']` inside a try-except that raises `RuntimeError` at boot if unset. Prevents accidental deploy with the well-known default secret.
 - ⚡ **MongoDB indexes added on startup** — new `asyncio.gather(...)` block in `startup_event()` ensures background non-unique indexes on `tokens(salon_id,date/status/phone)`, `salon_users`, `salon_customers`, `services`, `barbers`, `attendance`, `financial_transactions`, `invoices`, `salon_branches`. Non-blocking, idempotent. Log confirms: `[STARTUP] MongoDB indexes ensured for hot query paths`.
