@@ -24,6 +24,18 @@ A multi-tenant salon management SaaS (React + FastAPI + MongoDB). Most recent fe
 
 ## Implemented (CHANGELOG)
 
+### Feb 26, 2026 — SalonApp3.3 merge post-fixes: auth crisis + platform soft-delete + admin unlimited ✅
+Testing agent iteration_30: **14/14 PASS**. All P0 issues resolved.
+
+**Root cause of the 5 concurrent "Invalid authentication credentials" failures** (attendance / shop / inventory / orders / guest creation): after the SalonApp3.3 merge, `OTPLoginPage.js:159` started writing `localStorage.salon_user_auth = {accessToken: ...}` but `EnhancedSalonDashboard.getAuthHeaders()` reads `authData.token` — the field-name mismatch made every subsequent API call send `Authorization: Bearer undefined` → 401. Only the customers endpoint had a different auth path and happened to work.
+
+- ✅ **Auth crisis fixed** — `OTPLoginPage.js` now writes the correct field `token`; `getAuthHeaders` also accepts both keys as defense-in-depth. All 5 previously-401 endpoints now return 200.
+- ✅ **Platform-admin soft-delete salon** — new `POST /api/platform/salons/{salon_id}/delete` endpoint (in `platform_admin_management.py:465-521`). Sets `is_deleted=true`, `deleted_at`, `deleted_by`, `delete_reason`, `status="deleted"`; marks every `salon_users` row for the salon inactive; writes audit log. Sub-collections (tokens, invoices, financial_transactions, salon_customers) intentionally preserved for tax/audit history.
+- ✅ **Deleted salons blocked from login** — `POST /api/salon/password-login` returns HTTP 410 "This salon has been deleted by platform admin." for any salon with `is_deleted=true`.
+- ✅ **Deleted salons hidden from platform list** — `GET /api/platform/salons` default view excludes soft-deleted; opt in with `?status=deleted`.
+- ✅ **Salon admin = unlimited access** — `check_permission()` in `server.py:997-1010` now bypasses for roles `salon_admin`, `admin`, `salon`, and `salon_branch_manager`. Only `staff` role goes through the granular permission check. (`has_module_permission()` at `server.py:1111` already had this bypass.)
+- ✅ **8 preview-side fixes verified intact** — Reports `.shrpt` CSS namespace, admin bootstrap, queue range endpoint, services bulk-toggle, ribbon Help WhatsApp, Shop fixture purge, ErrorBoundary, OTPLoginPage no auto-redirect.
+
 ### Feb 26, 2026 — CSS namespace collision hotfix (chip layout & drawers) ✅
 User reported after previous fix: (a) the Home dashboard chip layout was ruined, (b) Reports non-snapshot tabs still had the 4th chip too wide + 5th wrapping to a 2nd row, (c) all Reports drawers invisible when clicked.
 
