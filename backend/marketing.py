@@ -130,7 +130,9 @@ async def _require_user(request: Request) -> Dict[str, Any]:
 
 async def _require_admin(request: Request) -> Dict[str, Any]:
     user = await _require_user(request)
-    if user.get("role") not in ("salon_admin", "platform_admin", "admin"):
+    # Feb 2026 — accept the legacy phone/password JWT role='salon' plus
+    # 'salon_branch_manager' so branch managers can also configure marketing.
+    if user.get("role") not in ("salon_admin", "platform_admin", "admin", "salon", "salon_branch_manager"):
         raise HTTPException(status_code=403, detail="Admin required")
     return user
 

@@ -2043,9 +2043,9 @@ export default function SalonStaffV3({ salonId, getAuthHeaders }) {
                     title="Base salary is configured in staff settings" style={{ background: 'var(--line-2)', cursor: 'not-allowed' }} />
                 </div>
                 <div className="field">
-                  <label>Earned salary (₹) <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· prorated</span></label>
-                  <input type="number" value={salEarned} readOnly disabled data-testid="sal-drawer-earned"
-                    title="Base prorated to actual attendance" style={{ background: 'var(--line-2)', cursor: 'not-allowed' }} />
+                  <label>Earned salary (₹) <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· auto · editable</span></label>
+                  <input type="number" value={salEarned} onChange={(e) => setSalEarned(e.target.value)} data-testid="sal-drawer-earned"
+                    title="Auto-prorated to attendance — override if needed" />
                   <span className="idnote" style={{ marginTop: 4 }} data-testid="sal-earned-meta">
                     {salDaysInfo.present} present / {salDaysInfo.working} working days
                     {salDaysInfo.holidays ? ` · ${salDaysInfo.holidays} holiday` : ''}
@@ -2053,9 +2053,9 @@ export default function SalonStaffV3({ salonId, getAuthHeaders }) {
                   </span>
                 </div>
                 <div className="field">
-                  <label>Incentives (₹) <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· auto</span></label>
-                  <input type="number" value={salInc} readOnly disabled data-testid="sal-drawer-incentive"
-                    title="Incentive is auto-calculated from the reward plan" style={{ background: 'var(--line-2)', cursor: 'not-allowed' }} />
+                  <label>Incentives (₹) <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· auto · editable</span></label>
+                  <input type="number" value={salInc} onChange={(e) => setSalInc(e.target.value)} data-testid="sal-drawer-incentive"
+                    title="Auto-calculated from reward plan — override if needed" />
                   <span className="idnote" style={{ marginTop: 4 }} data-testid="sal-incentive-meta">
                     Target {rupee(salIncMeta.target)} · Actual {rupee(salIncMeta.actual)}
                     {salIncMeta.achievement_pct ? ` · ${Number(salIncMeta.achievement_pct).toFixed(0)}%` : ''}

@@ -46,6 +46,24 @@ const Ico = {
 };
 
 const rupee = (n) => '₹' + Number(n || 0).toLocaleString('en-IN');
+
+// Feb 2026 — Same invoice URL that Queue → GST invoice uses, and the same
+// link the customer receives on WhatsApp: `${API}/invoices/{invoice_id}/view`.
+// Older visits stored a pre-signed `invoice_pdf_url`; we fall back to that when
+// the token predates the invoice-id era.
+const gstInvoiceLink = (b) => {
+  const invoiceId = b?.invoice_id || b?.invoice?.id;
+  if (invoiceId) {
+    return (
+      <a href={`${API}/invoices/${invoiceId}/view`} target="_blank" rel="noopener noreferrer"
+         data-testid={`guest-gst-invoice-${invoiceId}`}>GST invoice</a>
+    );
+  }
+  if (b?.invoice_pdf_url) {
+    return <a href={b.invoice_pdf_url} target="_blank" rel="noopener noreferrer">GST invoice</a>;
+  }
+  return <a onClick={() => toast.info('Invoice not generated yet — mark the token as completed first.')}>GST invoice</a>;
+};
 const AV_COLORS = ['#6C4FE0','#12A594','#3E93E8','#E8952B','#E45C86','#2FA96A'];
 const avColorFor = (name) => AV_COLORS[(String(name || '?').charCodeAt(0) || 0) % AV_COLORS.length];
 const initials = (first, last) => `${(first || '?').charAt(0)}${(last || '').charAt(0) || ''}`.toUpperCase();
@@ -570,9 +588,7 @@ function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged })
                         <div className="vi"><b>{bd.services}</b><span>{bd.barber} · {bd.method}</span></div>
                         <div className="vp">
                           <b>{rupee(bd.amount)}</b>
-                          {b.invoice_pdf_url
-                            ? <a href={b.invoice_pdf_url} target="_blank" rel="noopener noreferrer">GST invoice</a>
-                            : <a onClick={() => toast.info('Invoice PDF not generated yet')}>GST invoice</a>}
+                          {gstInvoiceLink(b)}
                         </div>
                       </div>
                     );
@@ -592,8 +608,7 @@ function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged })
                       <div className="vi"><b>{bd.services}</b><span>{bd.barber} · {bd.method}</span></div>
                       <div className="vp">
                         <b>{rupee(bd.amount)}</b>
-                        {b.invoice_pdf_url && <a href={b.invoice_pdf_url} target="_blank" rel="noopener noreferrer">GST invoice</a>}
-                        {!b.invoice_pdf_url && <a onClick={() => toast.info('Invoice PDF not generated yet')}>GST invoice</a>}
+                        {gstInvoiceLink(b)}
                       </div>
                     </div>
                   );

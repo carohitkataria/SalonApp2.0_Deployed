@@ -115,7 +115,7 @@ async def _require_user(request: Request) -> Dict[str, Any]:
 
 async def _require_admin(request: Request) -> Dict[str, Any]:
     user = await _require_user(request)
-    if user.get("role") not in ("salon_admin", "platform_admin", "admin"):
+    if user.get("role") not in ("salon_admin", "platform_admin", "admin", "salon", "salon_branch_manager"):
         raise HTTPException(status_code=403, detail="Admin required")
     return user
 
