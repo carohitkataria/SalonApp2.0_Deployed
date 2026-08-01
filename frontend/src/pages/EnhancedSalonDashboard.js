@@ -438,12 +438,17 @@ export default function EnhancedSalonDashboard() {
     if (salonUserAuth) {
       try {
         const authData = JSON.parse(salonUserAuth);
-        return { Authorization: `Bearer ${authData.token}` };
+        // Feb 2026 — tolerate both `token` and `accessToken` keys. The
+        // legacy phone/password path briefly wrote `accessToken` after the
+        // SalonApp3.3 merge which caused Bearer-undefined 401s across
+        // attendance/shop/inventory/orders/guests.
+        const tok = authData?.token || authData?.accessToken;
+        if (tok) return { Authorization: `Bearer ${tok}` };
       } catch (e) {
         // Fall through to legacy token
       }
     }
-    
+
     const legacyToken = localStorage.getItem('salon_admin_token');
     return { Authorization: `Bearer ${legacyToken}` };
   }, []);

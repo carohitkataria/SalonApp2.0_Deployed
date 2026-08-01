@@ -155,9 +155,12 @@ export default function OTPLoginPage() {
 
           // Also persist the multi-user auth shape so Dashboard / AuthContext
           // reads back the correct admin permissions on refresh.
+          // NOTE: keep the field name `token` — Dashboard's getAuthHeaders() reads
+          // `authData.token`. (SalonApp3.3 merge briefly used `accessToken` which
+          // caused Bearer-undefined 401s across attendance/shop/inventory/orders/guests.)
           try {
             const authData = {
-              accessToken: legacyResponse.data.access_token,
+              token: legacyResponse.data.access_token,
               salonId: legacyResponse.data.salon_id,
               userId: legacyResponse.data.salon_id,
               role: legacyRole,

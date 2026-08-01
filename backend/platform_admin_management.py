@@ -197,7 +197,7 @@ async def list_salons(
     page = max(1, page)
     page_size = max(1, min(100, page_size))
 
-    base_query: dict = {}
+    base_query: dict = {"is_deleted": {"$ne": True}}
     if status == "suspended":
         base_query["status"] = "suspended"
     elif status == "active":
@@ -206,6 +206,9 @@ async def list_salons(
             {"status": {"$exists": False}},
             {"status": None},
         ]
+    elif status == "deleted":
+        # Explicit opt-in view for platform admins to see historical soft-deletes.
+        base_query = {"is_deleted": True}
 
     if q and q.strip():
         s = q.strip()
@@ -459,6 +462,60 @@ async def change_salon_phone(
     return {"ok": True, "salon_id": salon_id, "old_phone": old_phone,
             "new_phone": new_phone, "salon": updated}
 
+
+# ---------- Endpoint: soft-delete salon (Feb 2026) ----------
+class DeleteSalonReq(BaseModel):
+    reason: str = Field(..., min_length=3, max_length=500)
+
+
+@management_router.post("/salons/{salon_id}/delete")
+async def delete_salon(
+    salon_id: str, body: DeleteSalonReq,
+    admin=Depends(require_platform_admin),
+):
+    """Soft-delete a salon.
+
+    Sets `is_deleted=true`, `deleted_at`, `deleted_by`, `delete_reason` on the
+    `salons` row and flips `status="deleted"` so it's hidden from every
+    salon-facing list and login. Sub-collection rows (tokens, invoices,
+    financial_transactions, attendance, salon_customers, salon_users, etc.)
+    are LEFT INTACT so tax/audit reports can still surface historical revenue.
+    A subsequent hard-purge can be run later by ops if required.
+    """
+    salon = await _db.salons.find_one({"id": salon_id}, {"_id": 0})
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    if salon.get("is_deleted"):
+        raise HTTPException(status_code=409, detail="Salon is already deleted")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    admin_id = admin.get("sub") or admin.get("id") or "platform_admin"
+
+    await _db.salons.update_one(
+        {"id": salon_id},
+        {"$set": {
+            "is_deleted": True,
+            "deleted_at": now_iso,
+            "deleted_by": admin_id,
+            "delete_reason": body.reason,
+            "status": "deleted",
+            "updated_at": now_iso,
+        }},
+    )
+
+    # Revoke every salon_user session immediately by marking them inactive.
+    await _db.salon_users.update_many(
+        {"salon_id": salon_id},
+        {"$set": {"status": "inactive", "deleted_at": now_iso}},
+    )
+
+    await _write_audit(
+        admin=admin, action="delete_salon", target="salon", target_id=salon_id,
+        payload={"reason": body.reason, "salon_name": salon.get("salon_name")},
+    )
+
+    return {"ok": True, "salon_id": salon_id, "status": "deleted",
+            "deleted_at": now_iso, "message": "Salon soft-deleted. Historical data preserved."}
 
 
 # ---------- Endpoint: view-as (read-only short-lived token) ----------

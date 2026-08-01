@@ -995,11 +995,17 @@ async def get_current_salon_admin(credentials: HTTPAuthorizationCredentials = De
     return payload
 
 def check_permission(user_payload: dict, permission: str) -> bool:
-    """Check if user has specific permission"""
-    if user_payload.get("role") == "salon_admin":
-        return True  # Admin has all permissions
-    
-    permissions = user_payload.get("permissions", {})
+    """Check if user has specific permission.
+
+    Feb 2026 — salon admins (both legacy `role=salon` from phone/password
+    login and multi-user `role=salon_admin`, plus `role=admin`) always pass.
+    Branch managers get everything inside their branch scope.
+    Only staff go through the granular permission check.
+    """
+    role = user_payload.get("role")
+    if role in ("salon_admin", "admin", "salon", "salon_branch_manager"):
+        return True  # Admin / manager have all permissions
+    permissions = user_payload.get("permissions", {}) or {}
     return permissions.get(permission, False)
 
 
@@ -6106,6 +6112,8 @@ async def salon_password_login(credentials: SalonPasswordLogin):
     salon = await db.salons.find_one({"phone": phone}, {"_id": 0})
     if not salon:
         raise HTTPException(status_code=404, detail="Salon not found for this phone number")
+    if salon.get("is_deleted") or salon.get("status") == "deleted":
+        raise HTTPException(status_code=410, detail="This salon has been deleted by platform admin.")
     
     # Check if password exists
     if "password_hash" not in salon or not salon["password_hash"]:
