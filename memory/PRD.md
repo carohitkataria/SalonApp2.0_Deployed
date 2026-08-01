@@ -24,6 +24,14 @@ A multi-tenant salon management SaaS (React + FastAPI + MongoDB). Most recent fe
 
 ## Implemented (CHANGELOG)
 
+### Feb 26, 2026 — Marketing "Admin required" + editable salary + guest GST invoice ✅
+Testing agent iteration_31: **11/11 backend pytest PASS** + frontend flows verified.
+
+- ✅ **Marketing "Admin required" fixed** — `marketing.py:_require_admin` and `salon_marketing_settings.py:_require_admin` now accept the legacy phone/password role `salon` (plus `salon_branch_manager`). Same widening pattern as iteration_30. POST `/marketing/templates`, `/marketing/settings`, `/coupons` all return 200 with the legacy JWT (previously 403).
+- ✅ **Earned salary + Incentives editable & auto** — `SalonStaffV3.js` payroll drawer: removed `readOnly disabled` from both inputs; labels updated to "auto · editable". Backend auto-compute (`per_day_rate × earned_days`) already writes to `record.final_payable`; frontend loads that value but admin can now override before saving.
+- ✅ **Guest GST invoice opens same URL as Queue** — new `gstInvoiceLink()` helper in `CustomersV2.js`: prefers `${API}/invoices/{invoice_id}/view` (the exact URL the customer receives on WhatsApp AND that Queue's "GST invoice" button uses); falls back to legacy `invoice_pdf_url`; else shows a friendlier "Invoice not generated yet — mark the token as completed first" toast. Invoice-view endpoint proven publicly accessible so `<a href>` works without auth.
+- ⚠️ **WhatsApp sandbox on production** — Preview `.env` has `TWILIO_WHATSAPP_NUMBER='whatsapp:+918560934455'` (production sender, correct). If salonhub.in is still sending sandbox messages, the production `.env` was reset during deploy and needs to be restored via Emergent Support (`TWILIO_WHATSAPP_NUMBER`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` + all `TWILIO_*_TEMPLATE_SID` values). This cannot be fixed from preview code.
+
 ### Feb 26, 2026 — SalonApp3.3 merge post-fixes: auth crisis + platform soft-delete + admin unlimited ✅
 Testing agent iteration_30: **14/14 PASS**. All P0 issues resolved.
 
