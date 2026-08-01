@@ -6093,9 +6093,11 @@ async def verify_otp(request: SalonOTPVerify):
 
     return SalonToken(access_token=token, salon_id=salon["id"])
 
-@api_router.post("/salon/password-login", response_model=SalonToken)
+@api_router.post("/salon/password-login")
 async def salon_password_login(credentials: SalonPasswordLogin):
-    """Login with phone and password"""
+    """Login with phone and password. Returns admin role + permissions when
+    the legacy salon password is verified, so the frontend can build the
+    admin session even via this fallback path."""
     phone = credentials.phone
     if not phone.startswith("+91"):
         phone = f"+91{phone}"
@@ -6112,11 +6114,40 @@ async def salon_password_login(credentials: SalonPasswordLogin):
     # Verify password
     if not pwd_context.verify(credentials.password, salon["password_hash"]):
         raise HTTPException(status_code=401, detail="Incorrect password")
-    
+
+    # Look up (or synthesize) the admin salon_users record for role/perms.
+    admin_perms = {
+        "can_edit_salon": True,
+        "can_access_analytics": True,
+        "can_access_financials": True,
+        "can_delete_salon": True,
+        "can_access_services": True,
+        "can_access_gallery": True,
+        "can_access_staff": True,
+        "can_view_all_staff": True,
+        "can_access_marketing": True,
+    }
+    admin_user = await db.salon_users.find_one(
+        {"salon_id": salon["id"], "login_id": "admin"}, {"_id": 0}
+    )
+    permissions = (admin_user or {}).get("permissions") or admin_perms
+
     # Generate token
-    token = create_access_token({"sub": salon["id"], "role": "salon", "phone": phone})
-    
-    return SalonToken(access_token=token, salon_id=salon["id"])
+    token = create_access_token({
+        "sub": salon["id"],
+        "role": "salon",
+        "phone": phone,
+        "salon_id": salon["id"],
+        "permissions": permissions,
+    })
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "salon_id": salon["id"],
+        "role": "admin",
+        "permissions": permissions,
+    }
 
 @api_router.put("/salon/{salon_id}/set-password")
 async def set_salon_password(salon_id: str, new_password: str, current_salon=Depends(get_current_salon)):
@@ -6132,7 +6163,49 @@ async def set_salon_password(salon_id: str, new_password: str, current_salon=Dep
         {"id": salon_id},
         {"$set": {"password_hash": password_hash}}
     )
-    
+
+    # Issue 1 — Mirror the same password to the admin `salon_users` record so
+    # the multi-user login flow stays in sync with the legacy salon-level one.
+    admin_perms = {
+        "can_edit_salon": True,
+        "can_access_analytics": True,
+        "can_access_financials": True,
+        "can_delete_salon": True,
+        "can_access_services": True,
+        "can_access_gallery": True,
+        "can_access_staff": True,
+        "can_view_all_staff": True,
+        "can_access_marketing": True,
+    }
+    salon_doc = await db.salons.find_one({"id": salon_id}, {"_id": 0, "phone": 1}) or {}
+    existing_admin = await db.salon_users.find_one(
+        {"salon_id": salon_id, "login_id": "admin"}, {"_id": 0, "id": 1}
+    )
+    if existing_admin:
+        await db.salon_users.update_one(
+            {"id": existing_admin["id"]},
+            {"$set": {
+                "password_hash": password_hash,
+                "role": "admin",
+                "status": "active",
+                "permissions": admin_perms,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+    else:
+        await db.salon_users.insert_one({
+            "id": str(uuid.uuid4()),
+            "salon_id": salon_id,
+            "name": "Admin",
+            "login_id": "admin",
+            "mobile": salon_doc.get("phone") or "",
+            "password_hash": password_hash,
+            "role": "admin",
+            "status": "active",
+            "permissions": admin_perms,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
     return {"message": "Password updated successfully"}
 
 # ============ SALON USER MULTI-USER AUTH ROUTES ============

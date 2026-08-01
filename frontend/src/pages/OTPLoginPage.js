@@ -141,14 +141,32 @@ export default function OTPLoginPage() {
           // SECURITY: Purge any stale auth data from previous session before storing new
           purgeAllSalonAuthData();
 
-          // Store legacy session
+          // Store legacy session — use role + permissions returned by the
+          // legacy endpoint so admin-only tabs are visible right after login.
+          const legacyRole = legacyResponse.data.role || 'admin';
+          const legacyPerms = legacyResponse.data.permissions || {};
           saveSession(
             legacyResponse.data.access_token,
             legacyResponse.data.salon_id,
-            'salon',
-            legacyResponse.data.salon_id
+            legacyRole,
+            legacyResponse.data.salon_id,
+            legacyPerms
           );
-          
+
+          // Also persist the multi-user auth shape so Dashboard / AuthContext
+          // reads back the correct admin permissions on refresh.
+          try {
+            const authData = {
+              accessToken: legacyResponse.data.access_token,
+              salonId: legacyResponse.data.salon_id,
+              userId: legacyResponse.data.salon_id,
+              role: legacyRole,
+              permissions: legacyPerms,
+              staffId: null,
+            };
+            localStorage.setItem('salon_user_auth', JSON.stringify(authData));
+          } catch (_) { /* ignore storage errors */ }
+
           localStorage.setItem('salon_admin_token', legacyResponse.data.access_token);
           localStorage.setItem('salon_id', legacyResponse.data.salon_id);
 

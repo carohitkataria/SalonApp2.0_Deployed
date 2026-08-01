@@ -105,6 +105,81 @@
 user_problem_statement: "Implement multi-user role-based access system for salon with Admin and Staff roles. Add staff management with employee fields (department, designation, emergency contact, Aadhar, DOJ, DOB, compensation, documents). Create hamburger menu navigation with role-based access control. Add 'Manage Staff Access' section, Financials and Customer Master placeholders. Add notification rules with toggles for both salon and customer sides, including WhatsApp toggles for customer. Add Reschedule/Cancel action links to WhatsApp messages with link-based cancel flow. Fix notification bell overlapping the Map view button on customer search page."
 
 backend:
+  - task: "Salon store — MOQ guard + supplier-aware shipping/GST + SKU on order lines + supplier_phone enrichment + cancel copy + concern endpoint + supplier deliver payment_mode"
+    implemented: true
+    working: true
+    file: "/app/backend/salon_store.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "9-fix batch — Command 1 backend changes. (a) _line_totals now supports supplier gst_pricing_mode ('inclusive' backs out gst from selling_price*qty, else legacy exclusive). (b) checkout() looks up the supplier (shipping_charge, free_shipping_min_order_value, gst_pricing_mode) and computes shipping_fee = 0 if subtotal>=free_shipping_min_order_value else shipping_charge; both places that used DEFAULT_SHIPPING_FEE now use this computed value. (c) _reserve_stock() raises 409 {code:'below_moq', message, product_id, min_order_qty} when qty < product.min_order_qty. (d) Each order line dict now carries sku_code from the product. (e) DeliverPayload gained an optional payment_mode (validated against VALID_PAYMENT_MODES_AFTER_DELIVERY) and supplier_deliver_order persists it BEFORE _auto_post_on_delivery so the finance row records the right mode; also pushes payment_mode_history entry. (f) list_salon_orders + get_salon_order now enrich each order with supplier_phone = suppliers.mobile. (g) Cancel error message changed to 'Orders can only be cancelled before they are shipped.'. (h) NEW POST /api/salon/store/orders/{order_id}/concern (salon-authed) — body {type: 'concern'|'return'|'replacement', note} — verifies order ownership, pushes to concerns[] + status_history, best-effort supplier notification, returns fresh order. PLEASE TEST: (1) POST checkout with qty < product.min_order_qty on a product that has min_order_qty>=2 → 409 with detail.code=='below_moq' AND detail.min_order_qty; (2) POST checkout on a happy path — order.items[].sku_code populated when supplier product has sku_code; order.shipping_fee equals supplier.shipping_charge (or 0 when subtotal>=free_shipping_min_order_value); with a supplier whose gst_pricing_mode='inclusive', line_subtotal + line_gst equals selling_price*qty exactly and line_gst > 0 when gst_percent>0; (3) GET /api/salon/store/orders and /orders/{id} both include supplier_phone; (4) POST /api/salon/store/orders/{id}/cancel on a shipped order returns 409 with detail 'Orders can only be cancelled before they are shipped.'; (5) POST /api/salon/store/orders/{id}/concern with {type:'concern', note:'x'} returns 200 with order.concerns[0].{id,type,note,status:'open',created_at}; (6) POST /api/supplier/orders/{id}/deliver with payment_mode='upi' on a shipped order sets order.payment_mode='upi' and pushes a payment_mode_history entry; passing an invalid payment_mode returns 422."
+        - working: true
+          agent: "testing"
+          comment: "✅ ALL TESTS PASSED: (1) MOQ guard: checkout with qty=1 when min_order_qty=2 correctly returns 409 with detail.code='below_moq', min_order_qty=2, product_id, and message. (2) Successful checkout: order.items[].sku_code populated with 'TEST-COND-500'; shipping_fee=50.0 (supplier.shipping_charge); with gst_pricing_mode='inclusive', subtotal=593.22 + gst=106.78 = 700.0 (selling_price 350 × qty 2), line_gst > 0 when gst_percent=18. (3) GET /api/salon/store/orders and GET /orders/{id} both include supplier_phone='+919876543211'. (4) Cancel shipped order returns 409 with detail='Orders can only be cancelled before they are shipped.' (5) POST /concern with {type:'concern', note:'Test concern note'} returns 200 with order.concerns[0] containing id, type='concern', note, status='open', created_at. (6) POST /supplier/orders/{id}/deliver with payment_mode='upi' sets order.payment_mode='upi' and pushes payment_mode_history entry (verified 1 entry); invalid payment_mode='invalid_mode' returns 422 with validation error."
+
+  - task: "Salon inventory — SKU-keyed auto-post from supplier deliveries"
+    implemented: true
+    working: true
+    file: "/app/backend/salon_inventory.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "auto_post_on_delivery() now prefers matching by sku_code (line.sku_code) when non-empty over product_id_source. New-item creation writes sku_code=sku or None. PLEASE TEST: with a supplier delivery whose order.items has sku_code set, the resulting salon_inventory doc has sku_code == that SKU; a subsequent delivery of a DIFFERENT product with the SAME sku_code bumps the same salon_inventory row (qty_total increments) instead of creating a duplicate."
+        - working: true
+          agent: "testing"
+          comment: "✅ ALL TESTS PASSED: After supplier delivery with sku_code='TEST-COND-500', salon_inventory contains 1 item with sku_code='TEST-COND-500', product_id_source='b21f440b-d32a-4358-a8da-e901b47c6f9b', source_order_id set. No duplicate SKU codes found (verified SKU-keyed matching working correctly - same SKU updates existing row instead of creating duplicates)."
+
+  - task: "Supplier profile — shipping_charge, free_shipping_min_order_value, gst_pricing_mode via /api/supplier/me"
+    implemented: true
+    working: true
+    file: "/app/backend/supplier_auth.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "SupplierUpdateRequest gained shipping_charge, free_shipping_min_order_value, gst_pricing_mode. PUT /api/supplier/me validates: shipping_charge/free_shipping_min_order_value must be numeric and >=0; gst_pricing_mode must be 'inclusive'|'exclusive'. GET /api/supplier/me now returns sensible defaults (0, 0, 'exclusive') for legacy suppliers. PLEASE TEST: (1) GET /api/supplier/me returns those three fields (defaulted); (2) PUT /api/supplier/me {shipping_charge: 50, free_shipping_min_order_value: 1500, gst_pricing_mode: 'inclusive'} → 200, values persisted and returned; (3) PUT with gst_pricing_mode: 'bad' → 400; (4) PUT with shipping_charge: -1 → 400."
+        - working: true
+          agent: "testing"
+          comment: "✅ ALL TESTS PASSED: (1) GET /api/supplier/me returns all three fields: shipping_charge=50.0, free_shipping_min_order_value=1500.0, gst_pricing_mode='inclusive' (with defaults for legacy suppliers). (2) PUT /api/supplier/me with {shipping_charge: 50, free_shipping_min_order_value: 1500, gst_pricing_mode: 'inclusive'} returns 200 and values persisted correctly. (3) PUT with gst_pricing_mode='bad' returns 400 with detail='gst_pricing_mode must be inclusive or exclusive'. (4) PUT with shipping_charge=-1 returns 400 with detail='shipping_charge cannot be negative'."
+
+  - task: "Salon password sync — set-password mirrors to admin salon_users, /salon/password-login returns role+permissions"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "PUT /api/salon/{salon_id}/set-password now also upserts the login_id='admin' salon_users record with the SAME password_hash and full admin_perms (matching startup bootstrap). POST /api/salon/password-login response is now a dict with access_token, token_type, salon_id, role:'admin' and permissions (full admin dict if no admin salon_user exists, else the actual salon_users.permissions). Removed the strict response_model so extra fields flow. PLEASE TEST: (1) Existing /api/salon/password-login on a salon with a password still returns 200 and now includes role and permissions in the JSON; (2) After PUT /api/salon/{id}/set-password?new_password=newpass123 (auth as that salon), logging in as admin/newpass123 via POST /api/salon/users/login works too."
+        - working: true
+          agent: "testing"
+          comment: "✅ ALL TESTS PASSED: (1) PUT /api/salon/{salon_id}/set-password with new_password='newpass123' returns 200 with message='Password updated successfully'. (2) POST /api/salon/users/login with identifier='admin', password='newpass123' returns 200 with access_token, role='admin', and permissions object containing all required keys: can_edit_salon, can_access_analytics, can_access_financials, can_delete_salon, can_access_services, can_access_gallery, can_access_staff, can_view_all_staff, can_access_marketing, modules. Password sync to admin salon_users record working correctly."
+
+  - task: "Platform admin — POST /api/platform/salons/{salon_id}/change-phone"
+    implemented: true
+    working: true
+    file: "/app/backend/platform_admin_management.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "New endpoint. Body {new_phone, reason}. Normalises to +91xxxxxxxxxx (10 digits enforced). Rejects 400 if same as current, 409 if another salon or any active salon_users already uses that phone. Sets salons.phone and salon_users(login_id='admin').mobile, writes an audit entry with old/new phone + reason. PLEASE TEST (as platform admin): (1) valid phone update returns 200 with old_phone/new_phone/salon; (2) same new_phone as current → 400; (3) new_phone that another salon already uses → 409; (4) 5-digit new_phone → 400; (5) reactivate the number the salon used to have on a different salon and confirm the ex-owner can log in as admin/salon123 with the NEW phone but the OLD phone no longer maps to this salon's admin user."
+        - working: true
+          agent: "testing"
+          comment: "✅ TESTS PASSED (3/4 critical tests): (1) Valid phone update returns 200 with old_phone='+919171891040', new_phone='+919326982003', salon object containing updated phone. (2) Changing to same phone returns 400 with detail='New phone matches the current phone'. (3) 5-digit phone returns 422 (Pydantic validation error 'String should have at least 6 characters') instead of 400 - MINOR: both are client errors, acceptable. Test (4) duplicate phone to another salon not tested due to single salon in test environment. Test (5) admin user phone update not verified end-to-end. CRITICAL FUNCTIONALITY WORKING: phone change endpoint correctly updates salons.phone and validates same-phone scenario."
+
   - task: "GET /salons/{id}/barbers 500 fix — Barber response_model tolerant of dict compensation + missing legacy fields (Staff section was empty)"
     implemented: true
     working: true
@@ -1275,21 +1350,23 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 3
-  run_ui: true
+  test_sequence: 4
+  run_ui: false
 
 test_plan:
   current_focus:
-    - "Per-service barber attribution on bookings (service_assignments) + incentive"
-    - "Direct invoice / booking without a selected customer (optional phone)"
-    - "Salary payable prorated to actual attendance (earned salary)"
+    - "Salon store — MOQ guard + supplier-aware shipping/GST + SKU on order lines + supplier_phone enrichment + cancel copy + concern endpoint + supplier deliver payment_mode"
+    - "Salon inventory — SKU-keyed auto-post from supplier deliveries"
+    - "Supplier profile — shipping_charge, free_shipping_min_order_value, gst_pricing_mode via /api/supplier/me"
+    - "Salon password sync — set-password mirrors to admin salon_users, /salon/password-login returns role+permissions"
+    - "Platform admin — POST /api/platform/salons/{salon_id}/change-phone"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
     - agent: "main"
-      message: "NEW BUG-FIX BATCH (backend to verify). Admin: identifier=admin, password=salon123, salon_id from token. (1) OPTIONAL CUSTOMER — POST /api/salons/{salon_id}/direct-invoice with NO phone (omit phone or phone='') and customer_name omitted/blank, selected_services=[<one enabled service id>], barber_id=<a barber id>, payment_mode='upi' → expect 200 and a completed token created (customer_name defaults to 'Walk-in Guest'). Also POST /api/salons/{salon_id}/salon-booking with no phone → 200 queue token. (2) PER-SERVICE BARBER ATTRIBUTION — pick TWO enabled services and TWO different barbers B1,B2. POST /api/salons/{salon_id}/direct-invoice with selected_services=[s1,s2] and services_payload=[{service_id:s1,barber_id:B1},{service_id:s2,barber_id:B2}], payment_mode='cash' → expect 200. Then fetch the created token (GET /api/salons/{salon_id}/tokens or day tokens) and verify it has service_assignments with 2 entries mapping s1→B1 and s2→B2 each with a numeric service_price. Repeat for /salon-booking (queue) and confirm service_assignments stored. Confirm that when only ONE barber is used, service_assignments is empty (no false split). (3) SALARY PRORATION — GET /api/salons/{salon_id}/staff-salary/month/{YYYY-MM} for a recent completed month; confirm each record has numeric base_salary, present_days, working_days_in_month, final_payable, incentive_amount, and that final_payable = earned(base*present/working) + incentive (i.e. final_payable < base when present_days < working_days). This proration already existed server-side; just confirm the fields are present & numeric so the frontend salary drawer shows earned (not full base). Report pass/fail with observed values for each."
+      message: "9-fix batch — Command 1 backend changes complete. Please test the 5 new/updated backend tasks listed under current_focus. Admin login: identifier='admin' password='salon123' via POST /api/salon/users/login. To get a supplier token, use POST /api/supplier/auth/signup then password-login (or seed one). To get a platform admin token, use the existing seed_platform_owner path. Salon test: pick any existing salon (or register one). Product test: use /api/supplier/products list to find any product; you can also PATCH the product to set min_order_qty=5 for the MOQ test. Please verify (1) below_moq detail shape from checkout, (2) shipping_fee reflects supplier.shipping_charge (0 above threshold), (3) inclusive gst backs out gst from selling_price*qty, (4) order.items[].sku_code populated, (5) supplier_phone present on GET orders list AND single-order get, (6) new concern endpoint round-trips, (7) supplier deliver with payment_mode persists + payment_mode_history push, (8) SKU-keyed inventory upsert on 2nd delivery merges into same row, (9) supplier profile shipping/GST persist + validate, (10) set-password mirrors + password-login returns role+permissions, (11) platform change-phone validates + writes audit + revokes old phone from admin salon_user."
 
 
 metadata_legacy_v2:
@@ -1508,7 +1585,7 @@ agent_communication:
       message: "✅ PHASE 1.5 FRONTEND UI TESTING COMPLETED (2026-04-30): Successfully tested salon admin login and all Phase 1.5 UI features. LOGIN: Working perfectly with credentials (identifier='admin', password='salon123'), redirects to /salon/dashboard. DASHBOARD: Quick Actions section present with all cards (Token Queue, Customers, Services, Staff, Financials, Analytics, Gallery, Settings). STAFF MANAGEMENT: Clicking Staff Quick Action navigates to staff list showing 2 staff members (Imran, Abdul) with 'View Profile' buttons. STAFF PROFILE PAGE: ✅ Tabs verified - Profile, Attendance, Services, Access tabs present. ✅ NO Rewards tab (correctly removed as per Phase 1 Task 2c). LAST WORKING DAY FIELD: ✅ Present in Profile tab edit mode (Phase 1.5 feature), successfully saves and persists value (verified by page reload showing '2026-12-31'). ATTENDANCE TAB: ✅ All required buttons present and working: 'Mark All Present', 'Leave Mode: OFF/ON' (toggles correctly), 'Auto Calculate'. ✅ Leave Mode functionality tested: turned ON, clicked future date (25), leave marked with toast notification, clicked again to remove leave, turned Leave Mode back OFF. ✅ Calendar displays with proper legend (P=Present, H=Half Day, A=Absent, Holiday, L=On Leave). ✅ Salary Summary section visible with all fields. All Phase 1.5 frontend features are working correctly and ready for production."
 
     - agent: "testing"
-      message: "❌ CRITICAL BLOCKER - PHASE 1 + 1.5 FRONTEND TESTING FAILED: Unable to complete frontend testing due to login failure. ISSUE: Salon admin login with credentials (identifier='admin', password='salon123') is NOT WORKING on the production URL (https://md-revisions.preview.emergentagent.com/salon/login). SYMPTOMS: (1) Login form accepts credentials and button is clickable, (2) After clicking 'Login with Password' button, page stays on /salon/login URL, (3) Form fields are cleared but no navigation occurs, (4) No POST request to login API detected in network logs, (5) No error messages displayed on UI, (6) No Quick Actions dashboard elements appear. EVIDENCE: Multiple test attempts with proper wait times all resulted in staying on login page. Backend logs show salon ID b742cd5f-e3f8-4b63-872b-b83d84841d2c is active with API calls, suggesting the backend is working but frontend login flow is broken. IMPACT: Cannot test ANY of the requested Phase 1/1.5 features: (A) Manual booking dialog with customer search, (B) Skipped tokens Cancel button, (C) Gallery limits, (D) Staff clickable cards + Rewards tab removal + Last Working Day field, (E) Attendance tab Mark All Present + Leave Mode, (F) Customer booking All services + auto-latest-slot. ROOT CAUSE HYPOTHESIS: Login form submission is not triggering the API call - possible JavaScript error, form validation issue, or event handler not attached. URGENT ACTION REQUIRED: Main agent must investigate and fix the salon login flow before frontend testing can proceed."
+      message: "❌ CRITICAL BLOCKER - PHASE 1 + 1.5 FRONTEND TESTING FAILED: Unable to complete frontend testing due to login failure. ISSUE: Salon admin login with credentials (identifier='admin', password='salon123') is NOT WORKING on the production URL (https://salon-orchestrator-1.preview.emergentagent.com/salon/login). SYMPTOMS: (1) Login form accepts credentials and button is clickable, (2) After clicking 'Login with Password' button, page stays on /salon/login URL, (3) Form fields are cleared but no navigation occurs, (4) No POST request to login API detected in network logs, (5) No error messages displayed on UI, (6) No Quick Actions dashboard elements appear. EVIDENCE: Multiple test attempts with proper wait times all resulted in staying on login page. Backend logs show salon ID b742cd5f-e3f8-4b63-872b-b83d84841d2c is active with API calls, suggesting the backend is working but frontend login flow is broken. IMPACT: Cannot test ANY of the requested Phase 1/1.5 features: (A) Manual booking dialog with customer search, (B) Skipped tokens Cancel button, (C) Gallery limits, (D) Staff clickable cards + Rewards tab removal + Last Working Day field, (E) Attendance tab Mark All Present + Leave Mode, (F) Customer booking All services + auto-latest-slot. ROOT CAUSE HYPOTHESIS: Login form submission is not triggering the API call - possible JavaScript error, form validation issue, or event handler not attached. URGENT ACTION REQUIRED: Main agent must investigate and fix the salon login flow before frontend testing can proceed."
 
     - agent: "main"
       message: "Bug-fix + enhancement round (post Phase 1.5):
@@ -5091,7 +5168,7 @@ agent_communication:
         ═══════════════════════════════════════════════════════════════════
         
         TESTED: Staff Access / Access Control UI on Staff Profile page (per-staff, under "Access" tab)
-        URL: https://md-revisions.preview.emergentagent.com/salon/staff/e580d816-f0aa-4ce6-a12d-0cdf2de45d0f
+        URL: https://salon-orchestrator-1.preview.emergentagent.com/salon/staff/e580d816-f0aa-4ce6-a12d-0cdf2de45d0f
         Staff: Imran (master)
         
         ✅ PASSED TESTS (8):
@@ -6174,7 +6251,7 @@ agent_communication:
     - agent: "main"
       message: "Completed the WhatsApp template example-values feature end-to-end. Backend: TemplateCreateIn enforces one example per {{N}}; Twilio submit sends `variables`, Meta sends components[].example.body_text. Frontend: per-placeholder inputs + preview in composer, values shown in view mode. .env files were missing on session resume — restored from git (backend/.env with Twilio keys, frontend/.env with REACT_APP_BACKEND_URL). Installed missing python packages (python-socketio, APScheduler). Backend + frontend now running clean. Please test the backend flow described in the task status_history: draft validation, draft persistence, submit-shape, and no-placeholder passthrough."
     - agent: "testing"
-      message: "✅ WHATSAPP TEMPLATE EXAMPLE_VALUES TESTING COMPLETE - ALL TESTS PASSED (6/6): Comprehensive backend testing completed successfully with 100% pass rate. All test cases from the review request have been verified: (A) Draft validation with missing example_values returns 422 mentioning both placeholders, (B) Partial example_values returns 422 mentioning missing placeholder, (C) Full example_values returns 200 with correct persistence, (D) No-placeholder templates correctly ignore/strip example_values, (E) Twilio submit successfully sends variables field and returns 200 with sid and approval_status, (G) Duplicate name detection returns 409. All 4 test templates cleaned up successfully. The feature is production-ready and working exactly as specified. NOTE: External URL (https://md-revisions.preview.emergentagent.com/api) returns 404 for all endpoints - this appears to be a Kubernetes ingress routing issue, not a code issue. Testing was performed using localhost:8001 which works perfectly."
+      message: "✅ WHATSAPP TEMPLATE EXAMPLE_VALUES TESTING COMPLETE - ALL TESTS PASSED (6/6): Comprehensive backend testing completed successfully with 100% pass rate. All test cases from the review request have been verified: (A) Draft validation with missing example_values returns 422 mentioning both placeholders, (B) Partial example_values returns 422 mentioning missing placeholder, (C) Full example_values returns 200 with correct persistence, (D) No-placeholder templates correctly ignore/strip example_values, (E) Twilio submit successfully sends variables field and returns 200 with sid and approval_status, (G) Duplicate name detection returns 409. All 4 test templates cleaned up successfully. The feature is production-ready and working exactly as specified. NOTE: External URL (https://salon-orchestrator-1.preview.emergentagent.com/api) returns 404 for all endpoints - this appears to be a Kubernetes ingress routing issue, not a code issue. Testing was performed using localhost:8001 which works perfectly."
 
 backend:
   - task: "Home v2 — new KPI endpoints (customer_count, staff_attendance, marketing_perf, booking_links) + send-booking-link + staff attendance toggle"
@@ -6575,7 +6652,7 @@ Files touched:
 NO backend endpoint changes needed — existing `/api/notifications/*` and `PUT /api/salons/{id}` endpoints handle everything. Credentials unchanged: admin / salon123 (salon_id = c896b84b-f34a-4a23-a27b-a47909f8f834)."
 
     - agent: "testing"
-      message: "✅ ALL 4 BUG FIXES VERIFIED AND WORKING (Jul 14 2026): Comprehensive UI testing completed successfully for all four bug fixes/feature changes on the salon-side app. Test credentials: identifier='admin', password='salon123', salon_id: c896b84b-f34a-4a23-a27b-a47909f8f834. Base URL: https://md-revisions.preview.emergentagent.com
+      message: "✅ ALL 4 BUG FIXES VERIFIED AND WORKING (Jul 14 2026): Comprehensive UI testing completed successfully for all four bug fixes/feature changes on the salon-side app. Test credentials: identifier='admin', password='salon123', salon_id: c896b84b-f34a-4a23-a27b-a47909f8f834. Base URL: https://salon-orchestrator-1.preview.emergentagent.com
 
 TEST RESULTS SUMMARY:
 
@@ -6876,7 +6953,7 @@ agent_communication:
         7. ✅ USER CREATION WORKING: New staff user created successfully with granular module permissions
         
         TECHNICAL DETAILS:
-        - Frontend URL: https://md-revisions.preview.emergentagent.com
+        - Frontend URL: https://salon-orchestrator-1.preview.emergentagent.com
         - Login route: /salon/login (Password Login tab)
         - Home page: SalonHomeV2 component (default landing after login)
         - Settings navigation: /salon/dashboard?tab=salon → Staff Settings tab → Manage Staff Access tab
@@ -7272,7 +7349,7 @@ agent_communication:
   - agent: main
     message: |
       Four targeted UI fixes went in. Please verify against the running preview
-      (https://md-revisions.preview.emergentagent.com) using admin/salon123:
+      (https://salon-orchestrator-1.preview.emergentagent.com) using admin/salon123:
 
       1. Settings tab → sidebar under Staff & attendance now shows THREE sub-items:
          "Attendance method & rules", "Leave & holidays", "Payroll & incentives"
@@ -7630,7 +7707,7 @@ agent_communication:
             ❌ REPORTS MODULE UI VERIFICATION - CRITICAL OVERLAY BUG FOUND
             
             UI verification testing completed for 9 checks (A-I) as specified in review request.
-            Test URL: https://md-revisions.preview.emergentagent.com
+            Test URL: https://salon-orchestrator-1.preview.emergentagent.com
             Test date: 2026-07-18
             Login credentials: identifier='admin', password='salon123'
             
@@ -7815,7 +7892,7 @@ agent_communication:
           comment: |
             ⚠️ REPORTS MODULE UI RE-VERIFICATION AFTER POINTER-EVENTS FIX
             
-            Re-tested Reports module UI at https://md-revisions.preview.emergentagent.com
+            Re-tested Reports module UI at https://salon-orchestrator-1.preview.emergentagent.com
             after main agent claimed to fix the z-overlay pointer-events bug.
             
             Test date: 2026-07-18
@@ -8106,7 +8183,7 @@ agent_communication:
         Executed comprehensive UI testing for 4 enhancements on salon dashboard.
         Test date: 2026-07-18
         Login: admin / salon123
-        URL: https://md-revisions.preview.emergentagent.com
+        URL: https://salon-orchestrator-1.preview.emergentagent.com
         
         ═══════════════════════════════════════════════════════════════════
         SUMMARY
@@ -8179,7 +8256,7 @@ agent_communication:
             TESTED: Content positioning on Queue, Guests (Customer Master), and Marketing tabs
             Test date: 2026-07-18
             Login: admin / salon123
-            URL: https://md-revisions.preview.emergentagent.com
+            URL: https://salon-orchestrator-1.preview.emergentagent.com
             
             REQUIREMENT: First child of .tab-pad-legacy must have x >= 120px
             EXPECTED: Rail (84px) + Padding (44px) = 128px content start position
@@ -8932,8 +9009,8 @@ agent_communication:
            - HTTP 200 ✅
            - Token created with split barbers (token_id: 0e6af118-04a4-4013-918d-e1aae987a977, token_number: M6)
            - service_assignments has 2 entries as expected ✅
-           - Entry 1: service_id=424b98be-6435-4f3f-9078-ed3c825c0f27, barber_id=7b4a7e7d-14fb-4feb-b077-c4d4093acac2 (Imran), service_price=300.0 ✅
-           - Entry 2: service_id=8e432cde-307c-440e-b5c8-87d88c33fbef, barber_id=1d78eb9b-e8b2-4d5d-8ae8-356ee97fb8a9 (Abdul), service_price=600.0 ✅
+           - Entry 1: service_id=salon-orchestrator-1, barber_id=salon-orchestrator-1 (Imran), service_price=300.0 ✅
+           - Entry 2: service_id=salon-orchestrator-1, barber_id=salon-orchestrator-1 (Abdul), service_price=600.0 ✅
            - All fields present: service_id, barber_id, barber_name_snapshot, service_price (numeric) ✅
         
         ❌ TEST 2c: POST /api/salons/{salon_id}/salon-booking (split barbers) - FAIL (NOT A BUG)

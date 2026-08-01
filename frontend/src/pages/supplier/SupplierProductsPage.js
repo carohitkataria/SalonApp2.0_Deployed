@@ -248,6 +248,8 @@ export default function SupplierProductsPage() {
         </Button>
       </div>
 
+      <ShippingTaxCard authHeaders={authHeaders} />
+
       <div className="flex border border-border rounded-lg overflow-hidden mb-5 text-xs font-bold max-w-md">
         <button
           onClick={() => setTab('catalog')}
@@ -598,6 +600,115 @@ function Modal({ title, children, onClose, wide }) {
           </button>
         </div>
         {children}
+      </div>
+    </div>
+  );
+}
+
+
+/* ---------- Shipping & Tax card (Issue 4) ---------- */
+function ShippingTaxCard({ authHeaders }) {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    shipping_charge: '',
+    free_shipping_min_order_value: '',
+    gst_pricing_mode: 'exclusive',
+  });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await axios.get(`${API}/supplier/me`, { headers: authHeaders });
+      setForm({
+        shipping_charge: r.data?.shipping_charge ?? 0,
+        free_shipping_min_order_value: r.data?.free_shipping_min_order_value ?? 0,
+        gst_pricing_mode: r.data?.gst_pricing_mode || 'exclusive',
+      });
+    } catch (_) {
+      // silent — supplier probably not logged in yet
+    } finally { setLoading(false); }
+  }, [authHeaders]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload = {
+        shipping_charge: Number(form.shipping_charge) || 0,
+        free_shipping_min_order_value: Number(form.free_shipping_min_order_value) || 0,
+        gst_pricing_mode: form.gst_pricing_mode || 'exclusive',
+      };
+      await axios.put(`${API}/supplier/me`, payload, { headers: authHeaders });
+      toast.success('Shipping & tax settings saved');
+    } catch (e) {
+      const d = e?.response?.data?.detail;
+      toast.error(typeof d === 'string' ? d : (d?.message || 'Could not save'));
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="bg-card/60 border border-border rounded-2xl p-5 mb-5">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h2 className="text-base font-bold text-foreground flex items-center gap-2">
+            <IndianRupee className="w-4 h-4 text-primary" /> Shipping &amp; tax
+          </h2>
+          <p className="text-xs text-muted-foreground/80 mt-1">
+            These apply to every order salons place from your catalog.
+          </p>
+        </div>
+        {loading && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div>
+          <label className="text-xs uppercase tracking-widest text-muted-foreground/80 font-bold">Shipping charge (₹)</label>
+          <Input
+            type="number" min={0}
+            value={form.shipping_charge}
+            onChange={(e) => setForm({ ...form, shipping_charge: e.target.value })}
+            className="mt-1 bg-card border-border"
+            placeholder="0"
+          />
+        </div>
+        <div>
+          <label className="text-xs uppercase tracking-widest text-muted-foreground/80 font-bold">Free shipping above (₹)</label>
+          <Input
+            type="number" min={0}
+            value={form.free_shipping_min_order_value}
+            onChange={(e) => setForm({ ...form, free_shipping_min_order_value: e.target.value })}
+            className="mt-1 bg-card border-border"
+            placeholder="e.g. 1500 (0 = never)"
+          />
+        </div>
+        <div>
+          <label className="text-xs uppercase tracking-widest text-muted-foreground/80 font-bold">GST pricing mode</label>
+          <div className="mt-1 flex border border-border rounded-lg overflow-hidden text-xs font-bold">
+            {['exclusive', 'inclusive'].map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setForm({ ...form, gst_pricing_mode: m })}
+                className={`flex-1 py-2 capitalize ${
+                  form.gst_pricing_mode === m
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex justify-end mt-3">
+        <Button size="sm" onClick={save} disabled={saving || loading}>
+          {saving ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Check className="w-3 h-3 mr-1" />}
+          Save
+        </Button>
       </div>
     </div>
   );

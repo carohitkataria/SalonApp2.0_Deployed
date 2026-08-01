@@ -79,7 +79,7 @@ export default function EnhancedSalonDashboard() {
         const raw = localStorage.getItem('salon_user_auth');
         if (raw) storedSalonUser = JSON.parse(raw);
       } catch (e) { storedSalonUser = null; }
-      if (storedSalonUser) return storedSalonUser?.role === 'admin';
+      if (storedSalonUser) return ['admin', 'salon_admin', 'salon'].includes(storedSalonUser?.role);
       return !!localStorage.getItem('salon_admin_token');
     })();
 
@@ -97,7 +97,7 @@ export default function EnhancedSalonDashboard() {
         const raw = localStorage.getItem('salon_user_auth');
         if (raw) storedSalonUser = JSON.parse(raw);
       } catch (e) { storedSalonUser = null; }
-      if (storedSalonUser?.role === 'admin') return true;
+      if (['admin', 'salon_admin', 'salon'].includes(storedSalonUser?.role)) return true;
       return !!storedSalonUser?.permissions?.[permission];
     };
     
@@ -129,7 +129,7 @@ export default function EnhancedSalonDashboard() {
         const raw = localStorage.getItem('salon_user_auth');
         if (raw) storedSalonUser = JSON.parse(raw);
       } catch (e) { storedSalonUser = null; }
-      if (storedSalonUser) return storedSalonUser?.role === 'admin';
+      if (storedSalonUser) return ['admin', 'salon_admin', 'salon'].includes(storedSalonUser?.role);
       return !!localStorage.getItem('salon_admin_token');
     })();
 
@@ -139,7 +139,7 @@ export default function EnhancedSalonDashboard() {
         const raw = localStorage.getItem('salon_user_auth');
         if (raw) storedSalonUser = JSON.parse(raw);
       } catch (e) { storedSalonUser = null; }
-      if (storedSalonUser?.role === 'admin') return true;
+      if (['admin', 'salon_admin', 'salon'].includes(storedSalonUser?.role)) return true;
       return !!storedSalonUser?.permissions?.[permission];
     };
 
@@ -1171,7 +1171,7 @@ export default function EnhancedSalonDashboard() {
 
     if (storedSalonUser || salonUser) {
       const u = storedSalonUser || salonUser;
-      return u?.role === 'admin';
+      return ['admin', 'salon_admin', 'salon'].includes(u?.role);
     }
     // Only if NO multi-user auth, fall back to legacy salon login (treated as admin)
     const legacyToken = localStorage.getItem('salon_admin_token');
@@ -1198,7 +1198,7 @@ export default function EnhancedSalonDashboard() {
 
     const u = storedSalonUser || salonUser;
     if (u) {
-      if (u.role === 'admin') return true;
+      if (['admin', 'salon_admin', 'salon'].includes(u.role)) return true;
       return !!u.permissions?.[permission];
     }
     // Legacy login (no multi-user auth at all) has all permissions

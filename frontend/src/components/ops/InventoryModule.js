@@ -53,7 +53,7 @@ export default function InventoryModule({ salonId, getAuthHeaders }) {
         axios.get(`${API}/salons/${salonId}/barbers`, { headers: getAuthHeaders() }).catch(() => ({ data: [] })),
       ]);
       const invData = inv.data || {};
-      const items = Array.isArray(invData) ? invData : (invData.items || []);
+      const items = Array.isArray(invData) ? invData : (invData.inventory_items || invData.items || []);
       setItems(items);
       const bList = Array.isArray(stf.data) ? stf.data : (stf.data?.barbers || []);
       setStaff(bList);
@@ -219,6 +219,9 @@ export default function InventoryModule({ salonId, getAuthHeaders }) {
             setShowItemDrawer(false);
             setEditing(null);
             toast.success(isNew ? 'Item added' : 'Updated');
+            // Issue 9 — always reload from server so persisted opening qty_total
+            // and any server-side enrichment (branch, aliases, etc.) survive a refresh.
+            load();
           }}
         />
       )}
