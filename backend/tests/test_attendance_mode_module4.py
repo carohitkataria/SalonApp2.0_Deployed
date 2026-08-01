@@ -22,7 +22,7 @@ from datetime import datetime, timezone, timedelta
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL") or "https://md-revisions.preview.emergentagent.com"
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL") or "https://salon-orchestrator-1.preview.emergentagent.com"
 SALON_ID = "a6f10c9e-f0e0-4128-8246-00282188c70b"
 IST = timezone(timedelta(hours=5, minutes=30))
 

@@ -395,6 +395,72 @@ async def reactivate_salon(
     return {"ok": True, "salon_id": salon_id, "status": "active"}
 
 
+# ---------- Endpoint: change registered mobile ----------
+
+class ChangePhoneRequest(BaseModel):
+    new_phone: str = Field(..., min_length=6, max_length=20)
+    reason: str = Field(..., min_length=2, max_length=500)
+
+
+def _normalize_phone_in(raw: str) -> str:
+    digits = "".join(c for c in (raw or "") if c.isdigit())
+    if digits.startswith("91") and len(digits) == 12:
+        digits = digits[2:]
+    if len(digits) != 10:
+        raise HTTPException(status_code=400, detail="Invalid mobile number — must be 10 digits")
+    return f"+91{digits}"
+
+
+@management_router.post("/salons/{salon_id}/change-phone")
+async def change_salon_phone(
+    salon_id: str, body: ChangePhoneRequest,
+    admin=Depends(require_platform_admin),
+):
+    salon = await _db.salons.find_one({"id": salon_id}, {"_id": 0})
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+
+    new_phone = _normalize_phone_in(body.new_phone)
+    old_phone = salon.get("phone")
+
+    if new_phone == old_phone:
+        raise HTTPException(status_code=400, detail="New phone matches the current phone")
+
+    # Guard — must be unique across salons AND active salon_users.
+    dup_salon = await _db.salons.find_one(
+        {"phone": new_phone, "id": {"$ne": salon_id}}, {"_id": 0, "id": 1}
+    )
+    if dup_salon:
+        raise HTTPException(status_code=409, detail="This mobile number is already in use by another salon.")
+    dup_user = await _db.salon_users.find_one(
+        {"mobile": new_phone, "salon_id": {"$ne": salon_id}, "status": "active"},
+        {"_id": 0, "id": 1},
+    )
+    if dup_user:
+        raise HTTPException(status_code=409, detail="This mobile number is already used by another active salon user.")
+
+    # Set the new phone on the salon and on the admin salon_users record.
+    now_iso = _now_iso()
+    await _db.salons.update_one(
+        {"id": salon_id},
+        {"$set": {"phone": new_phone, "updated_at": now_iso}},
+    )
+    await _db.salon_users.update_one(
+        {"salon_id": salon_id, "login_id": "admin"},
+        {"$set": {"mobile": new_phone, "updated_at": now_iso}},
+    )
+
+    await _write_audit(
+        admin=admin, action="change_salon_phone", target="salon", target_id=salon_id,
+        payload={"old_phone": old_phone, "new_phone": new_phone, "reason": body.reason},
+    )
+
+    updated = await _db.salons.find_one({"id": salon_id}, {"_id": 0})
+    return {"ok": True, "salon_id": salon_id, "old_phone": old_phone,
+            "new_phone": new_phone, "salon": updated}
+
+
+
 # ---------- Endpoint: view-as (read-only short-lived token) ----------
 
 @management_router.post("/salons/{salon_id}/view-as")

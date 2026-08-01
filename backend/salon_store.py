@@ -204,6 +204,16 @@ class ShipPayload(BaseModel):
 
 class DeliverPayload(BaseModel):
     note: Optional[str] = Field(default=None, max_length=500)
+    payment_mode: Optional[str] = Field(default=None, description="Optional payment mode captured at delivery")
+
+    @field_validator("payment_mode")
+    @classmethod
+    def _v_pm_deliver(cls, v):
+        if v is None or v == "":
+            return None
+        if v not in VALID_PAYMENT_MODES_AFTER_DELIVERY:
+            raise ValueError(f"payment_mode must be one of {sorted(VALID_PAYMENT_MODES_AFTER_DELIVERY)}")
+        return v
 
 
 class CancelPayload(BaseModel):
@@ -385,6 +395,23 @@ async def _reserve_stock(items: List[CartItemIn]) -> List[dict]:
 
     try:
         for it in items:
+            # MOQ guard (issue 3) — check before reserving so we don't have to roll back.
+            product_meta = await _db.supplier_products.find_one(
+                {"id": it.product_id},
+                {"_id": 0, "name": 1, "min_order_qty": 1},
+            )
+            if product_meta:
+                moq = int(product_meta.get("min_order_qty") or 1)
+                if it.qty < moq:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "below_moq",
+                            "message": f"Minimum order quantity for '{product_meta.get('name') or it.product_id}' is {moq}",
+                            "product_id": it.product_id,
+                            "min_order_qty": moq,
+                        },
+                    )
             updated = await _db.supplier_products.find_one_and_update(
                 {
                     "id": it.product_id,
@@ -447,19 +474,33 @@ async def _reserve_stock(items: List[CartItemIn]) -> List[dict]:
         raise
 
 
-def _line_totals(product: dict, qty: int) -> dict:
-    """Compute line subtotal / gst / total from a product doc + qty."""
+def _line_totals(product: dict, qty: int, gst_mode: str = "exclusive") -> dict:
+    """Compute line subtotal / gst / total from a product doc + qty.
+
+    gst_mode is the SUPPLIER's `gst_pricing_mode` (inclusive|exclusive).
+    - exclusive: selling_price is base; gst added on top (legacy).
+    - inclusive: selling_price already includes gst; derive base + gst back-out.
+    """
     selling = float(product.get("selling_price") or 0)
     gst_pct = float(product.get("gst_percent") or 0)
-    subtotal = round(selling * qty, 2)
-    gst = round(subtotal * gst_pct / 100.0, 2)
+    if (gst_mode or "exclusive").lower() == "inclusive":
+        line_total = round(selling * qty, 2)
+        if gst_pct > 0:
+            gst = round(line_total - (line_total / (1 + gst_pct / 100.0)), 2)
+        else:
+            gst = 0.0
+        subtotal = round(line_total - gst, 2)
+    else:
+        subtotal = round(selling * qty, 2)
+        gst = round(subtotal * gst_pct / 100.0, 2)
+        line_total = round(subtotal + gst, 2)
     return {
         "selling_price": selling,
         "mrp": float(product.get("mrp") or selling),
         "gst_percent": gst_pct,
         "line_subtotal": subtotal,
         "line_gst": gst,
-        "line_total": round(subtotal + gst, 2),
+        "line_total": line_total,
     }
 
 
@@ -543,13 +584,25 @@ async def checkout(payload: CheckoutPayload, user: dict = Depends(_salon_auth)):
         subtotal = 0.0
         gst_amount = 0.0
         supplier_business_name = None
+
+        # Fetch supplier settings (issue 4: shipping + GST mode).
+        sup_doc = await _db.suppliers.find_one(
+            {"id": sup_id},
+            {"_id": 0, "business_name": 1, "shipping_charge": 1,
+             "free_shipping_min_order_value": 1, "gst_pricing_mode": 1},
+        ) or {}
+        gst_mode = (sup_doc.get("gst_pricing_mode") or "exclusive").lower()
+        shipping_charge = float(sup_doc.get("shipping_charge") or 0)
+        free_ship_min = float(sup_doc.get("free_shipping_min_order_value") or 0)
+
         for prod, qty in lines:
-            t = _line_totals(prod, qty)
-            supplier_business_name = supplier_business_name or prod.get("__supplier_business_name")
+            t = _line_totals(prod, qty, gst_mode)
+            supplier_business_name = supplier_business_name or prod.get("__supplier_business_name") or sup_doc.get("business_name")
             items_out.append({
                 "product_id": prod["id"],
                 "name": prod.get("name"),
                 "brand": prod.get("brand"),
+                "sku_code": prod.get("sku_code"),
                 "image_url": (prod.get("images") or [None])[0],
                 "unit": prod.get("unit"),
                 "pack_size": prod.get("pack_size"),
@@ -564,7 +617,13 @@ async def checkout(payload: CheckoutPayload, user: dict = Depends(_salon_auth)):
             subtotal += t["line_subtotal"]
             gst_amount += t["line_gst"]
 
-        total_amount = round(subtotal + gst_amount + DEFAULT_SHIPPING_FEE, 2)
+        # Shipping: waived if subtotal meets supplier's free-shipping threshold.
+        if free_ship_min > 0 and subtotal >= free_ship_min:
+            shipping_fee = 0.0
+        else:
+            shipping_fee = shipping_charge
+
+        total_amount = round(subtotal + gst_amount + shipping_fee, 2)
         grand_total += total_amount
 
         if payload.payment_mode == "cashfree":
@@ -589,7 +648,7 @@ async def checkout(payload: CheckoutPayload, user: dict = Depends(_salon_auth)):
             "items": items_out,
             "subtotal": round(subtotal, 2),
             "gst_amount": round(gst_amount, 2),
-            "shipping_fee": DEFAULT_SHIPPING_FEE,
+            "shipping_fee": shipping_fee,
             "total_amount": total_amount,
             "shipping_address": payload.shipping_address.model_dump(),
             "payment_mode": payload.payment_mode,
@@ -738,7 +797,14 @@ async def list_salon_orders(
     total = await _db.salon_orders.count_documents(q)
     cursor = _db.salon_orders.find(q, {"_id": 0}).sort([("created_at", -1)]).skip((page - 1) * page_size).limit(page_size)
     items: list = []
+    _phone_cache: dict = {}
     async for d in cursor:
+        sup_id = d.get("supplier_id")
+        if sup_id:
+            if sup_id not in _phone_cache:
+                sup = await _db.suppliers.find_one({"id": sup_id}, {"_id": 0, "mobile": 1})
+                _phone_cache[sup_id] = (sup or {}).get("mobile")
+            d["supplier_phone"] = _phone_cache.get(sup_id)
         items.append(d)
     return {
         "orders": items,
@@ -755,6 +821,10 @@ async def get_salon_order(order_id: str, user: dict = Depends(_salon_auth)):
     doc = await _db.salon_orders.find_one({"id": order_id, "salon_id": salon_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Order not found")
+    sup_id = doc.get("supplier_id")
+    if sup_id:
+        sup = await _db.suppliers.find_one({"id": sup_id}, {"_id": 0, "mobile": 1})
+        doc["supplier_phone"] = (sup or {}).get("mobile")
     return doc
 
 
@@ -769,7 +839,7 @@ async def cancel_salon_order(
     if not doc:
         raise HTTPException(status_code=404, detail="Order not found")
     if doc["order_status"] not in ("pending_payment", "confirmed"):
-        raise HTTPException(status_code=409, detail=f"Cannot cancel an order in '{doc['order_status']}' status")
+        raise HTTPException(status_code=409, detail="Orders can only be cancelled before they are shipped.")
 
     await _release_reservations(doc)
     await _db.salon_orders.update_one(
@@ -796,6 +866,78 @@ async def cancel_salon_order(
                 title="Order cancelled",
                 message=f"Order #{order_id[:8]} has been cancelled by the salon",
                 notification_type="store_order_cancelled",
+                setting_key="orders",
+                salon_id=salon_id,
+                related_id=order_id,
+            )
+        except Exception:
+            pass
+
+    fresh = await _db.salon_orders.find_one({"id": order_id}, {"_id": 0})
+    return {"ok": True, "order": fresh}
+
+
+# --------------------------- Concerns / Returns / Replacements ---------------------------
+
+class ConcernPayload(BaseModel):
+    type: str = Field(..., description="concern | return | replacement")
+    note: str = Field(..., max_length=2000)
+
+    @field_validator("type")
+    @classmethod
+    def _v_concern_type(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in {"concern", "return", "replacement"}:
+            raise ValueError("type must be one of concern|return|replacement")
+        return v
+
+
+@salon_store_router.post("/api/salon/store/orders/{order_id}/concern")
+async def raise_salon_order_concern(
+    order_id: str,
+    payload: ConcernPayload,
+    user: dict = Depends(_salon_auth),
+):
+    """Salon raises a concern / return / replacement on an order.
+    Appends to `concerns` array + `status_history` and notifies the supplier.
+    """
+    salon_id = user.get("salon_id") or user.get("sub")
+    doc = await _db.salon_orders.find_one({"id": order_id, "salon_id": salon_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    raised_by = user.get("user_id") or user.get("id") or user.get("sub")
+    entry = {
+        "id": str(uuid.uuid4()),
+        "type": payload.type,
+        "note": payload.note.strip(),
+        "status": "open",
+        "raised_by": raised_by,
+        "raised_by_role": user.get("role"),
+        "created_at": _now_iso(),
+    }
+    await _db.salon_orders.update_one(
+        {"id": order_id},
+        {"$push": {
+            "concerns": entry,
+            "status_history": {
+                "status": doc.get("order_status"),
+                "timestamp": _now_iso(),
+                "note": f"{payload.type.title()} raised: {payload.note.strip()[:120]}",
+                "updated_by": raised_by,
+            },
+         },
+         "$set": {"updated_at": _now_iso()}},
+    )
+
+    if _create_in_app_notification:
+        try:
+            await _create_in_app_notification(
+                user_type="supplier",
+                user_id=doc["supplier_id"],
+                title=f"{payload.type.title()} raised on order #{order_id[:8]}",
+                message=payload.note.strip()[:180],
+                notification_type="store_order_concern",
                 setting_key="orders",
                 salon_id=salon_id,
                 related_id=order_id,
@@ -1094,20 +1236,37 @@ async def supplier_deliver_order(order_id: str, payload: DeliverPayload, supplie
     doc = await _supplier_transition(order_id, supplier, ["shipped", "confirmed"], "delivered", "Delivered")
     # For COD: payment is collected on delivery.
     new_payment_status = "paid" if doc.get("payment_mode") == "cod" else doc.get("payment_status", "paid")
+
+    # Issue 7 — supplier may set payment_mode at delivery. Persist BEFORE auto-post
+    # so the finance row records the correct mode.
+    update_set = {
+        "order_status": "delivered",
+        "delivered_at": _now_iso(),
+        "payment_status": new_payment_status,
+        "updated_at": _now_iso(),
+    }
+    push_updates: dict = {
+        "status_history": {
+            "status": "delivered",
+            "timestamp": _now_iso(),
+            "note": payload.note or "Delivered",
+            "updated_by": supplier.get("id"),
+        }
+    }
+    if payload.payment_mode:
+        update_set["payment_mode"] = payload.payment_mode
+        push_updates["payment_mode_history"] = {
+            "id": str(uuid.uuid4()),
+            "old_mode": doc.get("payment_mode"),
+            "new_mode": payload.payment_mode,
+            "changed_by": supplier.get("id"),
+            "changed_by_role": "supplier",
+            "note": "Set at delivery",
+            "timestamp": _now_iso(),
+        }
     await _db.salon_orders.update_one(
         {"id": order_id},
-        {"$set": {
-            "order_status": "delivered",
-            "delivered_at": _now_iso(),
-            "payment_status": new_payment_status,
-            "updated_at": _now_iso(),
-         },
-         "$push": {"status_history": {
-             "status": "delivered",
-             "timestamp": _now_iso(),
-             "note": payload.note or "Delivered",
-             "updated_by": supplier.get("id"),
-         }}},
+        {"$set": update_set, "$push": push_updates},
     )
     # Reservations -> consumed (drop reserved counter).
     fresh = await _db.salon_orders.find_one({"id": order_id}, {"_id": 0})

@@ -187,6 +187,30 @@ export default function PlatformDashboardPage() {
     }
   };
 
+  const handleChangePhone = async (salonId, newPhone, reason) => {
+    if (!newPhone || newPhone.replace(/\D/g, '').length < 10) {
+      toast.error('Please enter a valid 10-digit mobile number');
+      return;
+    }
+    if (!reason || reason.trim().length < 2) {
+      toast.error('Please provide a reason');
+      return;
+    }
+    try {
+      await axios.post(
+        `${API}/platform/salons/${salonId}/change-phone`,
+        { new_phone: newPhone, reason },
+        { headers }
+      );
+      toast.success('Salon mobile number updated. Old number is now revoked.');
+      if (detail?.salon?.id === salonId) refreshDetail();
+      fetchSalons();
+    } catch (err) {
+      const d = err?.response?.data?.detail;
+      toast.error(typeof d === 'string' ? d : (d?.message || 'Could not change phone'));
+    }
+  };
+
   const handleViewAs = async (salonId) => {
     try {
       const r = await axios.post(`${API}/platform/salons/${salonId}/view-as`, {}, { headers });
@@ -361,6 +385,9 @@ export default function PlatformDashboardPage() {
                   <Button size="sm" variant="outline" onClick={() => handleViewAs(s.id)}><Eye className="w-3 h-3 mr-1" /> View as</Button>
                 </div>
               </div>
+
+              {/* Change registered mobile — platform-admin only */}
+              <ChangePhoneCard salon={s} onSubmit={handleChangePhone} />
 
               {/* Summary cards */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
@@ -869,5 +896,53 @@ function OverrideModals({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+
+/* --- Change registered mobile (Issue 2) --- */
+function ChangePhoneCard({ salon, onSubmit }) {
+  const [phone, setPhone] = React.useState('');
+  const [reason, setReason] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  return (
+    <div className="bg-card/60 border border-border rounded-2xl p-5 mb-6">
+      <h2 className="text-base font-bold text-foreground mb-1 flex items-center gap-2">
+        <Users className="w-4 h-4 text-primary" /> Change registered mobile
+      </h2>
+      <p className="text-xs text-muted-foreground/80 mb-3">
+        Current: <b>{salon?.phone || '—'}</b>. Setting a new number immediately revokes the old
+        number&apos;s login access for the salon admin.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <Input
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          placeholder="New 10-digit mobile"
+          className="bg-card border-border"
+        />
+        <Input
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="Reason (audit trail)"
+          className="bg-card border-border sm:col-span-2"
+        />
+      </div>
+      <div className="flex justify-end mt-3">
+        <Button
+          size="sm"
+          disabled={busy || !phone.trim() || !reason.trim()}
+          onClick={async () => {
+            if (!window.confirm(`Change registered mobile of "${salon?.salon_name || 'this salon'}" to ${phone.trim()}? The old number will be revoked immediately.`)) return;
+            setBusy(true);
+            try { await onSubmit(salon.id, phone.trim(), reason.trim()); setPhone(''); setReason(''); }
+            finally { setBusy(false); }
+          }}
+        >
+          {busy ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : null}
+          Change mobile
+        </Button>
+      </div>
+    </div>
   );
 }

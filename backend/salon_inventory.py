@@ -914,16 +914,26 @@ async def auto_post_on_delivery(order: dict, *, db) -> dict:
 
     # 1) Per-line inventory upsert + movement.
     for line in order.get("items", []):
+        sku = (line.get("sku_code") or "").strip()
         product_id_source = line.get("product_id")
         qty = int(line.get("qty") or 0)
         if qty <= 0:
             continue
 
-        existing = await db.salon_inventory.find_one(
-            {"salon_id": salon_id, "branch_id": branch_id,
-             "product_id_source": product_id_source, "is_deleted": {"$ne": True}},
-            {"_id": 0},
-        )
+        # Issue 7 — Prefer matching by sku_code (salon-side canonical SKU) when
+        # supplier provided one, else fall back to product_id_source match.
+        if sku:
+            existing = await db.salon_inventory.find_one(
+                {"salon_id": salon_id, "branch_id": branch_id,
+                 "sku_code": sku, "is_deleted": {"$ne": True}},
+                {"_id": 0},
+            )
+        else:
+            existing = await db.salon_inventory.find_one(
+                {"salon_id": salon_id, "branch_id": branch_id,
+                 "product_id_source": product_id_source, "is_deleted": {"$ne": True}},
+                {"_id": 0},
+            )
         if existing:
             updated = await db.salon_inventory.find_one_and_update(
                 {"id": existing["id"]},
@@ -957,7 +967,7 @@ async def auto_post_on_delivery(order: dict, *, db) -> dict:
                 "availability": "both",
                 "assigned_to_staff_id": None,
                 "low_stock_threshold": max(1, qty // 5),
-                "sku_code": None,
+                "sku_code": sku or None,
                 "image_url": line.get("image_url"),
                 "is_deleted": False,
                 "created_at": _now_iso(),

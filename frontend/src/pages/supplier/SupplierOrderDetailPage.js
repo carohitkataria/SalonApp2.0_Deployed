@@ -40,6 +40,7 @@ export default function SupplierOrderDetailPage() {
   const [carrier, setCarrier] = useState('');
   const [shipNote, setShipNote] = useState('');
   const [deliverNote, setDeliverNote] = useState('');
+  const [deliverPaymentMode, setDeliverPaymentMode] = useState('');
 
   const authHeaders = useMemo(() => (token ? { Authorization: `Bearer ${token}` } : {}), [token]);
 
@@ -89,9 +90,10 @@ export default function SupplierOrderDetailPage() {
     try {
       await axios.post(`${API}/supplier/orders/${orderId}/deliver`, {
         note: deliverNote || undefined,
+        payment_mode: deliverPaymentMode || undefined,
       }, { headers: authHeaders });
       toast.success('Order marked as delivered');
-      setDeliverNote('');
+      setDeliverNote(''); setDeliverPaymentMode('');
       fetchOrder();
     } catch (e) {
       toast.error(extractErrorMessage(e, 'Failed to deliver'));
@@ -167,6 +169,31 @@ export default function SupplierOrderDetailPage() {
                 ))}
               </div>
             </div>
+
+            {/* Concerns raised by the salon (Issue 5) */}
+            {Array.isArray(order.concerns) && order.concerns.length > 0 && (
+              <div className="border border-amber-500/40 rounded-xl p-4 bg-amber-500/5">
+                <div className="text-sm font-bold mb-3 flex items-center gap-2 text-amber-600">
+                  <ClipboardCheck className="w-4 h-4" /> Concerns raised ({order.concerns.length})
+                </div>
+                <div className="space-y-3">
+                  {order.concerns.map((c) => (
+                    <div key={c.id} className="border border-border rounded-lg p-3 bg-card">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold uppercase">{c.type}</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary uppercase">
+                          {c.status || 'open'}
+                        </span>
+                      </div>
+                      <div className="text-sm mt-1 text-foreground/90">{c.note}</div>
+                      <div className="text-[10px] text-muted-foreground mt-1">
+                        {c.created_at ? new Date(c.created_at).toLocaleString() : ''}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
 
           <aside className="col-span-12 lg:col-span-4 space-y-4">
@@ -203,6 +230,18 @@ export default function SupplierOrderDetailPage() {
               )}
               {canDeliver && (
                 <div className="space-y-2 border border-border rounded-xl p-3">
+                  <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">Payment mode collected</Label>
+                  <select
+                    value={deliverPaymentMode}
+                    onChange={(e) => setDeliverPaymentMode(e.target.value)}
+                    className="w-full text-sm bg-card border border-border rounded-md px-3 py-2"
+                    data-testid="supplier-deliver-payment-mode"
+                  >
+                    <option value="">— unchanged ({order.payment_mode || '—'}) —</option>
+                    {['cash', 'upi', 'card', 'bank_transfer', 'cod', 'cashfree', 'other'].map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
                   <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">Delivery note (optional)</Label>
                   <Textarea value={deliverNote} onChange={(e) => setDeliverNote(e.target.value)} placeholder="Handed over to manager…" data-testid="supplier-deliver-note" />
                   <Button variant="default" className="w-full" onClick={handleDeliver} disabled={acting} data-testid="supplier-action-deliver">

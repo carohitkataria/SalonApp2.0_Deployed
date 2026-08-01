@@ -296,8 +296,12 @@ export const AuthProvider = ({ children }) => {
     return {};
   };
 
+  // Issue 1 — widen admin role check. Legacy password login stores 'salon' role,
+  // multi-user login stores 'admin'. Treat all three as full admin.
+  const ADMIN_ROLES = ['admin', 'salon_admin', 'salon'];
+
   const isAdmin = () => {
-    return salonUser?.role === 'admin';
+    return ADMIN_ROLES.includes(salonUser?.role);
   };
 
   const isStaff = () => {
@@ -313,7 +317,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const hasPermission = (permission) => {
-    if (salonUser?.role === 'admin') return true;
+    if (ADMIN_ROLES.includes(salonUser?.role)) return true;
     if (salonUser?.role === 'branch_manager') return true;
     return salonUser?.permissions?.[permission] || false;
   };
@@ -365,7 +369,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const hasModulePermission = (moduleName, action) => {
-    if (salonUser?.role === 'admin') return true;
+    if (ADMIN_ROLES.includes(salonUser?.role)) return true;
     if (salonUser?.role === 'branch_manager') return true;
     const perms = salonUser?.permissions || {};
     const mods = perms.modules || {};

@@ -96,6 +96,10 @@ class SupplierUpdateRequest(BaseModel):
     email: Optional[str] = None
     category_tags: Optional[List[str]] = None
     bank_details: Optional[BankDetails] = None
+    # Issue 4 — supplier shipping + GST configuration
+    shipping_charge: Optional[float] = None
+    free_shipping_min_order_value: Optional[float] = None
+    gst_pricing_mode: Optional[str] = None  # "inclusive" | "exclusive"
 
 
 class OTPRequest(BaseModel):
@@ -373,7 +377,13 @@ async def supplier_password_login(payload: PasswordLogin):
 
 @supplier_auth_router.get("/me")
 async def supplier_me(supplier=Depends(require_supplier)):
-    return _strip_sensitive(supplier)
+    out = _strip_sensitive(supplier)
+    # Ensure new fields have sensible defaults for legacy suppliers.
+    if isinstance(out, dict):
+        out.setdefault("shipping_charge", 0)
+        out.setdefault("free_shipping_min_order_value", 0)
+        out.setdefault("gst_pricing_mode", "exclusive")
+    return out
 
 
 @supplier_auth_router.put("/me")
@@ -397,7 +407,35 @@ async def supplier_update_me(payload: SupplierUpdateRequest, supplier=Depends(re
     if "category_tags" in updates and isinstance(updates["category_tags"], list):
         updates["category_tags"] = list({(t or "").strip().lower() for t in updates["category_tags"] if t and t.strip()})
 
+    # Issue 4 — validate + coerce shipping/GST fields.
+    if "shipping_charge" in updates:
+        try:
+            v = float(updates["shipping_charge"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="shipping_charge must be a number")
+        if v < 0:
+            raise HTTPException(status_code=400, detail="shipping_charge cannot be negative")
+        updates["shipping_charge"] = v
+    if "free_shipping_min_order_value" in updates:
+        try:
+            v = float(updates["free_shipping_min_order_value"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="free_shipping_min_order_value must be a number")
+        if v < 0:
+            raise HTTPException(status_code=400, detail="free_shipping_min_order_value cannot be negative")
+        updates["free_shipping_min_order_value"] = v
+    if "gst_pricing_mode" in updates:
+        mode = str(updates["gst_pricing_mode"] or "").strip().lower()
+        if mode not in ("inclusive", "exclusive"):
+            raise HTTPException(status_code=400, detail="gst_pricing_mode must be 'inclusive' or 'exclusive'")
+        updates["gst_pricing_mode"] = mode
+
     updates["updated_at"] = _now_iso()
     await _db.suppliers.update_one({"id": supplier["id"]}, {"$set": updates})
     new_doc = await _db.suppliers.find_one({"id": supplier["id"]}, {"_id": 0})
-    return _strip_sensitive(new_doc)
+    out = _strip_sensitive(new_doc)
+    if isinstance(out, dict):
+        out.setdefault("shipping_charge", 0)
+        out.setdefault("free_shipping_min_order_value", 0)
+        out.setdefault("gst_pricing_mode", "exclusive")
+    return out

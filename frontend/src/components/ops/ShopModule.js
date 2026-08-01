@@ -8,6 +8,16 @@ import { useOps } from './OpsContext';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+// Helpers (Issue 3 + 8) — canonical MOQ resolver + status accessor.
+const moqOf = (p) => Math.max(1, parseInt(p?.min_order_qty ?? p?.moq ?? 1, 10));
+const STEP_INDEX = { pending_payment: 0, confirmed: 1, shipped: 2, in_transit: 3, delivered: 4, placed: 0, processing: 1 };
+const statusOf = (o) => o?.order_status || o?.status || 'pending_payment';
+const detailMsg = (d, fallback) => {
+  if (!d) return fallback;
+  if (typeof d === 'string') return d;
+  return d?.message || fallback;
+};
+
 /**
  * ShopModule
  * - Product grid with brand, rating, MOQ, add-to-cart stepper
@@ -192,7 +202,7 @@ export default function ShopModule({ salonId, salonProfile, getAuthHeaders }) {
                     product={p}
                     inCart={salonCart.find((x) => x.product_id === p.id)}
                     onOpen={() => setOpenProduct(p)}
-                    onAdd={() => addToCart(p, p.low_stock_threshold || 1)}
+                    onAdd={() => addToCart(p, moqOf(p))}
                     onQty={(q) => updateQty(p.id, q)}
                   />
                 ))}
@@ -241,6 +251,9 @@ function ShopCard({ product, inCart, onOpen, onAdd, onQty }) {
   const sp = product.selling_price ?? mrp;
   const off = mrp > sp ? Math.round(((mrp - sp) / mrp) * 100) : 0;
   const rating = product.rating || product.avg_rating || 0;
+  const moq = moqOf(product);
+  const stock = Number.isFinite(product.inventory_available) ? product.inventory_available : (product.inventory_available ?? null);
+  const outOfStock = stock !== null && stock <= 0;
   return (
     <div className="z-shop-card">
       <div className="z-shop-img" onClick={onOpen}>
@@ -256,17 +269,37 @@ function ShopCard({ product, inCart, onOpen, onAdd, onQty }) {
           <span className="p">{rupee(sp)}</span>
           {mrp > sp && <><span className="mrp">{rupee(mrp)}</span><span className="off">{off}% off</span></>}
         </div>
-        <div className="z-shop-moq">MOQ · {product.moq || product.low_stock_threshold || 1} {product.unit || 'pcs'}</div>
+        <div className="z-shop-moq">MOQ · {moq} {product.unit || 'pcs'}</div>
+        {stock !== null && (
+          <div style={{ fontSize: 11.5, color: outOfStock ? 'var(--z-danger, #c53030)' : 'var(--z-muted)', marginTop: 2 }}>
+            {outOfStock ? 'Out of stock' : `In stock: ${stock}`}
+          </div>
+        )}
         <div className="z-shop-add">
           {inCart ? (
             <div className="z-stepper" style={{ display: 'flex' }}>
-              <button onClick={() => onQty(Math.max(1, (inCart.qty || 1) - 1))}><Icon name="minus" /></button>
+              <button
+                onClick={() => onQty(Math.max(moq, (inCart.qty || moq) - 1))}
+                disabled={(inCart.qty || moq) <= moq}
+              ><Icon name="minus" /></button>
               <div className="q" style={{ width: 50, display: 'grid', placeItems: 'center' }}>{inCart.qty}</div>
-              <button onClick={() => onQty((inCart.qty || 1) + 1)}><Icon name="plus" /></button>
+              <button
+                onClick={() => {
+                  const next = (inCart.qty || moq) + 1;
+                  const cap = stock !== null ? stock : next;
+                  onQty(Math.min(cap, next));
+                }}
+                disabled={stock !== null && (inCart.qty || moq) >= stock}
+              ><Icon name="plus" /></button>
             </div>
           ) : (
-            <button className="z-btn z-btn--soft" style={{ width: '100%' }} onClick={onAdd}>
-              <Icon name="cart" /> Add to cart
+            <button
+              className="z-btn z-btn--soft"
+              style={{ width: '100%' }}
+              onClick={onAdd}
+              disabled={outOfStock}
+            >
+              <Icon name="cart" /> {outOfStock ? 'Out of stock' : 'Add to cart'}
             </button>
           )}
         </div>
@@ -279,7 +312,10 @@ function ShopCard({ product, inCart, onOpen, onAdd, onQty }) {
 function ProductDetailDrawer({ product, inCart, onClose, onAdd }) {
   const imgs = (product.images && product.images.length) ? product.images : [product.image_url].filter(Boolean);
   const [pic, setPic] = useState(0);
-  const [qty, setQty] = useState(inCart?.qty || product.moq || product.low_stock_threshold || 1);
+  const moq = moqOf(product);
+  const stock = Number.isFinite(product.inventory_available) ? product.inventory_available : (product.inventory_available ?? null);
+  const outOfStock = stock !== null && stock <= 0;
+  const [qty, setQty] = useState(inCart?.qty || moq);
   const mrp = product.mrp || 0;
   const sp = product.selling_price ?? mrp;
   const off = mrp > sp ? Math.round(((mrp - sp) / mrp) * 100) : 0;
@@ -340,19 +376,27 @@ function ProductDetailDrawer({ product, inCart, onClose, onAdd }) {
           )}
           <div className="z-dsec">Quantity</div>
           <div className="z-stepper" style={{ display: 'inline-flex' }}>
-            <button onClick={() => setQty(Math.max(1, qty - 1))}><Icon name="minus" /></button>
-            <input value={qty} onChange={(e) => setQty(Math.max(1, parseInt(e.target.value || 1, 10)))} />
-            <button onClick={() => setQty(qty + 1)}><Icon name="plus" /></button>
+            <button onClick={() => setQty(Math.max(moq, qty - 1))} disabled={qty <= moq}><Icon name="minus" /></button>
+            <input value={qty} onChange={(e) => {
+              const v = Math.max(moq, parseInt(e.target.value || moq, 10));
+              setQty(stock !== null ? Math.min(stock, v) : v);
+            }} />
+            <button
+              onClick={() => setQty(stock !== null ? Math.min(stock, qty + 1) : qty + 1)}
+              disabled={stock !== null && qty >= stock}
+            ><Icon name="plus" /></button>
           </div>
-          <div style={{ fontSize: 12, color: 'var(--z-muted)', marginTop: 4 }}>MOQ · {product.moq || product.low_stock_threshold || 1}</div>
+          <div style={{ fontSize: 12, color: 'var(--z-muted)', marginTop: 4 }}>
+            MOQ · {moq}{stock !== null ? ` · In stock: ${stock}` : ''}
+          </div>
         </div>
         <div className="z-drawer-foot" style={{ display: 'flex', gap: 10 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 11, color: 'var(--z-muted)' }}>Subtotal</div>
             <div className="num" style={{ fontFamily: 'Bebas Neue', fontSize: 26, color: 'var(--z-primary)' }}>{rupee(sp * qty)}</div>
           </div>
-          <button className="z-btn z-btn--pri" style={{ flex: 2 }} onClick={() => onAdd(qty)}>
-            <Icon name="cart" /> Add & review order
+          <button className="z-btn z-btn--pri" style={{ flex: 2 }} onClick={() => onAdd(qty)} disabled={outOfStock}>
+            <Icon name="cart" /> {outOfStock ? 'Out of stock' : 'Add & review order'}
           </button>
         </div>
       </aside>
@@ -419,7 +463,13 @@ function ReviewOrderDrawer({ salonId, salonProfile, getAuthHeaders, items, onUpd
       if (payUrl) window.open(payUrl, '_blank');
       onPlaced();
     } catch (e) {
-      toast.error(e?.response?.data?.detail || 'Checkout failed');
+      const d = e?.response?.data?.detail;
+      const msg = detailMsg(d, 'Checkout failed');
+      toast.error(msg);
+      if (d && typeof d === 'object') {
+        if (d.available_qty != null) toast(`Only ${d.available_qty} in stock`);
+        if (d.code === 'below_moq' && d.min_order_qty != null) toast(`Minimum order qty is ${d.min_order_qty}`);
+      }
     } finally { setBusy(false); }
   };
 
@@ -555,9 +605,9 @@ export function OrdersInline({ salonId, getAuthHeaders }) {
 
   const filtered = useMemo(() => {
     if (tab === 'all') return orders;
-    const map = { active: ['placed', 'processing', 'shipped', 'in_transit'],
+    const map = { active: ['pending_payment', 'confirmed', 'shipped', 'in_transit'],
                   delivered: ['delivered'], cancelled: ['cancelled'], returned: ['returned', 'refunded'] };
-    return orders.filter((o) => (map[tab] || []).includes(o.status));
+    return orders.filter((o) => (map[tab] || []).includes(statusOf(o)));
   }, [orders, tab]);
 
   const doCancel = async (orderId) => {
@@ -566,7 +616,7 @@ export function OrdersInline({ salonId, getAuthHeaders }) {
       await axios.post(`${API}/salon/store/orders/${orderId}/cancel`, {}, { headers: getAuthHeaders() });
       toast.success('Order cancelled');
       load();
-    } catch (e) { toast.error(e?.response?.data?.detail || 'Cancel failed'); }
+    } catch (e) { toast.error(detailMsg(e?.response?.data?.detail, 'Cancel failed')); }
   };
 
   return (
@@ -626,9 +676,11 @@ export function OrdersOverlay({ salonId, getAuthHeaders, onClose }) {
 
 /* ------------ Order Card ------------ */
 function OrderCard({ order, onOpen, onCancel }) {
-  const steps = ['placed', 'processing', 'shipped', 'in_transit', 'delivered'];
-  const idx = steps.indexOf(order.status);
-  const stepLabels = ['Placed', 'Packed', 'Shipped', 'In transit', 'Delivered'];
+  const idx = STEP_INDEX[statusOf(order)] ?? 0;
+  const stepLabels = ['Placed', 'Confirmed', 'Shipped', 'In transit', 'Delivered'];
+  const st = statusOf(order);
+  const canCancel = ['pending_payment', 'confirmed'].includes(st);
+  const supPhone = order.supplier_phone;
 
   return (
     <div className="z-order-card">
@@ -641,17 +693,17 @@ function OrderCard({ order, onOpen, onCancel }) {
         </div>
         <div style={{ textAlign: 'right' }}>
           <div className="num" style={{ fontFamily: 'Bebas Neue', fontSize: 22, color: 'var(--z-primary)' }}>{rupee(order.total_amount)}</div>
-          <span className={`z-pill ${order.status === 'cancelled' ? 'z-pill--bad' : idx >= 4 ? 'z-pill--ok' : 'z-pill--blue'}`}>
-            {(order.status || 'placed').replace('_', ' ')}
+          <span className={`z-pill ${st === 'cancelled' ? 'z-pill--bad' : idx >= 4 ? 'z-pill--ok' : 'z-pill--blue'}`}>
+            {(st || 'placed').replace('_', ' ')}
           </span>
         </div>
       </div>
 
-      {order.status !== 'cancelled' && (
+      {st !== 'cancelled' && (
         <div style={{ padding: '4px 17px 0' }}>
           <div className="z-track">
             {stepLabels.map((lbl, i) => (
-              <div key={lbl} className={`z-track-step ${i < idx ? 'done' : ''} ${i === idx ? 'active' : ''}`}>
+              <div key={lbl} className={`z-track-step ${i <= idx ? 'done' : ''} ${i === idx ? 'active' : ''}`}>
                 <div className="dot"><Icon name={i <= idx ? 'check' : 'clock'} size={12} /></div>
                 <div className="lbl">{lbl}</div>
               </div>
@@ -663,11 +715,16 @@ function OrderCard({ order, onOpen, onCancel }) {
       <div className="z-order-foot">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button className="z-btn z-btn--ghost z-btn--sm" onClick={onOpen}><Icon name="eye" /> Details</button>
-          {(['placed', 'processing'].includes(order.status)) && (
+          {supPhone && (
+            <a className="z-btn z-btn--ghost z-btn--sm" href={`tel:${supPhone}`}>
+              <Icon name="phone" /> Call supplier
+            </a>
+          )}
+          {canCancel && (
             <button className="z-btn z-btn--danger z-btn--sm" onClick={onCancel}><Icon name="x" /> Cancel</button>
           )}
         </div>
-        <div style={{ fontSize: 12, color: 'var(--z-muted)' }}>{order.supplier_business_name || 'Supplier order'}</div>
+        <div style={{ fontSize: 12, color: 'var(--z-muted)' }}>{order.supplier_name || order.supplier_business_name || 'Supplier order'}</div>
       </div>
     </div>
   );
@@ -677,24 +734,35 @@ function OrderCard({ order, onOpen, onCancel }) {
 function OrderDetail({ order, getAuthHeaders, onClose, onChanged }) {
   const [action, setAction] = useState(null); // 'return' | 'replacement' | 'concern'
   const [note, setNote] = useState('');
+  const [savingPm, setSavingPm] = useState(false);
+  const [pmDraft, setPmDraft] = useState(order.payment_mode || '');
+  const st = statusOf(order);
+  const supPhone = order.supplier_phone;
+
   const submit = async () => {
+    if (!action) return;
+    if (!note.trim()) { toast.error('Please add a note'); return; }
     try {
-      // Best-effort — falls back gracefully if backend endpoint doesn't exist.
-      await axios.post(`${API}/salon/store/orders/${order.id}/${action}`, { note }, { headers: getAuthHeaders() });
+      await axios.post(`${API}/salon/store/orders/${order.id}/concern`,
+        { type: action, note }, { headers: getAuthHeaders() });
       toast.success('Request submitted');
       setAction(null); setNote(''); onChanged?.();
     } catch (e) {
-      // If server hasn't implemented this yet, still register locally
-      try {
-        await axios.post(`${API}/salon/store/orders/${order.id}/concern`,
-          { type: action, note }, { headers: getAuthHeaders() });
-        toast.success('Request submitted');
-      } catch (_) {
-        toast.error(e?.response?.data?.detail || 'Could not submit');
-        return;
-      }
-      setAction(null); setNote(''); onChanged?.();
+      toast.error(detailMsg(e?.response?.data?.detail, 'Could not submit'));
     }
+  };
+
+  const changePaymentMode = async () => {
+    if (!pmDraft || pmDraft === order.payment_mode) return;
+    setSavingPm(true);
+    try {
+      await axios.patch(`${API}/salon/store/orders/${order.id}/payment-mode`,
+        { payment_mode: pmDraft }, { headers: getAuthHeaders() });
+      toast.success('Payment mode updated');
+      onChanged?.();
+    } catch (e) {
+      toast.error(detailMsg(e?.response?.data?.detail, 'Could not update payment mode'));
+    } finally { setSavingPm(false); }
   };
 
   return (
@@ -705,19 +773,27 @@ function OrderDetail({ order, getAuthHeaders, onClose, onChanged }) {
           <div className="dico"><Icon name="bag" size={20} /></div>
           <div>
             <div className="eyebrow">Order #{(order.id || '').slice(0, 8).toUpperCase()}</div>
-            <h3>{(order.status || 'placed').replace('_', ' ')}</h3>
+            <h3>{(st || 'placed').replace('_', ' ')}</h3>
             <p>{order.items?.length || 0} items · {rupee(order.total_amount)}</p>
           </div>
           <button className="z-drawer-close" onClick={onClose}><Icon name="x" /></button>
         </div>
         <div className="z-drawer-body">
+          {supPhone && (
+            <div style={{ marginBottom: 10 }}>
+              <a className="z-btn z-btn--ghost" href={`tel:${supPhone}`}>
+                <Icon name="phone" /> Call supplier ({supPhone})
+              </a>
+            </div>
+          )}
+
           <div className="z-dsec">Items</div>
           {(order.items || []).map((x, i) => (
             <div key={i} className="z-cline">
               <div className="ci">{x.image_url ? <img src={x.image_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : '🧴'}</div>
               <div className="cn">
                 <div className="t">{x.name}</div>
-                <div className="s">{x.brand} · {rupee(x.selling_price || x.line_total / x.qty)} × {x.qty}</div>
+                <div className="s">{x.brand}{x.sku_code ? ` · SKU ${x.sku_code}` : ''} · {rupee(x.selling_price || x.line_total / x.qty)} × {x.qty}</div>
               </div>
               <div className="cp">{rupee(x.line_total)}</div>
             </div>
@@ -739,10 +815,29 @@ function OrderDetail({ order, getAuthHeaders, onClose, onChanged }) {
           {order.shipping_fee ? <div className="z-sumrow"><span>Shipping</span><span>{rupee(order.shipping_fee)}</span></div> : null}
           <div className="z-sumrow tot"><span>Total</span><span className="num">{rupee(order.total_amount)}</span></div>
 
+          {st === 'delivered' && (
+            <>
+              <div className="z-dsec">Payment mode</div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13 }}>Current: <b>{order.payment_mode || '—'}</b></span>
+                <select value={pmDraft} onChange={(e) => setPmDraft(e.target.value)} className="z-input" style={{ minWidth: 140 }}>
+                  <option value="">Select…</option>
+                  {['cash', 'upi', 'card', 'bank_transfer', 'cod', 'cashfree', 'other'].map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <button className="z-btn z-btn--soft" onClick={changePaymentMode}
+                        disabled={savingPm || !pmDraft || pmDraft === order.payment_mode}>
+                  <Icon name="save" /> Update
+                </button>
+              </div>
+            </>
+          )}
+
           <div className="z-dsec">Get help</div>
           {!action ? (
             <div style={{ display: 'grid', gap: 8 }}>
-              {order.status === 'delivered' && (
+              {st === 'delivered' && (
                 <>
                   <button className="z-btn z-btn--ghost" onClick={() => setAction('return')}><Icon name="ret" /> Return</button>
                   <button className="z-btn z-btn--ghost" onClick={() => setAction('replacement')}><Icon name="restock" /> Replacement</button>
@@ -759,6 +854,26 @@ function OrderDetail({ order, getAuthHeaders, onClose, onChanged }) {
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="z-btn z-btn--ghost" onClick={() => { setAction(null); setNote(''); }}>Back</button>
                 <button className="z-btn z-btn--pri" onClick={submit}><Icon name="save" /> Submit</button>
+              </div>
+            </>
+          )}
+
+          {Array.isArray(order.concerns) && order.concerns.length > 0 && (
+            <>
+              <div className="z-dsec">Your concerns</div>
+              <div style={{ display: 'grid', gap: 8 }}>
+                {order.concerns.map((c) => (
+                  <div key={c.id} className="z-card" style={{ padding: 10, borderRadius: 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+                      <b style={{ textTransform: 'capitalize' }}>{c.type}</b>
+                      <span className="z-pill z-pill--blue" style={{ fontSize: 11 }}>{c.status || 'open'}</span>
+                    </div>
+                    <div style={{ fontSize: 12.5, color: 'var(--z-ink-soft)', marginTop: 4 }}>{c.note}</div>
+                    <div style={{ fontSize: 11, color: 'var(--z-muted)', marginTop: 2 }}>
+                      {c.created_at ? new Date(c.created_at).toLocaleString() : ''}
+                    </div>
+                  </div>
+                ))}
               </div>
             </>
           )}
