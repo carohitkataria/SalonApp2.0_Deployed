@@ -1288,6 +1288,8 @@ export default function EnhancedSalonDashboard() {
             />
             <QueueTabV2
               date={date}
+              salonId={salonId}
+              getAuthHeaders={getAuthHeaders}
               dateMode={dateMode}
               setDateMode={setDateMode}
               dateFrom={dateFrom}

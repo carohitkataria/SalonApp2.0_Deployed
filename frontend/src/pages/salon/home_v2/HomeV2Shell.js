@@ -108,6 +108,7 @@ export default function HomeV2Shell({
   // Global drawers, mounted once per shell — accessible from any tab.
   const [apptOpen, setApptOpen] = useState(false);
   const [apptPresetGuest, setApptPresetGuest] = useState(null);
+  const [apptPreset, setApptPreset] = useState(null);
   const [guestOpen, setGuestOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [messagesOpen, setMessagesOpen] = useState(false);
@@ -137,7 +138,7 @@ export default function HomeV2Shell({
   // Same pattern — let any tab (e.g. Queue's "Add Booking") open the New
   // Appointment drawer that lives on the right ribbon.
   useEffect(() => {
-    const handler = (e) => { setApptPresetGuest(e?.detail?.guest || null); setApptOpen(true); };
+    const handler = (e) => { setApptPresetGuest(e?.detail?.guest || null); setApptPreset(e?.detail?.preset || null); setApptOpen(true); };
     window.addEventListener('salon:open-new-appointment', handler);
     return () => window.removeEventListener('salon:open-new-appointment', handler);
   }, []);
@@ -304,12 +305,13 @@ export default function HomeV2Shell({
       {/* Global appointment + guest drawers (available on every page) */}
       <AppointmentDrawer
         open={apptOpen}
-        onClose={() => setApptOpen(false)}
-        onSaved={() => { setApptOpen(false); onSaved?.(); toast.success('Appointment saved'); }}
+        onClose={() => { setApptOpen(false); setApptPreset(null); }}
+        onSaved={() => { setApptOpen(false); setApptPreset(null); onSaved?.(); toast.success('Appointment saved'); }}
         getAuthHeaders={getAuthHeaders}
         salonId={salonId}
         defaultMode="queue"
         presetGuest={apptPresetGuest}
+        preset={apptPreset}
       />
       <CustomerDrawer
         open={guestOpen}

@@ -144,6 +144,31 @@ export default function GuestProfileModal({ open, onClose, phone, salonId, getAu
                   ))}
                 </div>
               )}
+
+              {/* WS1 — Reschedule log */}
+              {(p.reschedule_events || []).length > 0 && (
+                <>
+                  <h4 style={{ marginTop: 16 }}>Rescheduled · {(p.reschedule_events || []).length}</h4>
+                  <div className="hist">
+                    {(p.reschedule_events || []).map((r) => (
+                      <div key={r.id} className="row" style={{ gridTemplateColumns: '1fr', display: 'block', padding: '10px 12px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <span className="badge pending" style={{ background: '#EDE9FE', color: '#5B21B6' }}>Rescheduled</span>
+                          <span style={{ fontSize: 12.5, fontWeight: 700, color: '#3C3F4E' }}>
+                            {r?.old?.session || '—'} {r?.old?.time ? `· ${r.old.time}` : ''} {r?.old?.barber_name ? `· ${r.old.barber_name}` : ''}
+                            {'  →  '}
+                            {r?.new?.session || '—'} {r?.new?.time ? `· ${r.new.time}` : ''} {r?.new?.barber_name ? `· ${r.new.barber_name}` : ''}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 11.5, color: '#9A9EAE', marginTop: 4 }}>
+                          {r.timestamp ? new Date(r.timestamp).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}
+                          {r.source ? ` · via ${r.source}` : ''}{r.changed_by ? ` · by ${r.changed_by}` : ''}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>

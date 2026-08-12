@@ -328,6 +328,67 @@ backend:
           agent: "testing"
           comment: "✅ CSV SERVICE UPLOADER FULLY TESTED AND WORKING: Comprehensive testing completed successfully with 22/22 tests passed. AUTHENTICATION: Admin login working with identifier='admin' and password='salon123', salon_id: c00f83b4-84ec-4f0e-b530-4e5a4f9b536b. TEST RESULTS: 1) CSV TEMPLATE DOWNLOAD - ✅ WORKING (GET /api/salons/{salon_id}/services/csv-template returns HTTP 200, Content-Type: text/csv, header row contains service_name and all 10 expected columns: description, category, gender_tag, default_duration, base_price, price_type, is_favorite, available_at_home, thumbnail_url, images). 2) UPLOAD VALID NEW SERVICES (ADDITIVE) - ✅ WORKING (uploaded CSV with 3 unique services 'QA Haircut IC088V', 'QA Spa IC088V', 'QA Shave IC088V', response: success=true, created=3, skipped_duplicates=0, errors=[], total_rows=3, all 3 services appear in GET /api/salons/{salon_id}/services/enabled). 3) RE-UPLOAD SAME CSV (NO DUPLICATION) - ✅ WORKING (re-uploaded exact same CSV, response: created=0, skipped_duplicates=3, verified each service appears EXACTLY ONCE in enabled list, existing services preserved and not duplicated). 4) ROW-LEVEL ERROR HANDLING - ✅ WORKING (uploaded CSV with 1 row missing service_name and 1 valid row, response: created=1, errors=[{row: 2, reason: 'Missing service_name'}], valid service 'QA Valid Service NNQ4BM' was created and appears in enabled list). 5) AUTH REQUIRED - ✅ WORKING (POST without Authorization header correctly returns 403 'Not authenticated'). CRITICAL REQUIREMENT VERIFIED: Upload is ADDITIVE - never replaces/removes existing services, duplicates are correctly skipped. The CSV Service Uploader feature is production-ready."
 
+  - task: "WS1 booking expected_time — POST /api/salons/{salon_id}/salon-booking accepts + stores expected_time"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "WS1 (v3.4 Calendar) backend added. POST /api/salons/{salon_id}/salon-booking now accepts expected_time field (HH:MM format) for scheduled bookings. The field is stored in the token and used for calendar vertical placement. GET /api/salons/{salon_id}/queue returns tokens with expected_time field."
+        - working: true
+          agent: "testing"
+          comment: "✅ WS1 BOOKING expected_time FULLY TESTED AND WORKING: Comprehensive testing completed successfully. TEST RESULTS: 1) CREATE BOOKING WITH expected_time - ✅ PASS (POST /api/salons/{salon_id}/salon-booking with body including expected_time='10:30', booking_type='schedule', date=tomorrow (2026-08-14), shift='Morning', barber_id (Imran), selected_services, customer_name='Cal Test', phone='9990001234', payment_mode='cash' returned 200/201. Token created with token_number M13, expected_time='10:30' correctly stored in response). 2) VERIFY expected_time IN QUEUE - ✅ PASS (GET /api/salons/{salon_id}/queue?date=2026-08-14 returned 200 with token M13 in queue, expected_time='10:30' correctly present). The expected_time field is working correctly for scheduled bookings and is properly returned in queue endpoint."
+
+  - task: "WS1 staff reschedule — PUT /api/tokens/{token_id}/staff-reschedule (past guard, max-2 overlap, notification, reschedule log)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "WS1 (v3.4 Calendar) backend added. PUT /api/tokens/{token_id}/staff-reschedule endpoint allows staff/admin to reschedule bookings from calendar view. Accepts barber_id, shift, expected_time, date, source. Enforces: (1) completed/cancelled/skipped bookings cannot be moved, (2) cannot move into the past (IST timezone check), (3) max 2 overlapping bookings per barber (3rd is rejected with 409). Writes reschedule log to db.reschedule_logs and db.salon_customers.reschedule_log. Fires token_rescheduled notification per salon settings."
+        - working: true
+          agent: "testing"
+          comment: "✅ WS1 STAFF RESCHEDULE FULLY TESTED AND WORKING: Comprehensive testing completed successfully with ALL 4 sub-tests passing. TEST RESULTS: 2a) SUCCESSFUL RESCHEDULE - ✅ PASS (PUT /api/tokens/{token_id}/staff-reschedule with body {barber_id: Abdul, shift: 'Evening', expected_time: '16:45', date: tomorrow, source: 'form'} returned 200. Token correctly updated with all fields: shift='Evening', expected_time='16:45', barber_id=Abdul ID, barber_name='Abdul'). 2b) PAST GUARD - ✅ PASS (Attempted to reschedule to past time with {date: today, expected_time: '00:05'} correctly returned 400 with detail 'Cannot reschedule to a time that has already passed.'). 2c) MAX-2 OVERLAP GUARD - ✅ PASS (Created 2 overlapping bookings at same barber/date/time (11:00), then attempted to reschedule a 3rd token to same slot correctly returned 409 with detail 'This barber already has 2 overlapping bookings at that time.'). 2d) COMPLETED GUARD - ✅ PASS (Created a booking, confirmed payment via POST /api/tokens/{token_id}/confirm-payment, completed it via POST /api/tokens/{token_id}/complete, then attempted to reschedule correctly returned 400 with detail 'A completed booking cannot be rescheduled.'). All guards working correctly, reschedule logic is production-ready."
+
+  - task: "WS1 customer profile — GET /api/salons/{salon_id}/customers/profile returns reschedule_events"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "WS1 (v3.4 Calendar) backend added. GET /api/salons/{salon_id}/customers/profile?phone={phone} now returns reschedule_events array containing reschedule history for the customer. Each event has old{session, time, barber_id, barber_name, date} and new{session, time, barber_id, barber_name, date} fields, plus changed_by, source, timestamp. Data is fetched from db.reschedule_logs collection."
+        - working: true
+          agent: "testing"
+          comment: "✅ WS1 CUSTOMER PROFILE reschedule_events FULLY TESTED AND WORKING: Comprehensive testing completed successfully. TEST RESULTS: 3) RESCHEDULE LOG IN CUSTOMER PROFILE - ✅ PASS (GET /api/salons/{salon_id}/customers/profile?phone=9990001234 returned 200 with non-empty reschedule_events array containing 3 reschedule events. Each event has correct structure with 'old' and 'new' objects. Sample event verified: old={session: 'Morning', time: '10:30', barber_id: Imran ID, barber_name: 'Imran', date: '2026-08-14'}, new={session: 'Evening', time: '16:45', barber_id: Abdul ID, barber_name: 'Abdul', date: '2026-08-14'}. All required sub-fields present: session, time, barber_name in both old and new objects). The reschedule_events feature is working correctly and provides complete reschedule history for customers."
+
+  - task: "WS1 regression — GET /api/salons/{salon_id}/queue and shift-windows endpoints"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "WS1 (v3.4 Calendar) backend changes should not break existing queue and shift-windows endpoints. Regression testing required."
+        - working: true
+          agent: "testing"
+          comment: "✅ WS1 REGRESSION TESTS FULLY PASSED: Both endpoints working correctly after WS1 changes. TEST RESULTS: 4a) GET QUEUE ENDPOINT - ✅ PASS (GET /api/salons/{salon_id}/queue?date=2026-08-13 returned 200 with 12 tokens for the date). 4b) GET SHIFT-WINDOWS ENDPOINT - ✅ PASS (GET /api/salons/{salon_id}/shift-windows?date=2026-08-13 returned 200 with 'shifts' array containing 3 shifts: Morning, Noon, Evening). No regressions detected, all existing endpoints continue to work correctly."
+
+
     implemented: true
     working: true
     file: "/app/backend/twilio_service.py, /app/backend/server.py, /app/backend/platform_admin.py, /app/backend/supplier_auth.py, /app/backend/.env"
@@ -1354,19 +1415,16 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Salon store — MOQ guard + supplier-aware shipping/GST + SKU on order lines + supplier_phone enrichment + cancel copy + concern endpoint + supplier deliver payment_mode"
-    - "Salon inventory — SKU-keyed auto-post from supplier deliveries"
-    - "Supplier profile — shipping_charge, free_shipping_min_order_value, gst_pricing_mode via /api/supplier/me"
-    - "Salon password sync — set-password mirrors to admin salon_users, /salon/password-login returns role+permissions"
-    - "Platform admin — POST /api/platform/salons/{salon_id}/change-phone"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
     - agent: "main"
-      message: "9-fix batch — Command 1 backend changes complete. Please test the 5 new/updated backend tasks listed under current_focus. Admin login: identifier='admin' password='salon123' via POST /api/salon/users/login. To get a supplier token, use POST /api/supplier/auth/signup then password-login (or seed one). To get a platform admin token, use the existing seed_platform_owner path. Salon test: pick any existing salon (or register one). Product test: use /api/supplier/products list to find any product; you can also PATCH the product to set min_order_qty=5 for the MOQ test. Please verify (1) below_moq detail shape from checkout, (2) shipping_fee reflects supplier.shipping_charge (0 above threshold), (3) inclusive gst backs out gst from selling_price*qty, (4) order.items[].sku_code populated, (5) supplier_phone present on GET orders list AND single-order get, (6) new concern endpoint round-trips, (7) supplier deliver with payment_mode persists + payment_mode_history push, (8) SKU-keyed inventory upsert on 2nd delivery merges into same row, (9) supplier profile shipping/GST persist + validate, (10) set-password mirrors + password-login returns role+permissions, (11) platform change-phone validates + writes audit + revokes old phone from admin salon_user."
+      message: "WS1 (v3.4 Calendar) backend added. NOTE: environment was reset at start — .env files were recreated (MONGO_URL=mongodb://localhost:27017, DB_NAME=salonapp) and the default salon + admin were bootstrapped, then seed_demo_dataset ran. Admin login: POST /api/salon/users/login with identifier='admin' password='salon123' (salon_id=7e918967-4eb4-46e2-b182-ecf48cde3945). PLEASE TEST 3 THINGS: (1) POST /api/salons/{salon_id}/salon-booking with a body including expected_time='10:30' (schedule mode, future date, valid barber_id + selected_services) → 201/200 and the created token has expected_time='10:30'. (2) PUT /api/tokens/{token_id}/staff-reschedule — pick an ACTIVE (waiting/booked) token for today or a future date and (a) move to a future time/session/barber → 200 and token reflects new shift/expected_time/barber_id/barber_name; (b) attempt to move to a past time on today's date → 400 'past'; (c) create a 3rd overlapping booking for the same barber at the same expected_time (make two others overlap first) → 409 'overlapping'; (d) attempt to reschedule a completed token → 400. After a successful reschedule, GET /api/salons/{salon_id}/customers/profile?phone={that customer phone} → response includes non-empty 'reschedule_events' with old/new session,time,barber. Also confirm db.reschedule_logs has the entry. (3) Regression: GET /api/salons/{salon_id}/queue?date=YYYY-MM-DD and GET /api/salons/{salon_id}/shift-windows?date=YYYY-MM-DD still return 200. Do NOT test frontend."
+    - agent: "testing"
+      message: "✅ WS1 (v3.4 Calendar) BACKEND TESTING COMPLETE - ALL TESTS PASSED (9/9). Comprehensive testing completed successfully for all 4 WS1 features: (1) BOOKING expected_time - ✅ WORKING: Created scheduled booking with expected_time='10:30', verified field stored correctly in token and returned in queue endpoint. (2) STAFF RESCHEDULE - ✅ ALL 4 SUB-TESTS PASSED: (a) Successful reschedule to future time/barber/shift working correctly, (b) Past guard correctly rejects moves to past times with 400, (c) Max-2 overlap guard correctly rejects 3rd overlapping booking with 409, (d) Completed guard correctly rejects reschedule of completed tokens with 400. (3) CUSTOMER PROFILE reschedule_events - ✅ WORKING: Profile endpoint returns reschedule_events array with correct structure (old/new objects with session, time, barber_name, barber_id, date). (4) REGRESSION - ✅ BOTH ENDPOINTS WORKING: queue and shift-windows endpoints continue to work correctly after WS1 changes. All backend endpoints are production-ready. NO ISSUES FOUND."
 
 
 metadata_legacy_v2:
@@ -1585,7 +1643,7 @@ agent_communication:
       message: "✅ PHASE 1.5 FRONTEND UI TESTING COMPLETED (2026-04-30): Successfully tested salon admin login and all Phase 1.5 UI features. LOGIN: Working perfectly with credentials (identifier='admin', password='salon123'), redirects to /salon/dashboard. DASHBOARD: Quick Actions section present with all cards (Token Queue, Customers, Services, Staff, Financials, Analytics, Gallery, Settings). STAFF MANAGEMENT: Clicking Staff Quick Action navigates to staff list showing 2 staff members (Imran, Abdul) with 'View Profile' buttons. STAFF PROFILE PAGE: ✅ Tabs verified - Profile, Attendance, Services, Access tabs present. ✅ NO Rewards tab (correctly removed as per Phase 1 Task 2c). LAST WORKING DAY FIELD: ✅ Present in Profile tab edit mode (Phase 1.5 feature), successfully saves and persists value (verified by page reload showing '2026-12-31'). ATTENDANCE TAB: ✅ All required buttons present and working: 'Mark All Present', 'Leave Mode: OFF/ON' (toggles correctly), 'Auto Calculate'. ✅ Leave Mode functionality tested: turned ON, clicked future date (25), leave marked with toast notification, clicked again to remove leave, turned Leave Mode back OFF. ✅ Calendar displays with proper legend (P=Present, H=Half Day, A=Absent, Holiday, L=On Leave). ✅ Salary Summary section visible with all fields. All Phase 1.5 frontend features are working correctly and ready for production."
 
     - agent: "testing"
-      message: "❌ CRITICAL BLOCKER - PHASE 1 + 1.5 FRONTEND TESTING FAILED: Unable to complete frontend testing due to login failure. ISSUE: Salon admin login with credentials (identifier='admin', password='salon123') is NOT WORKING on the production URL (https://salon-orchestrator-1.preview.emergentagent.com/salon/login). SYMPTOMS: (1) Login form accepts credentials and button is clickable, (2) After clicking 'Login with Password' button, page stays on /salon/login URL, (3) Form fields are cleared but no navigation occurs, (4) No POST request to login API detected in network logs, (5) No error messages displayed on UI, (6) No Quick Actions dashboard elements appear. EVIDENCE: Multiple test attempts with proper wait times all resulted in staying on login page. Backend logs show salon ID b742cd5f-e3f8-4b63-872b-b83d84841d2c is active with API calls, suggesting the backend is working but frontend login flow is broken. IMPACT: Cannot test ANY of the requested Phase 1/1.5 features: (A) Manual booking dialog with customer search, (B) Skipped tokens Cancel button, (C) Gallery limits, (D) Staff clickable cards + Rewards tab removal + Last Working Day field, (E) Attendance tab Mark All Present + Leave Mode, (F) Customer booking All services + auto-latest-slot. ROOT CAUSE HYPOTHESIS: Login form submission is not triggering the API call - possible JavaScript error, form validation issue, or event handler not attached. URGENT ACTION REQUIRED: Main agent must investigate and fix the salon login flow before frontend testing can proceed."
+      message: "❌ CRITICAL BLOCKER - PHASE 1 + 1.5 FRONTEND TESTING FAILED: Unable to complete frontend testing due to login failure. ISSUE: Salon admin login with credentials (identifier='admin', password='salon123') is NOT WORKING on the production URL (https://amend-deploy.preview.emergentagent.com/salon/login). SYMPTOMS: (1) Login form accepts credentials and button is clickable, (2) After clicking 'Login with Password' button, page stays on /salon/login URL, (3) Form fields are cleared but no navigation occurs, (4) No POST request to login API detected in network logs, (5) No error messages displayed on UI, (6) No Quick Actions dashboard elements appear. EVIDENCE: Multiple test attempts with proper wait times all resulted in staying on login page. Backend logs show salon ID b742cd5f-e3f8-4b63-872b-b83d84841d2c is active with API calls, suggesting the backend is working but frontend login flow is broken. IMPACT: Cannot test ANY of the requested Phase 1/1.5 features: (A) Manual booking dialog with customer search, (B) Skipped tokens Cancel button, (C) Gallery limits, (D) Staff clickable cards + Rewards tab removal + Last Working Day field, (E) Attendance tab Mark All Present + Leave Mode, (F) Customer booking All services + auto-latest-slot. ROOT CAUSE HYPOTHESIS: Login form submission is not triggering the API call - possible JavaScript error, form validation issue, or event handler not attached. URGENT ACTION REQUIRED: Main agent must investigate and fix the salon login flow before frontend testing can proceed."
 
     - agent: "main"
       message: "Bug-fix + enhancement round (post Phase 1.5):
@@ -5168,7 +5226,7 @@ agent_communication:
         ═══════════════════════════════════════════════════════════════════
         
         TESTED: Staff Access / Access Control UI on Staff Profile page (per-staff, under "Access" tab)
-        URL: https://salon-orchestrator-1.preview.emergentagent.com/salon/staff/e580d816-f0aa-4ce6-a12d-0cdf2de45d0f
+        URL: https://amend-deploy.preview.emergentagent.com/salon/staff/e580d816-f0aa-4ce6-a12d-0cdf2de45d0f
         Staff: Imran (master)
         
         ✅ PASSED TESTS (8):
@@ -6251,7 +6309,7 @@ agent_communication:
     - agent: "main"
       message: "Completed the WhatsApp template example-values feature end-to-end. Backend: TemplateCreateIn enforces one example per {{N}}; Twilio submit sends `variables`, Meta sends components[].example.body_text. Frontend: per-placeholder inputs + preview in composer, values shown in view mode. .env files were missing on session resume — restored from git (backend/.env with Twilio keys, frontend/.env with REACT_APP_BACKEND_URL). Installed missing python packages (python-socketio, APScheduler). Backend + frontend now running clean. Please test the backend flow described in the task status_history: draft validation, draft persistence, submit-shape, and no-placeholder passthrough."
     - agent: "testing"
-      message: "✅ WHATSAPP TEMPLATE EXAMPLE_VALUES TESTING COMPLETE - ALL TESTS PASSED (6/6): Comprehensive backend testing completed successfully with 100% pass rate. All test cases from the review request have been verified: (A) Draft validation with missing example_values returns 422 mentioning both placeholders, (B) Partial example_values returns 422 mentioning missing placeholder, (C) Full example_values returns 200 with correct persistence, (D) No-placeholder templates correctly ignore/strip example_values, (E) Twilio submit successfully sends variables field and returns 200 with sid and approval_status, (G) Duplicate name detection returns 409. All 4 test templates cleaned up successfully. The feature is production-ready and working exactly as specified. NOTE: External URL (https://salon-orchestrator-1.preview.emergentagent.com/api) returns 404 for all endpoints - this appears to be a Kubernetes ingress routing issue, not a code issue. Testing was performed using localhost:8001 which works perfectly."
+      message: "✅ WHATSAPP TEMPLATE EXAMPLE_VALUES TESTING COMPLETE - ALL TESTS PASSED (6/6): Comprehensive backend testing completed successfully with 100% pass rate. All test cases from the review request have been verified: (A) Draft validation with missing example_values returns 422 mentioning both placeholders, (B) Partial example_values returns 422 mentioning missing placeholder, (C) Full example_values returns 200 with correct persistence, (D) No-placeholder templates correctly ignore/strip example_values, (E) Twilio submit successfully sends variables field and returns 200 with sid and approval_status, (G) Duplicate name detection returns 409. All 4 test templates cleaned up successfully. The feature is production-ready and working exactly as specified. NOTE: External URL (https://amend-deploy.preview.emergentagent.com/api) returns 404 for all endpoints - this appears to be a Kubernetes ingress routing issue, not a code issue. Testing was performed using localhost:8001 which works perfectly."
 
 backend:
   - task: "Home v2 — new KPI endpoints (customer_count, staff_attendance, marketing_perf, booking_links) + send-booking-link + staff attendance toggle"
@@ -6652,7 +6710,7 @@ Files touched:
 NO backend endpoint changes needed — existing `/api/notifications/*` and `PUT /api/salons/{id}` endpoints handle everything. Credentials unchanged: admin / salon123 (salon_id = c896b84b-f34a-4a23-a27b-a47909f8f834)."
 
     - agent: "testing"
-      message: "✅ ALL 4 BUG FIXES VERIFIED AND WORKING (Jul 14 2026): Comprehensive UI testing completed successfully for all four bug fixes/feature changes on the salon-side app. Test credentials: identifier='admin', password='salon123', salon_id: c896b84b-f34a-4a23-a27b-a47909f8f834. Base URL: https://salon-orchestrator-1.preview.emergentagent.com
+      message: "✅ ALL 4 BUG FIXES VERIFIED AND WORKING (Jul 14 2026): Comprehensive UI testing completed successfully for all four bug fixes/feature changes on the salon-side app. Test credentials: identifier='admin', password='salon123', salon_id: c896b84b-f34a-4a23-a27b-a47909f8f834. Base URL: https://amend-deploy.preview.emergentagent.com
 
 TEST RESULTS SUMMARY:
 
@@ -6953,7 +7011,7 @@ agent_communication:
         7. ✅ USER CREATION WORKING: New staff user created successfully with granular module permissions
         
         TECHNICAL DETAILS:
-        - Frontend URL: https://salon-orchestrator-1.preview.emergentagent.com
+        - Frontend URL: https://amend-deploy.preview.emergentagent.com
         - Login route: /salon/login (Password Login tab)
         - Home page: SalonHomeV2 component (default landing after login)
         - Settings navigation: /salon/dashboard?tab=salon → Staff Settings tab → Manage Staff Access tab
@@ -7349,7 +7407,7 @@ agent_communication:
   - agent: main
     message: |
       Four targeted UI fixes went in. Please verify against the running preview
-      (https://salon-orchestrator-1.preview.emergentagent.com) using admin/salon123:
+      (https://amend-deploy.preview.emergentagent.com) using admin/salon123:
 
       1. Settings tab → sidebar under Staff & attendance now shows THREE sub-items:
          "Attendance method & rules", "Leave & holidays", "Payroll & incentives"
@@ -7707,7 +7765,7 @@ agent_communication:
             ❌ REPORTS MODULE UI VERIFICATION - CRITICAL OVERLAY BUG FOUND
             
             UI verification testing completed for 9 checks (A-I) as specified in review request.
-            Test URL: https://salon-orchestrator-1.preview.emergentagent.com
+            Test URL: https://amend-deploy.preview.emergentagent.com
             Test date: 2026-07-18
             Login credentials: identifier='admin', password='salon123'
             
@@ -7892,7 +7950,7 @@ agent_communication:
           comment: |
             ⚠️ REPORTS MODULE UI RE-VERIFICATION AFTER POINTER-EVENTS FIX
             
-            Re-tested Reports module UI at https://salon-orchestrator-1.preview.emergentagent.com
+            Re-tested Reports module UI at https://amend-deploy.preview.emergentagent.com
             after main agent claimed to fix the z-overlay pointer-events bug.
             
             Test date: 2026-07-18
@@ -8183,7 +8241,7 @@ agent_communication:
         Executed comprehensive UI testing for 4 enhancements on salon dashboard.
         Test date: 2026-07-18
         Login: admin / salon123
-        URL: https://salon-orchestrator-1.preview.emergentagent.com
+        URL: https://amend-deploy.preview.emergentagent.com
         
         ═══════════════════════════════════════════════════════════════════
         SUMMARY
@@ -8256,7 +8314,7 @@ agent_communication:
             TESTED: Content positioning on Queue, Guests (Customer Master), and Marketing tabs
             Test date: 2026-07-18
             Login: admin / salon123
-            URL: https://salon-orchestrator-1.preview.emergentagent.com
+            URL: https://amend-deploy.preview.emergentagent.com
             
             REQUIREMENT: First child of .tab-pad-legacy must have x >= 120px
             EXPECTED: Rail (84px) + Padding (44px) = 128px content start position

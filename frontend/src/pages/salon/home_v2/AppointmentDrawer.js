@@ -92,7 +92,7 @@ const formatApiError = (err, fallback = 'Save failed') => {
 
 export default function AppointmentDrawer({
   open, onClose, onSaved, getAuthHeaders, salonId, defaultMode = 'queue',
-  presetGuest = null,
+  presetGuest = null, preset = null,
 }) {
   /* ----------- catalogs ----------- */
   const [services, setServices] = useState([]);
@@ -157,10 +157,13 @@ export default function AppointmentDrawer({
   const salonRef = useRef(salonId);
   const modeRef = useRef(defaultMode);
   const presetGuestRef = useRef(presetGuest);
+  const presetRef = useRef(preset);
+  const expectedTimeRef = useRef(null);
   useEffect(() => { authRef.current = getAuthHeaders; }, [getAuthHeaders]);
   useEffect(() => { salonRef.current = salonId; }, [salonId]);
   useEffect(() => { modeRef.current = defaultMode; }, [defaultMode]);
   useEffect(() => { presetGuestRef.current = presetGuest; }, [presetGuest]);
+  useEffect(() => { presetRef.current = preset; }, [preset]);
 
   /* Reset + reload ONLY on drawer open. */
   useEffect(() => {
@@ -170,6 +173,18 @@ export default function AppointmentDrawer({
     setSelectedSvc([]); setSellMembershipId(null); setSelectedProd({});
     setStaffId(''); setSvcBarber({}); setSvcBarberManual(new Set()); setOpenPicker(null);
     setDate(todayISO()); setSlot(currentSlot());
+    expectedTimeRef.current = null;
+    // WS1 — calendar "click empty cell" preset: barber + session + time prefilled.
+    {
+      const pr = presetRef.current;
+      if (pr && (pr.shift || pr.barber_id || pr.date || pr.expected_time)) {
+        setMode('schedule');
+        if (pr.date) setDate(pr.date);
+        if (pr.shift) setSlot(pr.shift);
+        if (pr.barber_id && pr.barber_id !== 'any') setStaffId(pr.barber_id);
+        expectedTimeRef.current = pr.expected_time || null;
+      }
+    }
     setCouponCode(''); setCouponApplied(false); setDiscountPct(0); setDiscountAbs(0);
     setTip(0); setFinalOverride(null);
     setPaySel(new Set(['upi'])); setPayAmt({}); setMultiPay(false);
@@ -525,6 +540,7 @@ export default function AppointmentDrawer({
           selected_products: products_payload,
           shift: mode === 'schedule' ? slot : currentSlot(),
           date: mode === 'schedule' ? date : todayISO(),
+          expected_time: expectedTimeRef.current || null,
           start_time: null,
           ...paymentPayload,
           ...billingExtras,

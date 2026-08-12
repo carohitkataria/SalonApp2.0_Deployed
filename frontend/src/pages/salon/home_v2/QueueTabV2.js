@@ -15,7 +15,8 @@
  *   • Only the visual layer changes — every handler and prop is passed through
  *     from the parent, so behaviour is identical.
  */
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import QueueCalendarView from './QueueCalendarView';
 
 const QV2_CSS = `
 .qv2{font-family:'Plus Jakarta Sans','Inter',system-ui,sans-serif;color:#23252F}
@@ -25,6 +26,8 @@ const QV2_CSS = `
 .qv2 .qv2-dates button{border:none;background:transparent;font-family:inherit;font-size:12.5px;font-weight:700;color:#5A5E70;padding:6px 14px;border-radius:8px;cursor:pointer;transition:.18s;letter-spacing:.2px}
 .qv2 .qv2-dates button:hover{color:#23252F}
 .qv2 .qv2-dates button.on{background:#fff;color:#6C4FE0;box-shadow:0 2px 6px rgba(108,79,224,.15)}
+.qv2 .qv2-viewtoggle{background:#EEF0FF}
+.qv2 .qv2-viewtoggle button.on{background:#6C4FE0;color:#fff;box-shadow:0 2px 6px rgba(108,79,224,.25)}
 .qv2 .qv2-daterange{display:inline-flex;gap:6px;align-items:center;font-size:12px;color:#7C8092;font-weight:600}
 .qv2 .qv2-daterange input{border:1px solid #ECECF3;border-radius:8px;padding:6px 8px;font-size:12px;font-family:inherit;color:#23252F;outline:none;background:#fff}
 .qv2 .qv2-daterange input:focus{border-color:#6C4FE0;box-shadow:0 0 0 3px rgba(108,79,224,.1)}
@@ -153,8 +156,9 @@ export default function QueueTabV2({
   tokens, filter, setFilter,
   handleCallNext, handleCallToken, handleCompleteToken, handleRecallToken,
   handleSkipToken, handleCancelToken, handleSendNotification, handleOpenAddServices,
-  API, navigate,
+  API, navigate, salonId, getAuthHeaders,
 }) {
+  const [view, setView] = useState('list'); // 'list' | 'calendar'
   useEffect(() => {
     const id = 'qv2-styles';
     if (document.getElementById(id)) return;
@@ -183,12 +187,18 @@ export default function QueueTabV2({
       {/* -------- Top bar: date mode + view label -------- */}
       <div className="qv2-topbar">
         <div style={{ display: 'inline-flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <div className="qv2-dates">
-            <button className={dateMode === 'today' ? 'on' : ''} onClick={() => setDateMode('today')}>Today</button>
-            <button className={dateMode === 'yesterday' ? 'on' : ''} onClick={() => setDateMode('yesterday')}>Yesterday</button>
-            <button className={dateMode === 'range' ? 'on' : ''} onClick={() => setDateMode('range')}>Range</button>
+          <div className="qv2-dates qv2-viewtoggle">
+            <button className={view === 'list' ? 'on' : ''} onClick={() => setView('list')}>List</button>
+            <button className={view === 'calendar' ? 'on' : ''} onClick={() => setView('calendar')}>Calendar</button>
           </div>
-          {dateMode === 'range' && (
+          {view === 'list' && (
+            <div className="qv2-dates">
+              <button className={dateMode === 'today' ? 'on' : ''} onClick={() => setDateMode('today')}>Today</button>
+              <button className={dateMode === 'yesterday' ? 'on' : ''} onClick={() => setDateMode('yesterday')}>Yesterday</button>
+              <button className={dateMode === 'range' ? 'on' : ''} onClick={() => setDateMode('range')}>Range</button>
+            </div>
+          )}
+          {view === 'list' && dateMode === 'range' && (
             <div className="qv2-daterange">
               <input type="date" value={dateFrom || ''} onChange={e => setDateFrom(e.target.value)} />
               <span>→</span>
@@ -197,12 +207,30 @@ export default function QueueTabV2({
           )}
         </div>
         <div className="qv2-viewinfo">
-          Viewing bookings for <b>{dateMode === 'range'
-            ? `${dateFrom || '—'} → ${dateTo || '—'}`
-            : new Date(date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</b>
+          {view === 'list' ? (
+            <>Viewing bookings for <b>{dateMode === 'range'
+              ? `${dateFrom || '—'} → ${dateTo || '—'}`
+              : new Date(date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</b></>
+          ) : (
+            <>Calendar · drag to reschedule, click a slot to book</>
+          )}
         </div>
       </div>
 
+      {view === 'calendar' && (
+        <QueueCalendarView
+          salonId={salonId}
+          getAuthHeaders={getAuthHeaders}
+          API={API}
+          barbers={barbers}
+          handleCallToken={handleCallToken}
+          handleCompleteToken={handleCompleteToken}
+          handleCancelToken={handleCancelToken}
+          handleSendNotification={handleSendNotification}
+        />
+      )}
+
+      {view === 'list' && (<React.Fragment>
       {/* -------- Primary actions: Call Next + Add Booking -------- */}
       <div className="qv2-actions">
         <button
@@ -388,6 +416,7 @@ export default function QueueTabV2({
           );
         })}
       </div>
+      </React.Fragment>)}
     </div>
   );
 }

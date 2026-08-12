@@ -567,6 +567,7 @@ class BookingCreate(BaseModel):
     date: str
     shift: str  # Morning/Noon/Evening
     time_slot: Optional[str] = None  # Keep for backward compatibility
+    expected_time: Optional[str] = None  # HH:MM (24h) — used for calendar vertical placement
     barber_id: str  # can be "any"
     selected_services: List[str]
     source: str = "online"
@@ -592,6 +593,7 @@ class TokenModel(BaseModel):
     date: str
     shift: str  # Morning/Noon/Evening
     time_slot: Optional[str] = None  # Keep for backward compatibility
+    expected_time: Optional[str] = None  # HH:MM (24h) — calendar vertical placement / booked time
     barber_id: str
     barber_name: str
     selected_services: List[str]
@@ -8984,6 +8986,7 @@ async def create_salon_booking(salon_id: str, body: dict, current_user=Depends(g
     selected_products = body.get("selected_products") or []
     shift = body.get("shift", "")
     date = body.get("date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    expected_time = (body.get("expected_time") or "").strip() or None
     payment_mode = body.get("payment_mode")
     
     if not customer_name:
@@ -9169,6 +9172,7 @@ async def create_salon_booking(salon_id: str, body: dict, current_user=Depends(g
         "date": date,
         "shift": shift,
         "time_slot": shift,
+        "expected_time": expected_time,
         "total_amount": total_amount,
         "status": "waiting",
         "payment_status": payment_status,
@@ -11525,7 +11529,197 @@ async def customer_reschedule_token(token_id: str, body: dict):
     return {"message": "Booking updated successfully", "token": TokenModel(**updated)}
 
 
-@api_router.post("/tokens/{token_id}/defer")
+# ============================================================================
+# WS1 (v3.4) — Staff/Admin reschedule for the Zenoti-style calendar view
+# ============================================================================
+
+RESCHEDULE_ACTIVE_STATUSES = {"waiting", "called", "booked", "in_service", "in_progress"}
+
+
+def _parse_hhmm_to_minutes(hhmm: Optional[str]) -> Optional[int]:
+    """'HH:MM' -> minutes since midnight. None if unparseable."""
+    try:
+        if not hhmm:
+            return None
+        parts = str(hhmm).split(":")
+        h = int(parts[0]); m = int(parts[1]) if len(parts) > 1 else 0
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h * 60 + m
+    except Exception:
+        pass
+    return None
+
+
+async def _token_duration_minutes(token: Dict[str, Any]) -> int:
+    """Service duration for a token (used for calendar block height + overlap)."""
+    d = token.get("total_service_minutes")
+    if isinstance(d, (int, float)) and d > 0:
+        return int(d)
+    try:
+        mins = await calc_service_total_minutes(token.get("selected_services") or [])
+        return int(mins) if mins else DEFAULT_SERVICE_DURATION
+    except Exception:
+        return DEFAULT_SERVICE_DURATION
+
+
+async def _token_start_minutes(token: Dict[str, Any], windows: Dict[str, Dict[str, int]]) -> int:
+    """Vertical start (minutes since midnight) for a token.
+    Priority: expected_time -> created_at time-of-day -> session start hour."""
+    mins = _parse_hhmm_to_minutes(token.get("expected_time"))
+    if mins is not None:
+        return mins
+    # fall back to session start
+    shift = token.get("shift") or "Morning"
+    start_h = (windows.get(shift) or {}).get("start", DEFAULT_OPEN_HOUR)
+    return int(start_h) * 60
+
+
+async def _barber_overlap_count(
+    salon_id: str, barber_id: str, date: str, start_min: int, duration_min: int,
+    exclude_token_id: Optional[str] = None,
+) -> int:
+    """Count ACTIVE bookings for a barber on `date` whose time window overlaps
+    [start_min, start_min+duration_min). Used to enforce the max-2 concurrent rule."""
+    if not barber_id or barber_id == "any":
+        return 0
+    end_min = start_min + max(duration_min, 1)
+    windows = await get_salon_shift_windows(salon_id, date)
+    rows = await db.tokens.find(
+        {"salon_id": salon_id, "barber_id": barber_id, "date": date,
+         "status": {"$in": list(RESCHEDULE_ACTIVE_STATUSES)}},
+        {"_id": 0},
+    ).to_list(2000)
+    count = 0
+    for r in rows:
+        if exclude_token_id and r.get("id") == exclude_token_id:
+            continue
+        r_start = await _token_start_minutes(r, windows)
+        r_dur = await _token_duration_minutes(r)
+        r_end = r_start + max(r_dur, 1)
+        # strict interval overlap
+        if start_min < r_end and r_start < end_min:
+            count += 1
+    return count
+
+
+@api_router.put("/tokens/{token_id}/staff-reschedule")
+async def staff_reschedule_token(
+    token_id: str, body: dict, current_user=Depends(get_current_salon_user)
+):
+    """Staff/admin reschedule from the calendar view (drag-drop or popover form).
+    Changes barber / session (shift) / time on the SAME token. Enforces:
+      • completed/cancelled/skipped bookings cannot be moved
+      • cannot move into the past
+      • a barber may have at most 2 overlapping bookings (3rd is rejected)
+    Writes a reschedule log attached to the customer and fires the
+    token_rescheduled notification per the salon's settings.
+    """
+    token = await db.tokens.find_one({"id": token_id}, {"_id": 0})
+    if not token:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    if token.get("status") in ("completed", "cancelled", "skipped"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"A {token.get('status')} booking cannot be rescheduled.",
+        )
+
+    salon_id = token.get("salon_id")
+    old_barber_id = token.get("barber_id")
+    old_barber_name = token.get("barber_name")
+    old_shift = token.get("shift")
+    old_time = token.get("expected_time")
+    old_date = token.get("date")
+
+    new_date = (body.get("date") or old_date)
+    new_shift = (body.get("shift") or old_shift)
+    new_barber_id = body.get("barber_id") or old_barber_id
+    new_time = (body.get("expected_time") or old_time)
+    source = body.get("source") or "form"
+
+    # Resolve target start minutes
+    windows = await get_salon_shift_windows(salon_id, new_date)
+    start_min = _parse_hhmm_to_minutes(new_time)
+    if start_min is None:
+        start_min = int((windows.get(new_shift) or {}).get("start", DEFAULT_OPEN_HOUR)) * 60
+        new_time = f"{start_min // 60:02d}:{start_min % 60:02d}"
+
+    # Past guard (IST). Reject a move whose start is already in the past.
+    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    today_ist = ist_now.strftime("%Y-%m-%d")
+    if new_date < today_ist:
+        raise HTTPException(status_code=400, detail="Cannot reschedule a booking into the past.")
+    if new_date == today_ist:
+        now_min = ist_now.hour * 60 + ist_now.minute
+        if start_min < now_min:
+            raise HTTPException(status_code=400, detail="Cannot reschedule to a time that has already passed.")
+
+    # Max-2 overlap rule for the target barber
+    duration_min = await _token_duration_minutes(token)
+    if new_barber_id and new_barber_id != "any":
+        overlaps = await _barber_overlap_count(
+            salon_id, new_barber_id, new_date, start_min, duration_min, exclude_token_id=token_id
+        )
+        if overlaps >= 2:
+            raise HTTPException(
+                status_code=409,
+                detail="This barber already has 2 overlapping bookings at that time.",
+            )
+
+    # Resolve new barber name if barber changed
+    new_barber_name = old_barber_name
+    if new_barber_id and new_barber_id != old_barber_id and new_barber_id != "any":
+        b = await db.barbers.find_one({"id": new_barber_id}, {"_id": 0, "name": 1})
+        if b:
+            new_barber_name = b.get("name") or old_barber_name
+
+    updates = {
+        "barber_id": new_barber_id,
+        "barber_name": new_barber_name,
+        "shift": new_shift,
+        "time_slot": new_shift,
+        "expected_time": new_time,
+        "date": new_date,
+    }
+    await db.tokens.update_one({"id": token_id}, {"$set": updates})
+    updated = await db.tokens.find_one({"id": token_id}, {"_id": 0})
+
+    # --- Reschedule log attached to the customer ------------------------------
+    changed_by = current_user.get("login_id") or current_user.get("name") or current_user.get("role") or "salon"
+    log_entry = {
+        "id": str(uuid.uuid4()),
+        "booking_id": token_id,
+        "token_number": token.get("token_number"),
+        "customer_id": token.get("user_id") or token.get("phone"),
+        "customer_phone": token.get("phone"),
+        "salon_id": salon_id,
+        "old": {"session": old_shift, "time": old_time, "barber_id": old_barber_id, "barber_name": old_barber_name, "date": old_date},
+        "new": {"session": new_shift, "time": new_time, "barber_id": new_barber_id, "barber_name": new_barber_name, "date": new_date},
+        "changed_by": changed_by,
+        "source": source,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await db.reschedule_logs.insert_one({**log_entry})
+        if token.get("phone"):
+            await db.salon_customers.update_one(
+                {"salon_id": salon_id, "phone": token.get("phone")},
+                {"$push": {"reschedule_log": log_entry}},
+            )
+    except Exception as e:
+        logger.warning(f"reschedule log write failed: {e}")
+
+    await broadcast_update("token_updated", updated)
+
+    # Fire the reschedule notification per salon settings (best-effort)
+    try:
+        await send_booking_notification(updated, "token_rescheduled")
+    except Exception as e:
+        logger.warning(f"reschedule notification failed: {e}")
+
+    return {"message": "Booking rescheduled successfully", "token": TokenModel(**updated)}
+
+
+
 async def defer_token(token_id: str, new_slot: str, current_salon=Depends(get_current_salon)):
     """Defer token to next slot"""
     token = await db.tokens.find_one({"id": token_id}, {"_id": 0})
@@ -13981,6 +14175,18 @@ async def get_customer_profile(
         "status": t.get("status"),
     } for t in tks[:20]]
 
+    # WS1 — reschedule events for this customer (shown in the history timeline)
+    reschedule_events = []
+    try:
+        rlogs = await db.reschedule_logs.find(
+            {"salon_id": salon_id, "customer_phone": {"$in": or_phones}},
+            {"_id": 0},
+        ).sort("timestamp", -1).limit(30).to_list(30)
+        reschedule_events = rlogs
+    except Exception:
+        reschedule_events = []
+
+
     return {
         "phone": master.get("phone") or (or_phones[0] if or_phones else ph),
         "name": master.get("name") or (tks[0].get("customer_name") if tks else None),
@@ -14007,6 +14213,7 @@ async def get_customer_profile(
         "total_visits": total_visits,
         "total_spend": round(total_spend, 2),
         "history_tokens": history_tokens,
+        "reschedule_events": reschedule_events,
     }
 
 
