@@ -2,6 +2,9 @@ import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { injectZenCss, Icon, rupee } from './opsTheme';
+import BuyInventoryDrawer from './BuyInventoryDrawer';
+import { ReviewOrderDrawer } from './ShopModule';
+import { useOps } from './OpsContext';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -34,8 +37,10 @@ const emojiFor = (name = '') => {
   return '🧴';
 };
 
-export default function InventoryModule({ salonId, getAuthHeaders }) {
+export default function InventoryModule({ salonId, salonProfile, getAuthHeaders }) {
   useEffect(() => { injectZenCss(); }, []);
+  const { salonCart, updateQty, removeFromCart, clearCart, showReviewDrawer, setShowReviewDrawer } = useOps();
+  const [showShopDrawer, setShowShopDrawer] = useState(false);
   const [items, setItems] = useState([]);
   const [staff, setStaff] = useState([]);
   const [search, setSearch] = useState('');
@@ -94,8 +99,8 @@ export default function InventoryModule({ salonId, getAuthHeaders }) {
   const openAction = (type, item) => setActionDrawer({ type, item });
 
   const goBuyInventory = () => {
-    // Emit a custom event so parent can switch to Shop tab.
-    window.dispatchEvent(new CustomEvent('ops:navigate', { detail: { tab: 'shop' } }));
+    // WS2 — open the Shop product-selection drawer (shares OpsContext cart).
+    setShowShopDrawer(true);
   };
 
   return (
@@ -110,8 +115,8 @@ export default function InventoryModule({ salonId, getAuthHeaders }) {
             <button className="z-btn z-btn--ghost" onClick={openNewItem}>
               <Icon name="plus" /> New item
             </button>
-            <button className="z-btn z-btn--pri" onClick={goBuyInventory}>
-              <Icon name="cart" /> Buy inventory
+            <button className="z-btn z-btn--pri" onClick={goBuyInventory} data-testid="inv-shop-btn">
+              <Icon name="cart" /> Shop
             </button>
           </div>
         </div>
@@ -238,11 +243,34 @@ export default function InventoryModule({ salonId, getAuthHeaders }) {
           }}
         />
       )}
+
+      {/* WS2 — Shop product-selection drawer + shared review order drawer */}
+      {showShopDrawer && (
+        <BuyInventoryDrawer
+          getAuthHeaders={getAuthHeaders}
+          onClose={() => setShowShopDrawer(false)}
+        />
+      )}
+      {showReviewDrawer && (
+        <ReviewOrderDrawer
+          salonId={salonId}
+          salonProfile={salonProfile}
+          getAuthHeaders={getAuthHeaders}
+          items={salonCart}
+          onUpdateQty={updateQty}
+          onRemove={removeFromCart}
+          onClose={() => setShowReviewDrawer(false)}
+          onPlaced={() => {
+            setShowReviewDrawer(false);
+            clearCart();
+            toast.success('Order placed');
+            load();
+          }}
+        />
+      )}
     </div>
   );
 }
-
-/* ---------------- Item drawer (New / Edit) ---------------- */
 function ItemDrawer({ initial, getAuthHeaders, onClose, onSaved }) {
   const isEdit = !!initial?.id;
   const [f, setF] = useState({

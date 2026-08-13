@@ -175,6 +175,8 @@ class ShippingAddress(BaseModel):
     city: str = Field(..., min_length=2, max_length=80)
     state: str = Field(..., min_length=2, max_length=80)
     pincode: str = Field(..., min_length=4, max_length=10)
+    latitude: Optional[float] = None   # WS2 — map location snapshot
+    longitude: Optional[float] = None  # WS2 — map location snapshot
 
 
 class CheckoutPayload(BaseModel):
@@ -558,6 +560,22 @@ async def checkout(payload: CheckoutPayload, user: dict = Depends(_salon_auth)):
     if role not in ("salon_admin", "salon_branch_manager", "salon") and not perms.get("manage_inventory"):
         raise HTTPException(status_code=403, detail="You do not have permission to place orders")
 
+    # WS2 — a salon cannot place a shop order until its profile carries a State
+    # and 6-digit PIN (needed for delivery + place-of-supply). Check BEFORE we
+    # reserve any stock so nothing needs rolling back.
+    salon = await _db.salons.find_one(
+        {"id": salon_id},
+        {"_id": 0, "id": 1, "salon_name": 1, "phone": 1, "state": 1, "pincode": 1},
+    )
+    if not (salon or {}).get("state") or not (salon or {}).get("pincode"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "salon_profile_incomplete",
+                "message": "Add your salon's State and PIN code in the profile before placing a shop order.",
+            },
+        )
+
     # Reserve stock atomically (this throws 409 on failure with rollback).
     resolved = await _reserve_stock(payload.items)
 
@@ -566,11 +584,6 @@ async def checkout(payload: CheckoutPayload, user: dict = Depends(_salon_auth)):
     for prod, qin in zip(resolved, payload.items):
         sup_id = prod.get("supplier_id")
         groups.setdefault(sup_id, []).append((prod, qin.qty))
-
-    salon = await _db.salons.find_one(
-        {"id": salon_id},
-        {"_id": 0, "id": 1, "salon_name": 1, "phone": 1},
-    )
 
     checkout_id = str(uuid.uuid4())
     created_orders: list = []

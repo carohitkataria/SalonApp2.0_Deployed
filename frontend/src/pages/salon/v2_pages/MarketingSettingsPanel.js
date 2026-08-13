@@ -223,6 +223,9 @@ export default function MarketingSettingsPanel({ salonId, authHeaders }) {
         </div>
       )}
 
+      {/* WS3 — Per-salon WhatsApp Sender (own number routing via platform Twilio) */}
+      <WhatsAppSenderCard salonId={salonId} auth={auth} />
+
       {/* CARD 1 — WhatsApp Sender & Twilio Sub-account (full width) */}
       <div className="row full">
         <div className="card">
@@ -385,6 +388,173 @@ export default function MarketingSettingsPanel({ salonId, authHeaders }) {
 }
 
 // -------- Small sub-components --------
+
+function WhatsAppSenderCard({ salonId, auth }) {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  // salon-facing request form
+  const [reqNum, setReqNum] = useState('');
+  const [reqBiz, setReqBiz] = useState('');
+  // owner config form
+  const [msgSid, setMsgSid] = useState('');
+  const [senderNum, setSenderNum] = useState('');
+  const [ownWaba, setOwnWaba] = useState(false);
+  const [testTo, setTestTo] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/salons/${salonId}/whatsapp-sender`, { headers: auth() });
+      setData(res.data);
+      const w = res.data?.whatsapp || {};
+      setMsgSid(w.messaging_service_sid || '');
+      setSenderNum(w.sender_number || w.requested_number || '');
+      setOwnWaba(!!w.own_waba);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Failed to load WhatsApp sender');
+    }
+  }, [salonId, auth]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (!data) return null;
+  const w = data.whatsapp || {};
+  const desc = data.describe || {};
+  const isOwner = !!data.is_owner;
+  const statusPill = String(w.status || 'none') === 'active' ? 'active'
+    : String(w.status) === 'pending' ? 'pending' : 'not_connected';
+
+  const requestOwn = async () => {
+    if (!reqNum.trim() || !reqBiz.trim()) return toast.error('Enter your WhatsApp number and business name');
+    setBusy(true);
+    try {
+      await axios.post(`${API}/salons/${salonId}/whatsapp-sender/request`,
+        { sender_number: reqNum.trim(), business_name: reqBiz.trim() }, { headers: auth() });
+      toast.success('Request sent — the SalonHub team will set up your number');
+      setReqNum(''); setReqBiz('');
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Request failed'); }
+    finally { setBusy(false); }
+  };
+
+  const saveConfig = async () => {
+    setBusy(true);
+    try {
+      await axios.put(`${API}/salons/${salonId}/whatsapp-sender/config`,
+        { messaging_service_sid: msgSid.trim(), sender_number: senderNum.trim(), own_waba: ownWaba, mode: 'own' },
+        { headers: auth() });
+      toast.success('Sender configuration saved');
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Save failed'); }
+    finally { setBusy(false); }
+  };
+
+  const toggleActive = async (next) => {
+    setBusy(true);
+    try {
+      await axios.post(`${API}/salons/${salonId}/whatsapp-sender/activate`,
+        { active: next }, { headers: auth() });
+      toast.success(next ? 'Salon is now sending from its own number' : 'Reverted to SalonHub default number');
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Activation failed'); }
+    finally { setBusy(false); }
+  };
+
+  const sendTest = async () => {
+    if (!testTo.trim()) return toast.error('Enter a number to send the test to');
+    setBusy(true);
+    try {
+      const res = await axios.post(`${API}/salons/${salonId}/whatsapp-sender/test`,
+        { to: testTo.trim() }, { headers: auth() });
+      const st = res.data?.result?.status;
+      if (st === 'sent') toast.success('Test message sent');
+      else if (st === 'mock') toast('Twilio not configured — mock send');
+      else toast.error('Test send failed: ' + (res.data?.result?.error || st));
+    } catch (e) { toast.error(e.response?.data?.detail || 'Test failed'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="row full">
+      <div className="card" data-testid="whatsapp-sender-card">
+        <div className="card__h">
+          <div className="t"><Ic.wa /> WhatsApp Sender</div>
+          <StatusPill status={statusPill} />
+        </div>
+        <div className="card__b">
+          <ReadField k="Sending from" v={desc.sending_from} />
+          <ReadField k="SalonHub default" v={desc.platform_number} mono />
+
+          {/* Salon-facing request flow (hidden once own number is active) */}
+          {!(w.mode === 'own' && w.status === 'active') && (
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #EFEFF3' }}>
+              <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 8 }}>Use my own WhatsApp number</div>
+              {w.status === 'pending' ? (
+                <div className="banner warn" style={{ marginBottom: 0 }}>
+                  Your request for <b>{w.requested_number}</b> is pending verification by the SalonHub team.
+                </div>
+              ) : (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <div className="form-field">
+                      <label>Your WhatsApp number</label>
+                      <input value={reqNum} onChange={(e) => setReqNum(e.target.value)} placeholder="+91XXXXXXXXXX" />
+                    </div>
+                    <div className="form-field">
+                      <label>Business name</label>
+                      <input value={reqBiz} onChange={(e) => setReqBiz(e.target.value)} placeholder="Registered WhatsApp business name" />
+                    </div>
+                  </div>
+                  <button className="btn-p" style={{ marginTop: 10 }} disabled={busy}
+                    onClick={requestOwn} data-testid="wa-request-own-btn">Request setup</button>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Owner-only config panel */}
+          {isOwner && (
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: '2px dashed #E3DCF7' }}>
+              <div style={{ fontWeight: 800, fontSize: 13.5, marginBottom: 4, color: '#6D28D9' }}>
+                Platform owner · Connect this salon&apos;s sender
+              </div>
+              <div style={{ fontSize: 12, color: '#9A9EAE', marginBottom: 10 }}>
+                Paste the salon&apos;s Twilio Messaging Service SID (preferred) or sender number, Save, then Activate.
+              </div>
+              <div className="form-field">
+                <label>Messaging Service SID (MG…)</label>
+                <input value={msgSid} onChange={(e) => setMsgSid(e.target.value)} placeholder="MGxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+              </div>
+              <div className="form-field" style={{ marginTop: 8 }}>
+                <label>Sender number (fallback)</label>
+                <input value={senderNum} onChange={(e) => setSenderNum(e.target.value)} placeholder="+91XXXXXXXXXX" />
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 12.5 }}>
+                <input type="checkbox" checked={ownWaba} onChange={(e) => setOwnWaba(e.target.checked)} />
+                Number is under the salon&apos;s OWN WABA (needs its own approved template SIDs)
+              </label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
+                <button className="btn-g" disabled={busy} onClick={saveConfig} data-testid="wa-owner-save-btn">Save config</button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 600 }}>Go live</span>
+                  <Toggle on={w.mode === 'own' && w.status === 'active'} onChange={(v) => toggleActive(v)} />
+                </div>
+              </div>
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #EFEFF3' }}>
+                <div className="form-field">
+                  <label>Send test message to</label>
+                  <input value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="+91XXXXXXXXXX" />
+                </div>
+                <button className="btn-g" style={{ marginTop: 8 }} disabled={busy} onClick={sendTest} data-testid="wa-test-send-btn">
+                  Send test message
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function StatusPill({ status }) {
   const map = {

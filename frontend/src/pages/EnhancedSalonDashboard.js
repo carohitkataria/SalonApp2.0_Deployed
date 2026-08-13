@@ -1371,7 +1371,9 @@ export default function EnhancedSalonDashboard() {
         )}
 
         {activeTab === 'inventory' && salonId && (checkIsAdmin() || checkIsBranchManager()) && (
-          <InventoryModule salonId={salonId} getAuthHeaders={getAuthHeaders} />
+          <OpsProvider>
+            <InventoryModule salonId={salonId} salonProfile={salon} getAuthHeaders={getAuthHeaders} />
+          </OpsProvider>
         )}
 
         {activeTab === 'notifications' && salonId && (

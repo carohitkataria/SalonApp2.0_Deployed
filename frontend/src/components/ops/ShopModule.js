@@ -8,6 +8,18 @@ import { useOps } from './OpsContext';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+// WS2 — Indian States/UTs for the delivery-address State dropdown.
+const INDIAN_STATES = [
+  'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh',
+  'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka',
+  'Kerala', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram',
+  'Nagaland', 'Odisha', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu',
+  'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal',
+  'Andaman and Nicobar Islands', 'Chandigarh',
+  'Dadra and Nagar Haveli and Daman and Diu', 'Delhi', 'Jammu and Kashmir',
+  'Ladakh', 'Lakshadweep', 'Puducherry',
+];
+
 // Helpers (Issue 3 + 8) — canonical MOQ resolver + status accessor.
 const moqOf = (p) => Math.max(1, parseInt(p?.min_order_qty ?? p?.moq ?? 1, 10));
 const STEP_INDEX = { pending_payment: 0, confirmed: 1, shipped: 2, in_transit: 3, delivered: 4, placed: 0, processing: 1 };
@@ -405,9 +417,11 @@ function ProductDetailDrawer({ product, inCart, onClose, onAdd }) {
 }
 
 /* ------------ Review Order Drawer ------------ */
-function ReviewOrderDrawer({ salonId, salonProfile, getAuthHeaders, items, onUpdateQty, onRemove, onClose, onPlaced }) {
+export function ReviewOrderDrawer({ salonId, salonProfile, getAuthHeaders, items, onUpdateQty, onRemove, onClose, onPlaced }) {
   const p = salonProfile || {};
+  const profileIncomplete = !(p.state && /^\d{6}$/.test(String(p.pincode || '')));
   const [addr, setAddr] = useState({
+    id: 'profile',
     name: p.owner_name || p.salon_name || '',
     phone: p.phone || '',
     line1: p.address || '',
@@ -415,13 +429,66 @@ function ReviewOrderDrawer({ salonId, salonProfile, getAuthHeaders, items, onUpd
     city: p.city || '',
     state: p.state || '',
     pincode: p.pincode || '',
+    latitude: p.latitude ?? null,
+    longitude: p.longitude ?? null,
   });
+  const [savedAddresses, setSavedAddresses] = useState([]); // address book from API
+  const [selectedAddrId, setSelectedAddrId] = useState('profile');
   const [editingAddr, setEditingAddr] = useState(false);
+  const [addingNew, setAddingNew] = useState(false);
+  const [savingAddr, setSavingAddr] = useState(false);
   const [coupon, setCoupon] = useState('');
   const [couponDiscount, setCouponDiscount] = useState(0);
   const [pay, setPay] = useState('cod'); // cod | cashfree
   const [busy, setBusy] = useState(false);
   const [notes, setNotes] = useState('');
+
+  // WS2 — load the salon's saved address book (+ profile default).
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await axios.get(`${API}/salons/${salonId}/address-book`, { headers: getAuthHeaders() });
+        setSavedAddresses(res.data?.saved || []);
+      } catch (e) { /* non-fatal */ }
+    })();
+  }, [salonId, getAuthHeaders]);
+
+  const pickAddress = (a) => {
+    setSelectedAddrId(a.id);
+    setAddr({
+      id: a.id, name: a.name, phone: a.phone, line1: a.line1, line2: a.line2 || '',
+      city: a.city, state: a.state, pincode: a.pincode,
+      latitude: a.latitude ?? null, longitude: a.longitude ?? null,
+    });
+    setEditingAddr(false);
+    setAddingNew(false);
+  };
+
+  const saveNewAddress = async () => {
+    if (!addr.name || !addr.phone || !addr.line1 || !addr.city || !addr.state) {
+      return toast.error('Fill name, phone, address, city and state');
+    }
+    if (!/^\d{6}$/.test(String(addr.pincode || ''))) return toast.error('PIN code must be 6 digits');
+    if (!INDIAN_STATES.includes(addr.state)) return toast.error('Select a valid State/UT');
+    setSavingAddr(true);
+    try {
+      const res = await axios.post(`${API}/salons/${salonId}/address-book`, {
+        label: null, name: addr.name, phone: addr.phone,
+        line1: addr.line1, line2: addr.line2 || null,
+        city: addr.city, state: addr.state, pincode: addr.pincode,
+        latitude: addr.latitude ?? null, longitude: addr.longitude ?? null,
+      }, { headers: getAuthHeaders() });
+      const saved = res.data?.saved || [];
+      setSavedAddresses(saved);
+      const added = res.data?.address;
+      if (added) pickAddress(added);
+      setAddingNew(false);
+      setEditingAddr(false);
+      toast.success('Address saved');
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Could not save address');
+    } finally { setSavingAddr(false); }
+  };
 
   const subtotal = items.reduce((s, x) => s + (x.price || 0) * (x.qty || 1), 0);
   const shipping = 40;
@@ -439,7 +506,11 @@ function ReviewOrderDrawer({ salonId, salonProfile, getAuthHeaders, items, onUpd
 
   const place = async () => {
     if (items.length === 0) return toast.error('Cart is empty');
-    if (!addr.name || !addr.phone || !addr.line1 || !addr.city || !addr.pincode) {
+    if (profileIncomplete) {
+      toast.error('Add your salon State & PIN in Settings before ordering');
+      return;
+    }
+    if (!addr.name || !addr.phone || !addr.line1 || !addr.city || !addr.pincode || !addr.state) {
       setEditingAddr(true);
       return toast.error('Complete delivery address');
     }
@@ -452,6 +523,8 @@ function ReviewOrderDrawer({ salonId, salonProfile, getAuthHeaders, items, onUpd
           line1: addr.line1, line2: addr.line2 || null,
           city: addr.city, state: addr.state,
           pincode: addr.pincode,
+          latitude: addr.latitude ?? null,
+          longitude: addr.longitude ?? null,
         },
         payment_mode: pay === 'cod' ? 'cod' : 'cashfree',
         notes: notes || null,
@@ -467,6 +540,10 @@ function ReviewOrderDrawer({ salonId, salonProfile, getAuthHeaders, items, onUpd
       const msg = detailMsg(d, 'Checkout failed');
       toast.error(msg);
       if (d && typeof d === 'object') {
+        if (d.code === 'salon_profile_incomplete') {
+          window.dispatchEvent(new CustomEvent('ops:navigate', { detail: { tab: 'salon' } }));
+          onClose();
+        }
         if (d.available_qty != null) toast(`Only ${d.available_qty} in stock`);
         if (d.code === 'below_moq' && d.min_order_qty != null) toast(`Minimum order qty is ${d.min_order_qty}`);
       }
@@ -490,25 +567,78 @@ function ReviewOrderDrawer({ salonId, salonProfile, getAuthHeaders, items, onUpd
         </div>
         <div className="z-drawer-body">
           <div className="z-dsec">Delivery address</div>
-          {!editingAddr ? (
-            <div className="z-card" style={{ padding: 14, borderRadius: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div>
-                  <div style={{ fontWeight: 800 }}>{addr.name || '—'}</div>
-                  <div style={{ fontSize: 13, color: 'var(--z-ink-soft)', marginTop: 3 }}>
-                    {addr.line1}{addr.line2 && `, ${addr.line2}`}<br />
-                    {addr.city}, {addr.state} · {addr.pincode}
-                  </div>
-                  <div style={{ fontSize: 12.5, color: 'var(--z-muted)', marginTop: 5 }}>
-                    <Icon name="phone" size={12} /> {addr.phone || '—'}
+
+          {profileIncomplete && (
+            <div className="z-card" style={{ padding: 14, borderRadius: 12, background: '#FDF0DC', border: '1px solid #F6DFB8', marginBottom: 12 }}>
+              <div style={{ fontWeight: 800, color: '#B45309', fontSize: 13.5 }}>Complete your salon profile</div>
+              <div style={{ fontSize: 12.5, color: '#8a5a13', marginTop: 4 }}>
+                Add your salon&apos;s <b>State</b> and a valid <b>6-digit PIN code</b> before placing a Shop order.
+              </div>
+              <button
+                className="z-btn z-btn--pri z-btn--sm"
+                style={{ marginTop: 10 }}
+                data-testid="review-complete-profile"
+                onClick={() => { window.dispatchEvent(new CustomEvent('ops:navigate', { detail: { tab: 'salon' } })); onClose(); }}
+              >
+                <Icon name="edit" /> Complete profile
+              </button>
+            </div>
+          )}
+
+          {/* Saved address selector */}
+          {!editingAddr && !addingNew && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {[{ id: 'profile', name: p.owner_name || p.salon_name || '', phone: p.phone || '', line1: p.address || '', line2: '', city: p.city || '', state: p.state || '', pincode: p.pincode || '', latitude: p.latitude, longitude: p.longitude, is_default: true }, ...savedAddresses].map((a) => (
+                <div
+                  key={a.id}
+                  className="z-card"
+                  data-testid="review-address-option"
+                  onClick={() => pickAddress(a)}
+                  style={{ padding: 14, borderRadius: 12, cursor: 'pointer', border: selectedAddrId === a.id ? '2px solid var(--z-pri, #6D28D9)' : '1px solid var(--z-line)' }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div>
+                      <div style={{ fontWeight: 800 }}>
+                        {a.name || '—'} {a.is_default && <span style={{ fontSize: 10.5, color: 'var(--z-muted)', fontWeight: 600 }}>· Salon address</span>}
+                      </div>
+                      <div style={{ fontSize: 13, color: 'var(--z-ink-soft)', marginTop: 3 }}>
+                        {a.line1}{a.line2 && `, ${a.line2}`}<br />
+                        {a.city}, {a.state} · {a.pincode}
+                      </div>
+                      <div style={{ fontSize: 12.5, color: 'var(--z-muted)', marginTop: 5 }}>
+                        <Icon name="phone" size={12} /> {a.phone || '—'}
+                        {(a.latitude != null && a.longitude != null) && (
+                          <>
+                            {'  ·  '}
+                            <a href={`https://www.google.com/maps?q=${a.latitude},${a.longitude}`} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: 'var(--z-pri, #6D28D9)', fontWeight: 600 }}>📍 Map location</a>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    {selectedAddrId === a.id && !a.is_default && (
+                      <button className="z-btn z-btn--soft z-btn--sm" onClick={(e) => { e.stopPropagation(); setEditingAddr(true); }}>
+                        <Icon name="edit" /> Edit
+                      </button>
+                    )}
                   </div>
                 </div>
-                <button className="z-btn z-btn--soft z-btn--sm" onClick={() => setEditingAddr(true)}>
-                  <Icon name="edit" /> Change
-                </button>
-              </div>
+              ))}
+              <button
+                className="z-btn z-btn--soft z-btn--sm"
+                style={{ alignSelf: 'flex-start' }}
+                data-testid="review-add-address"
+                onClick={() => {
+                  setAddr({ id: 'new', name: p.owner_name || p.salon_name || '', phone: p.phone || '', line1: '', line2: '', city: '', state: '', pincode: '', latitude: null, longitude: null });
+                  setAddingNew(true);
+                  setEditingAddr(true);
+                }}
+              >
+                <Icon name="plus" /> Add new address
+              </button>
             </div>
-          ) : (
+          )}
+
+          {editingAddr && (
             <div>
               <div className="z-grid2">
                 <div className="z-field"><label>Name</label><input value={addr.name} onChange={(e) => updA('name', e.target.value)} /></div>
@@ -517,13 +647,33 @@ function ReviewOrderDrawer({ salonId, salonProfile, getAuthHeaders, items, onUpd
               <div className="z-field"><label>Address line 1</label><input value={addr.line1} onChange={(e) => updA('line1', e.target.value)} /></div>
               <div className="z-field"><label>Landmark (optional)</label><input value={addr.line2} onChange={(e) => updA('line2', e.target.value)} /></div>
               <div className="z-grid3">
-                <div className="z-field"><label>City</label><input value={addr.city} onChange={(e) => updA('city', e.target.value)} /></div>
-                <div className="z-field"><label>State</label><input value={addr.state} onChange={(e) => updA('state', e.target.value)} /></div>
-                <div className="z-field"><label>Pincode</label><input value={addr.pincode} onChange={(e) => updA('pincode', e.target.value)} /></div>
+                <div className="z-field"><label>City</label><input value={addr.city} onChange={(e) => updA('city', e.target.value)} data-testid="review-city" /></div>
+                <div className="z-field"><label>State</label>
+                  <select value={addr.state} onChange={(e) => updA('state', e.target.value)} data-testid="review-state">
+                    <option value="">Select…</option>
+                    {INDIAN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div className="z-field"><label>Pincode</label>
+                  <input value={addr.pincode} maxLength={6} inputMode="numeric"
+                    onChange={(e) => updA('pincode', e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    data-testid="review-pincode" />
+                </div>
               </div>
-              <button className="z-btn z-btn--pri z-btn--sm" style={{ marginTop: 8 }} onClick={() => setEditingAddr(false)}>
-                <Icon name="check" /> Save address
-              </button>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                {addingNew ? (
+                  <button className="z-btn z-btn--pri z-btn--sm" disabled={savingAddr} onClick={saveNewAddress} data-testid="review-save-address">
+                    <Icon name="check" /> {savingAddr ? 'Saving…' : 'Save address'}
+                  </button>
+                ) : (
+                  <button className="z-btn z-btn--pri z-btn--sm" onClick={() => setEditingAddr(false)}>
+                    <Icon name="check" /> Use this address
+                  </button>
+                )}
+                <button className="z-btn z-btn--soft z-btn--sm" onClick={() => { setEditingAddr(false); setAddingNew(false); }}>
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
 
@@ -579,7 +729,7 @@ function ReviewOrderDrawer({ salonId, salonProfile, getAuthHeaders, items, onUpd
         </div>
         <div className="z-drawer-foot" style={{ display: 'flex', gap: 10 }}>
           <button className="z-btn z-btn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
-          <button className="z-btn z-btn--pri" style={{ flex: 2 }} disabled={busy || items.length === 0} onClick={place}>
+          <button className="z-btn z-btn--pri" style={{ flex: 2 }} disabled={busy || items.length === 0 || profileIncomplete} onClick={place} data-testid="review-place-order">
             <Icon name="truck" /> {busy ? 'Placing…' : (pay === 'cod' ? 'Place COD order' : 'Pay & place')}
           </button>
         </div>

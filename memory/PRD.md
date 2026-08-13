@@ -539,3 +539,23 @@ Testing agent iteration_26 report: **17/17 backend targeted tests PASS**, 6/7 fr
 - Modularize `server.py` (now 12.4k lines) — split into `routes/`, `models/`, `services/`.
 - Split `SupplierProductsPage.js` (605 lines) into ProductCatalog / ProductSamples / EditorModal / RestockModal / DeleteModal sub-components.
 - Optional: add `loggingOut` sentinel to SupplierAuthContext to eliminate the brief `/supplier/login` flash before `window.location.replace('/')` on logout (cosmetic, not user-visible).
+
+---
+
+## v4.1 — WS1–WS3 (built July 2025)
+
+**WS1 — Category taxonomy (verified):** One canonical `categories` collection (type=service|product|membership) drives customer, salon and staff service views via `GET /api/salons/{id}/categories`. Service create/update resolve `category_id` from this collection. Freshly-seeded data was migrated (`migrate_categories.py --apply`). Legacy `/services/categories` endpoint is unused by the frontend.
+
+**WS2 — Shop drawer + salon delivery address:**
+- Inventory "Buy inventory" renamed to **"Shop"** → opens a right-side product drawer (`BuyInventoryDrawer.js`) sharing the OpsContext cart; "Proceed to review" opens the shared `ReviewOrderDrawer`.
+- Salon profile now has mandatory **State (Indian States/UTs dropdown)** + **6-digit PIN** (`SalonSettingsV3.js`, validated in `PUT /api/salons/{id}`).
+- Review step: saved **address book** (`GET/POST /api/salons/{id}/address-book`), "Add new address", map-location link, full address snapshot (incl. lat/lng) on each order.
+- `POST /api/salon/store/checkout` blocks with `{code:"salon_profile_incomplete"}` until State+PIN are set.
+- `GET /api/meta/indian-states` → 36 states/UTs.
+
+**WS3 — Per-salon WhatsApp sender (Twilio):**
+- All WhatsApp sends route through `twilio_service.resolve_sender(salon)` / `resolve_template_sender()`. Single account authenticates; per-salon sender selected by `salon.whatsapp` config. Own-WABA salons fall back to platform sender for templates until they supply `template_overrides`.
+- New router `salon_whatsapp_sender.py`: `GET /whatsapp-sender`, `POST /whatsapp-sender/request` (salon), `PUT /whatsapp-sender/config`, `POST /whatsapp-sender/activate`, `POST /whatsapp-sender/test` (last 3 platform-owner-only, role=platform_admin).
+- Marketing → Settings → **WhatsApp Sender** card (`MarketingSettingsPanel.js`): plain-language sender + status pill, salon request form, owner-only connect/activate/test.
+
+**Env note:** `.env` files were missing on restore and recreated (MONGO_URL=mongodb://localhost:27017, DB_NAME=salonapp). Twilio live credentials set. Admin login: `POST /api/salon/users/login` identifier=`admin` password=`salon123`, salon_id=2f4764b7-ee56-41fa-8b36-e89d8ed2150e.

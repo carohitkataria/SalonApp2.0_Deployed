@@ -20,6 +20,18 @@ import LeaveConfigTab from '@/components/leave/LeaveConfigTab';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+// WS2 — Indian States/UTs for the mandatory salon profile State dropdown.
+const INDIAN_STATES = [
+  'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh',
+  'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka',
+  'Kerala', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram',
+  'Nagaland', 'Odisha', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu',
+  'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal',
+  'Andaman and Nicobar Islands', 'Chandigarh',
+  'Dadra and Nagar Haveli and Daman and Diu', 'Delhi', 'Jammu and Kashmir',
+  'Ladakh', 'Lakshadweep', 'Puducherry',
+];
+
 const NAV = [
   {
     k: 'business', label: 'Business profile',
@@ -226,6 +238,8 @@ export default function SalonSettingsV3({ salonId, salon, setSalon, getAuthHeade
       email: salon.email || '',
       address: salon.address || '',
       city: salon.city || '',
+      state: salon.state || '',
+      pincode: salon.pincode || '',
       owner_name: salon.owner_name || '',
       description: salon.description || '',
       logo_url: salon.logo_url || '',
@@ -546,8 +560,24 @@ export default function SalonSettingsV3({ salonId, salon, setSalon, getAuthHeade
               <input value={form.address || ''} onChange={(e) => set({ address: e.target.value })} /></div>
             <div className="field"><label>City</label>
               <input value={form.city || ''} onChange={(e) => set({ city: e.target.value })} /></div>
+            <div className="field"><label>State <span className="req">*</span></label>
+              <select value={form.state || ''} onChange={(e) => set({ state: e.target.value })} data-testid="setg-salon-state">
+                <option value="">Select State/UT…</option>
+                {INDIAN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select></div>
+            <div className="field"><label>PIN code <span className="req">*</span></label>
+              <input value={form.pincode || ''} maxLength={6} inputMode="numeric"
+                onChange={(e) => set({ pincode: e.target.value.replace(/\D/g, '').slice(0, 6) })}
+                placeholder="6-digit PIN" data-testid="setg-salon-pincode" /></div>
             <div className="field"><label>Owner</label>
               <input value={form.owner_name || ''} onChange={(e) => set({ owner_name: e.target.value })} /></div>
+            {(!form.state || !/^\d{6}$/.test(String(form.pincode || ''))) && (
+              <div className="field full">
+                <div style={{ background: '#FDF0DC', color: '#B45309', border: '1px solid #F6DFB8', borderRadius: 10, padding: '9px 12px', fontSize: 12.5, fontWeight: 600 }}>
+                  State and a valid 6-digit PIN code are required before you can place a Shop (Buy Inventory) order.
+                </div>
+              </div>
+            )}
             <div className="field full"><label>About (booking page)</label>
               <textarea value={form.description || ''} onChange={(e) => set({ description: e.target.value })} /></div>
           </div>

@@ -110,6 +110,8 @@ class SalonCreate(BaseModel):
     email: Optional[str] = None
     address: str
     city: Optional[str] = None  # City for filtering
+    state: Optional[str] = None  # WS2 — Indian state/UT (mandatory before shop orders)
+    pincode: Optional[str] = None  # WS2 — 6-digit PIN (mandatory before shop orders)
     latitude: float
     longitude: float
     upi_id: Optional[str] = None
@@ -125,8 +127,11 @@ class SalonUpdate(BaseModel):
     email: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None  # City for filtering
+    state: Optional[str] = None  # WS2
+    pincode: Optional[str] = None  # WS2
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    address_book: Optional[List[Dict[str, Any]]] = None  # WS2 — saved delivery addresses
     upi_id: Optional[str] = None
     payment_timing: Optional[str] = None
     is_gst_registered: Optional[bool] = None
@@ -186,6 +191,8 @@ class Salon(BaseModel):
     email: Optional[str] = None
     address: str
     city: Optional[str] = None  # City for filtering
+    state: Optional[str] = None  # WS2
+    pincode: Optional[str] = None  # WS2
     latitude: float
     longitude: float
     upi_id: Optional[str] = None
@@ -2696,6 +2703,7 @@ async def send_booking_notification(token_data: dict, notification_type: str):
                 # the shift name (e.g. "Morning") so the template always renders.
                 time_slot=(token_data.get('time_slot') or token_data.get('shift') or 'TBD'),
                 barber_name=(token_data.get('barber_name') or 'Any available'),
+                salon=salon,
             )
             logger.info(
                 f"Notification sent: booking_confirmation to {phone}, status: {result.get('status')}"
@@ -2722,6 +2730,7 @@ async def send_booking_notification(token_data: dict, notification_type: str):
                 token_number=token_data.get('token_number', 0),
                 barber_name=token_data.get('barber_name') or '',
                 amount=token_data.get('total_amount') or token_data.get('amount') or 0,
+                salon=salon,
             )
             logger.info(
                 f"Notification sent: booking_completed to {phone}, status: {result.get('status')}"
@@ -2748,6 +2757,7 @@ async def send_booking_notification(token_data: dict, notification_type: str):
                 salon_name=salon_name,
                 barber_name=token_data.get('barber_name') or 'your stylist',
                 token_number=token_data.get('token_number', 0),
+                salon=salon,
             )
             logger.info(
                 f"Notification sent: your_turn_now to {phone}, status: {result.get('status')}"
@@ -2812,7 +2822,7 @@ async def send_booking_notification(token_data: dict, notification_type: str):
                 logger.info(f"WhatsApp notification suppressed for {phone} (customer setting {customer_key} is OFF)")
                 return
             full_message = message + action_links if action_links else message
-            result = await send_whatsapp_notification(phone, full_message, notification_type)
+            result = await send_whatsapp_notification(phone, full_message, notification_type, salon=salon)
             logger.info(f"Notification sent: {notification_type} to {phone}, status: {result.get('status')}")
             
     except Exception as e:
@@ -2885,8 +2895,8 @@ async def check_and_notify_nearby_tokens(salon_id: str, barber_id: str, date: st
                     )
                     current_serving = str(serving_doc.get("token_number")) if serving_doc else "—"
 
-                    salon_doc = await db.salons.find_one({"id": salon_id}, {"_id": 0, "name": 1})
-                    salon_name_for_msg = (salon_doc or {}).get("name") or "the salon"
+                    salon_doc = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+                    salon_name_for_msg = (salon_doc or {}).get("name") or (salon_doc or {}).get("salon_name") or "the salon"
 
                     await send_token_approaching_template(
                         phone_number=phone,
@@ -2896,6 +2906,7 @@ async def check_and_notify_nearby_tokens(salon_id: str, barber_id: str, date: st
                         salon_name=salon_name_for_msg,
                         barber_name=token.get('barber_name') or 'your stylist',
                         current_serving=current_serving,
+                        salon=salon_doc,
                     )
 
             await db.tokens.update_one(
@@ -4137,7 +4148,19 @@ async def update_salon(salon_id: str, salon: SalonUpdate, current_user=Depends(g
     
     # Only update fields that are provided
     update_data = {k: v for k, v in salon.model_dump().items() if v is not None}
-    
+
+    # WS2 — validate State + PIN when provided (mandatory for shop orders).
+    if update_data.get("pincode") is not None:
+        pin = str(update_data["pincode"]).strip()
+        if not re.fullmatch(r"\d{6}", pin):
+            raise HTTPException(status_code=400, detail="PIN code must be exactly 6 digits")
+        update_data["pincode"] = pin
+    if update_data.get("state") is not None:
+        st = str(update_data["state"]).strip()
+        if st and st not in INDIAN_STATES:
+            raise HTTPException(status_code=400, detail="Invalid State/UT")
+        update_data["state"] = st
+
     # If invoice_start_number is being changed, reset current_invoice_number
     if 'invoice_start_number' in update_data:
         update_data['current_invoice_number'] = update_data['invoice_start_number']
@@ -4147,6 +4170,87 @@ async def update_salon(salon_id: str, salon: SalonUpdate, current_user=Depends(g
     
     updated = await db.salons.find_one({"id": salon_id}, {"_id": 0})
     return Salon(**updated)
+
+
+# ============ WS2 — Indian States/UTs + Salon delivery address book ============
+
+INDIAN_STATES = [
+    "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh",
+    "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka",
+    "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya", "Mizoram",
+    "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu",
+    "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal",
+    "Andaman and Nicobar Islands", "Chandigarh",
+    "Dadra and Nagar Haveli and Daman and Diu", "Delhi", "Jammu and Kashmir",
+    "Ladakh", "Lakshadweep", "Puducherry",
+]
+
+
+@api_router.get("/meta/indian-states")
+async def get_indian_states():
+    """WS2 — canonical list of Indian States/UTs for profile + address dropdowns."""
+    return {"states": INDIAN_STATES}
+
+
+class SalonAddressIn(BaseModel):
+    label: Optional[str] = None
+    name: str = Field(..., min_length=2, max_length=120)
+    phone: str = Field(..., min_length=8, max_length=20)
+    line1: str = Field(..., min_length=2, max_length=200)
+    line2: Optional[str] = None
+    city: str = Field(..., min_length=2, max_length=80)
+    state: str = Field(..., min_length=2, max_length=80)
+    pincode: str = Field(..., min_length=6, max_length=6)
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+
+@api_router.get("/salons/{salon_id}/address-book")
+async def get_salon_address_book(salon_id: str, current_salon=Depends(get_current_salon)):
+    """WS2 — the salon's saved delivery addresses + the profile address (default)."""
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    profile_addr = {
+        "id": "profile",
+        "label": "Salon address (default)",
+        "is_default": True,
+        "name": salon.get("owner_name") or salon.get("salon_name") or "",
+        "phone": salon.get("phone") or "",
+        "line1": salon.get("address") or "",
+        "line2": "",
+        "city": salon.get("city") or "",
+        "state": salon.get("state") or "",
+        "pincode": salon.get("pincode") or "",
+        "latitude": salon.get("latitude"),
+        "longitude": salon.get("longitude"),
+    }
+    saved = salon.get("address_book") or []
+    profile_complete = bool(salon.get("state") and salon.get("pincode"))
+    return {"default": profile_addr, "saved": saved, "profile_complete": profile_complete}
+
+
+@api_router.post("/salons/{salon_id}/address-book")
+async def add_salon_address(salon_id: str, body: SalonAddressIn, current_salon=Depends(get_current_salon_admin)):
+    """WS2 — add a delivery address to the salon's address book (validated)."""
+    token_salon_id = current_salon.get("salon_id") or current_salon.get("sub")
+    if token_salon_id != salon_id:
+        raise HTTPException(status_code=403, detail="Not allowed for this salon")
+    if not re.fullmatch(r"\d{6}", body.pincode.strip()):
+        raise HTTPException(status_code=400, detail="PIN code must be exactly 6 digits")
+    if body.state.strip() not in INDIAN_STATES:
+        raise HTTPException(status_code=400, detail="Invalid State/UT")
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0})
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    addr = body.model_dump()
+    addr["id"] = str(uuid.uuid4())
+    addr["created_at"] = datetime.now(timezone.utc).isoformat()
+    book = salon.get("address_book") or []
+    book.append(addr)
+    await db.salons.update_one({"id": salon_id}, {"$set": {"address_book": book}})
+    return {"ok": True, "address": addr, "saved": book}
+
 
 @api_router.delete("/salons/{salon_id}")
 async def delete_salon(salon_id: str, current_salon=Depends(get_current_salon)):
@@ -18989,6 +19093,18 @@ mkt_settings_mod.init_marketing_settings_router(
     get_current_salon_admin=get_current_salon_admin,
 )
 fastapi_app.include_router(mkt_settings_mod.settings_router)
+
+# WS3 — Per-salon WhatsApp Sender config (Twilio). Reuses the marketing-settings
+# auth helpers so gating stays consistent (admin for salon-facing, platform_admin
+# for owner-only connect controls).
+import salon_whatsapp_sender as wa_sender_mod  # noqa: E402
+wa_sender_mod.init_whatsapp_sender_router(
+    db=db,
+    require_user=mkt_settings_mod._require_user,
+    require_admin=mkt_settings_mod._require_admin,
+    assert_salon_scope=mkt_settings_mod._assert_salon_scope,
+)
+fastapi_app.include_router(wa_sender_mod.whatsapp_sender_router)
 
 # Health check endpoint for Kubernetes liveness/readiness probes
 @fastapi_app.get("/health")

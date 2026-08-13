@@ -40,6 +40,80 @@ BOOKING_COMPLETED_TEMPLATE_SID = os.environ.get('TWILIO_BOOKING_COMPLETED_TEMPLA
 YOUR_TURN_NOW_TEMPLATE_SID = os.environ.get('TWILIO_YOUR_TURN_NOW_TEMPLATE_SID')
 TOKEN_APPROACHING_TEMPLATE_SID = os.environ.get('TWILIO_TOKEN_APPROACHING_TEMPLATE_SID')
 
+# WS3 — Platform default WhatsApp sender identity. We ALWAYS authenticate as the
+# platform's ONE Twilio account (Account SID + Auth Token / API Key). "Sending as
+# a salon" only changes WHICH registered sender we pass on each API call.
+PLATFORM_MSG_SVC = os.environ.get('TWILIO_WHATSAPP_MESSAGING_SERVICE_SID') or None
+PLATFORM_FROM = WHATSAPP_NUMBER  # already 'whatsapp:+...'
+
+
+def _platform_sender() -> dict:
+    """create() kwargs for the platform default sender."""
+    if PLATFORM_MSG_SVC:
+        return {"messaging_service_sid": PLATFORM_MSG_SVC}
+    return {"from_": PLATFORM_FROM}
+
+
+def resolve_sender(salon: dict = None) -> dict:
+    """WS3 — pick the Twilio ``messages.create`` sender kwargs for a salon.
+
+    A salon routes through its OWN registered WhatsApp sender only when it has
+    explicitly opted in (``whatsapp.mode == 'own'``) AND the platform owner has
+    flipped it live (``whatsapp.status == 'active'``). A per-salon Messaging
+    Service SID (MG…) is preferred; otherwise a bare sender number is used.
+    Everything else falls back to the platform default sender.
+
+    The moment the owner sets ``mode='own'`` + ``status='active'`` for a salon,
+    its messages flow through its own number with ZERO further code changes —
+    every send routes through this resolver.
+    """
+    w = (salon or {}).get("whatsapp") or {}
+    if w.get("mode") == "own" and w.get("status") == "active":
+        msg_svc = w.get("messaging_service_sid")
+        if msg_svc:
+            return {"messaging_service_sid": msg_svc}
+        num = w.get("sender_number")
+        if num:
+            if not str(num).startswith("whatsapp:"):
+                num = f"whatsapp:{num}"
+            return {"from_": num}
+    return _platform_sender()
+
+
+def resolve_template_sender(salon: dict, content_sid: str, template_name: str = None):
+    """WS3 — resolve BOTH the sender kwargs and the effective content SID for a
+    business-initiated template send, honouring the WABA/template caveat.
+
+    The approved template content SIDs (HX…) are approved under the PLATFORM's
+    WhatsApp Business Account (WABA). If a salon's number is registered under my
+    own WABA (the simple path), those HX… SIDs work as-is for its sender.
+
+    If a salon's number ever sits under ITS OWN WABA (``whatsapp.own_waba`` True),
+    the platform HX… SIDs are NOT valid for it — it needs its own approved
+    template SIDs. Until a salon supplies a ``template_overrides`` map
+    (name -> content SID), we fall back to the PLATFORM sender for template
+    messages so delivery never breaks.
+
+    Returns ``(sender_kwargs, effective_content_sid)``.
+    """
+    w = (salon or {}).get("whatsapp") or {}
+    if w.get("mode") == "own" and w.get("status") == "active" and w.get("own_waba"):
+        overrides = w.get("template_overrides") or {}
+        override_sid = overrides.get(template_name) if template_name else None
+        if override_sid:
+            # Salon has its own approved template SID for its own WABA sender.
+            return resolve_sender(salon), override_sid
+        # Own-WABA salon but no approved override yet → use platform sender + SID.
+        logger.warning(
+            "Salon flagged own_waba with no template override for '%s' — "
+            "falling back to platform sender for this template send.",
+            template_name,
+        )
+        return _platform_sender(), content_sid
+    # Simple path: salon's number under platform WABA (or platform default).
+    return resolve_sender(salon), content_sid
+
+
 # Initialize Twilio client
 twilio_client = None
 
@@ -172,6 +246,7 @@ async def send_whatsapp_template(
     content_sid: str,
     content_variables: dict,
     template_name: str = None,
+    salon: dict = None,
 ) -> dict:
     """
     Send a WhatsApp message using an approved Content Template (Content API).
@@ -184,6 +259,8 @@ async def send_whatsapp_template(
         content_sid      : approved template SID (HX…)
         content_variables: dict of variable index → value (keys "1", "2", …)
         template_name    : logging label (e.g. "booking_confirmation")
+        salon            : WS3 — salon document; its ``whatsapp`` config selects
+                           the per-salon sender via ``resolve_template_sender``.
     """
     client = get_twilio_client()
 
@@ -201,26 +278,47 @@ async def send_whatsapp_template(
             s = "" if v is None else str(v)
             safe_vars[str(k)] = s if s.strip() else "-"
 
-        message = client.messages.create(
-            from_=WHATSAPP_NUMBER,
-            to=f"whatsapp:{phone_number}",
-            content_sid=content_sid,
-            content_variables=json.dumps(safe_vars),
-        )
+        # WS3 — resolve per-salon sender + effective content SID (WABA caveat).
+        sender_kwargs, effective_sid = resolve_template_sender(salon, content_sid, template_name)
+        create_kwargs = {
+            "to": f"whatsapp:{phone_number}",
+            "content_sid": effective_sid,
+            "content_variables": json.dumps(safe_vars),
+        }
+        create_kwargs.update(sender_kwargs)
+
+        message = client.messages.create(**create_kwargs)
         logger.info(
-            f"WhatsApp template '{template_name}' sent to {phone_number}. SID: {message.sid}"
+            f"WhatsApp template '{template_name}' sent to {phone_number} "
+            f"via {list(sender_kwargs.keys())[0]}={list(sender_kwargs.values())[0]}. SID: {message.sid}"
         )
         return {
             "status": "sent",
             "message_sid": message.sid,
             "to": phone_number,
             "template": template_name,
+            "sender": sender_kwargs,
         }
     except Exception as e:
         logger.error(
             f"Failed to send WhatsApp template '{template_name}' to {phone_number}: {e}"
         )
         return {"status": "failed", "error": str(e), "template": template_name}
+
+
+async def send_whatsapp(salon: dict, to: str, content_sid: str, variables: dict, template_name: str = None) -> dict:
+    """WS3 — the single canonical entry point for business-initiated WhatsApp
+    template sends. Thin wrapper over ``send_whatsapp_template`` that makes the
+    per-salon ``salon`` argument first-class, matching the build spec
+    ``send_whatsapp(salon, to, content_sid, variables)``.
+    """
+    return await send_whatsapp_template(
+        phone_number=to,
+        content_sid=content_sid,
+        content_variables=variables,
+        template_name=template_name,
+        salon=salon,
+    )
 
 
 async def send_booking_confirmation_template(
@@ -231,6 +329,7 @@ async def send_booking_confirmation_template(
     date: str,
     time_slot: str,
     barber_name: str,
+    salon: dict = None,
 ) -> dict:
     """
     Send the approved booking-confirmation template
@@ -256,7 +355,7 @@ async def send_booking_confirmation_template(
             barber_name=barber_name,
             salon_name=salon_name,
         )
-        return await send_whatsapp_notification(phone_number, body, "booking_confirmation")
+        return await send_whatsapp_notification(phone_number, body, "booking_confirmation", salon=salon)
 
     return await send_whatsapp_template(
         phone_number=phone_number,
@@ -270,6 +369,7 @@ async def send_booking_confirmation_template(
             "6": barber_name,
         },
         template_name="booking_confirmation",
+        salon=salon,
     )
 
 
@@ -280,6 +380,7 @@ async def send_booking_completed_template(
     token_number,
     barber_name: str = "",
     amount: str = "",
+    salon: dict = None,
 ) -> dict:
     """
     Send the approved 'booking_completed' WhatsApp Content template
@@ -317,6 +418,7 @@ async def send_booking_completed_template(
             "5": str(amount) if amount else "0",
         },
         template_name="booking_completed",
+        salon=salon,
     )
 
 
@@ -326,6 +428,7 @@ async def send_your_turn_now_template(
     salon_name: str,
     barber_name: str,
     token_number,
+    salon: dict = None,
 ) -> dict:
     """
     Send the approved 'your_turn_now' WhatsApp Content template
@@ -358,6 +461,7 @@ async def send_your_turn_now_template(
             "4": barber_name or "your stylist",
         },
         template_name="your_turn_now",
+        salon=salon,
     )
 
 
@@ -369,6 +473,7 @@ async def send_token_approaching_template(
     salon_name: str = "",
     barber_name: str = "",
     current_serving: str = "",
+    salon: dict = None,
 ) -> dict:
     """
     Send the approved 'token_approaching' WhatsApp Content template
@@ -409,10 +514,11 @@ async def send_token_approaching_template(
             "6": str(current_serving) if current_serving else "—",
         },
         template_name="token_approaching",
+        salon=salon,
     )
 
 
-async def send_whatsapp_notification(phone_number: str, message: str, template_name: str = None) -> dict:
+async def send_whatsapp_notification(phone_number: str, message: str, template_name: str = None, salon: dict = None) -> dict:
     """
     Send WhatsApp notification message
     
@@ -437,11 +543,12 @@ async def send_whatsapp_notification(phone_number: str, message: str, template_n
         # Format phone number for WhatsApp
         to_whatsapp = f"whatsapp:{phone_number}"
         
-        # Send WhatsApp message
+        # Send WhatsApp message — WS3: route through the per-salon sender.
+        sender_kwargs = resolve_sender(salon)
         whatsapp_message = client.messages.create(
             body=message,
-            from_=WHATSAPP_NUMBER,
-            to=to_whatsapp
+            to=to_whatsapp,
+            **sender_kwargs,
         )
         
         logger.info(f"WhatsApp notification sent to {phone_number}. Template: {template_name}, SID: {whatsapp_message.sid}")
