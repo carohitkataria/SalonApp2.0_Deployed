@@ -13,14 +13,55 @@
     <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <!-- Luxury type stack: Fraunces (display serif) · Manrope (body sans) · Bebas Neue (numeric) -->
-    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Manrope:wght@300;400;500;600;700&family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Preload + non-blocking load of the primary type stack so text paints on-theme
+         (font-display=swap in the URL prevents invisible-text flash). -->
+    <link
+      rel="preload"
+      as="style"
+      href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Manrope:wght@300;400;500;600;700&family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap">
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Manrope:wght@300;400;500;600;700&family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap"
+      rel="stylesheet">
     <!-- Cashfree JS SDK v3 (production) -->
     <script src="https://sdk.cashfree.com/js/v3/cashfree.js"></script>
     <title>SalonHub — Book Your Perfect Style</title>
+    <!-- ==========================================================
+         Critical inline CSS (WS2 — kills the Flash of Unstyled Content).
+         The dev server injects the compiled CSS via JS, so the very first
+         frame would otherwise be bare unstyled text. This paints the first
+         frame on the app's luxury-dark background with a branded loader that
+         React replaces on mount.
+         ========================================================== -->
+    <style>
+      html, body { margin: 0; padding: 0; background-color: #0E0C09; }
+      body { font-family: 'Manrope', 'Inter', system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
+      #root { min-height: 100vh; }
+      .app-boot {
+        position: fixed; inset: 0; z-index: 2147483647;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 18px; background: #0E0C09; color: #EDE7DD;
+      }
+      .app-boot__logo {
+        font-family: 'Fraunces', Georgia, 'Times New Roman', serif;
+        font-size: 30px; font-weight: 600; letter-spacing: .5px; color: #E7C67A;
+      }
+      .app-boot__logo span { color: #EDE7DD; }
+      .app-boot__spin {
+        width: 34px; height: 34px; border-radius: 50%;
+        border: 3px solid rgba(231, 198, 122, .22); border-top-color: #E7C67A;
+        animation: appboot-spin .8s linear infinite;
+      }
+      @keyframes appboot-spin { to { transform: rotate(360deg); } }
+    </style>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
-    <div id="root"></div>
+    <div id="root">
+      <!-- Branded boot state — replaced by React on first mount. -->
+      <div class="app-boot">
+        <div class="app-boot__logo">Salon<span>Hub</span></div>
+        <div class="app-boot__spin"></div>
+      </div>
+    </div>
   </body>
 </html>

@@ -214,7 +214,8 @@ class Salon(BaseModel):
 class ServiceCreate(BaseModel):
     service_name: str
     description: Optional[str] = None
-    category: str = "General"  # Category for grouping
+    category: str = "General"  # Category for grouping (canonical name, mirrored from category_id)
+    category_id: Optional[str] = None  # WS4 — canonical categories collection reference
     sub_category: Optional[str] = None  # Fine-grained bucket under the category
     gender_tag: str = "Unisex"  # Men/Women/Unisex
     default_duration: int = 30  # minutes
@@ -243,6 +244,7 @@ class ServiceUpdate(BaseModel):
     service_name: Optional[str] = None
     description: Optional[str] = None
     category: Optional[str] = None
+    category_id: Optional[str] = None  # WS4
     sub_category: Optional[str] = None
     gender_tag: Optional[str] = None
     default_duration: Optional[int] = None
@@ -273,6 +275,7 @@ class Service(BaseModel):
     service_name: str
     description: Optional[str] = None
     category: str = "Services"
+    category_id: Optional[str] = None  # WS4
     sub_category: Optional[str] = None
     gender_tag: str = "Unisex"
     default_duration: int
@@ -5001,6 +5004,126 @@ async def get_services():
     services = await db.services.find({"is_active": True}, {"_id": 0}).to_list(1000)
     return services
 
+
+# ============================================================================
+# WS4 (v3.4) — Canonical service/product/membership category taxonomy
+# ============================================================================
+
+def slugify_name(name: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+    return s or "category"
+
+
+async def ensure_category(salon_id: str, ctype: str, name: str, thumbnail_url: Optional[str] = None) -> Optional[dict]:
+    """Find-or-create a canonical category for (salon, type, name). Returns the doc."""
+    name = (name or "").strip()
+    if not salon_id or not name:
+        return None
+    slug = slugify_name(name)
+    existing = await db.categories.find_one({"salon_id": salon_id, "type": ctype, "slug": slug}, {"_id": 0})
+    if existing:
+        if thumbnail_url and not existing.get("thumbnail_url"):
+            await db.categories.update_one({"id": existing["id"]}, {"$set": {"thumbnail_url": thumbnail_url}})
+            existing["thumbnail_url"] = thumbnail_url
+        return existing
+    # sort_order = append to end
+    count = await db.categories.count_documents({"salon_id": salon_id, "type": ctype})
+    doc = {
+        "id": str(uuid.uuid4()), "salon_id": salon_id, "type": ctype,
+        "name": name, "slug": slug, "sort_order": count, "active": True,
+        "thumbnail_url": thumbnail_url,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await db.categories.insert_one({**doc})
+    except Exception:
+        # race — fetch the winner
+        return await db.categories.find_one({"salon_id": salon_id, "type": ctype, "slug": slug}, {"_id": 0})
+    return doc
+
+
+async def resolve_service_category(salon_id: str, category_id: Optional[str], category_name: Optional[str]) -> Optional[dict]:
+    """Given either a category_id or a free-text name, return the canonical
+    category doc (creating it from the name when needed)."""
+    if category_id:
+        doc = await db.categories.find_one({"id": category_id, "salon_id": salon_id}, {"_id": 0})
+        if doc:
+            return doc
+    return await ensure_category(salon_id, "service", category_name or "General")
+
+
+@api_router.get("/salons/{salon_id}/categories")
+async def list_categories(salon_id: str, type: str = "service", include_inactive: bool = False):
+    """Single source of truth read by all three surfaces (customer, staff, salon)."""
+    q = {"salon_id": salon_id, "type": type}
+    if not include_inactive:
+        q["active"] = True
+    cats = await db.categories.find(q, {"_id": 0}).to_list(500)
+    cats.sort(key=lambda c: (c.get("sort_order", 0), (c.get("name") or "").lower()))
+    return {"categories": cats}
+
+
+@api_router.post("/salons/{salon_id}/categories")
+async def create_category(salon_id: str, body: dict, current_salon=Depends(get_current_salon)):
+    ctype = body.get("type", "service")
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Category name is required")
+    slug = slugify_name(name)
+    exists = await db.categories.find_one({"salon_id": salon_id, "type": ctype, "slug": slug}, {"_id": 0})
+    if exists and exists.get("active", True):
+        raise HTTPException(status_code=409, detail="A category with this name already exists")
+    if exists:  # reactivate a soft-deleted one
+        await db.categories.update_one({"id": exists["id"]}, {"$set": {"active": True, "name": name}})
+        return await db.categories.find_one({"id": exists["id"]}, {"_id": 0})
+    doc = await ensure_category(salon_id, ctype, name, body.get("thumbnail_url"))
+    if body.get("sort_order") is not None:
+        await db.categories.update_one({"id": doc["id"]}, {"$set": {"sort_order": int(body["sort_order"])}})
+        doc["sort_order"] = int(body["sort_order"])
+    return doc
+
+
+@api_router.put("/salons/{salon_id}/categories/{cat_id}")
+async def update_category(salon_id: str, cat_id: str, body: dict, current_salon=Depends(get_current_salon)):
+    doc = await db.categories.find_one({"id": cat_id, "salon_id": salon_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Category not found")
+    updates = {}
+    if body.get("name") and body["name"].strip() != doc.get("name"):
+        new_name = body["name"].strip()
+        new_slug = slugify_name(new_name)
+        clash = await db.categories.find_one(
+            {"salon_id": salon_id, "type": doc["type"], "slug": new_slug, "id": {"$ne": cat_id}}, {"_id": 0})
+        if clash:
+            raise HTTPException(status_code=409, detail="A category with this name already exists")
+        updates["name"] = new_name
+        updates["slug"] = new_slug
+    if body.get("sort_order") is not None:
+        updates["sort_order"] = int(body["sort_order"])
+    if body.get("active") is not None:
+        updates["active"] = bool(body["active"])
+    if body.get("thumbnail_url") is not None:
+        updates["thumbnail_url"] = body["thumbnail_url"]
+    if updates:
+        await db.categories.update_one({"id": cat_id}, {"$set": updates})
+        # keep the denormalized name mirror on items in sync
+        if "name" in updates and doc["type"] == "service":
+            await db.services.update_many({"salon_id": salon_id, "category_id": cat_id}, {"$set": {"category": updates["name"]}})
+    return await db.categories.find_one({"id": cat_id}, {"_id": 0})
+
+
+@api_router.delete("/salons/{salon_id}/categories/{cat_id}")
+async def delete_category(salon_id: str, cat_id: str, current_salon=Depends(get_current_salon)):
+    doc = await db.categories.find_one({"id": cat_id, "salon_id": salon_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Category not found")
+    in_use = await db.services.count_documents({"salon_id": salon_id, "category_id": cat_id, "is_active": True})
+    if in_use > 0:
+        raise HTTPException(status_code=409, detail=f"{in_use} item(s) still use this category. Move them first.")
+    await db.categories.update_one({"id": cat_id}, {"$set": {"active": False}})
+    return {"message": "Category removed"}
+
+
 @api_router.post("/services", response_model=Service)
 async def create_service(service: ServiceCreate, current_salon=Depends(get_current_salon)):
     service_dict = service.model_dump()
@@ -5010,6 +5133,11 @@ async def create_service(service: ServiceCreate, current_salon=Depends(get_curre
     salon_id = current_salon.get("salon_id") or current_salon.get("sub")
     if salon_id:
         service_dict["salon_id"] = salon_id
+        # WS4 — resolve/sync canonical category
+        cat = await resolve_service_category(salon_id, service_dict.get("category_id"), service_dict.get("category"))
+        if cat:
+            service_dict["category_id"] = cat["id"]
+            service_dict["category"] = cat["name"]
 
     await db.services.insert_one(service_dict)
     return Service(**service_dict)
@@ -5019,11 +5147,19 @@ async def update_service(service_id: str, service: ServiceUpdate, current_salon=
     existing = await db.services.find_one({"id": service_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Service not found")
-    
+
     update_data = {k: v for k, v in service.model_dump().items() if v is not None}
+    # WS4 — if category or category_id changed, resolve + sync both fields
+    if "category_id" in update_data or "category" in update_data:
+        sid = existing.get("salon_id")
+        if sid:
+            cat = await resolve_service_category(sid, update_data.get("category_id"), update_data.get("category"))
+            if cat:
+                update_data["category_id"] = cat["id"]
+                update_data["category"] = cat["name"]
     if update_data:
         await db.services.update_one({"id": service_id}, {"$set": update_data})
-    
+
     updated = await db.services.find_one({"id": service_id}, {"_id": 0})
     return Service(**updated)
 
@@ -6327,6 +6463,132 @@ async def salon_user_login(credentials: SalonUserLogin):
         staff_id=staff_id,
     )
 
+# ============================================================================
+# WS3 (v3.4) — Platform-wide unique login IDs
+# ----------------------------------------------------------------------------
+# A `login_ids` registry collection is the structural source of truth: it holds
+# one row per credential-bearing account (staff, salon owner, platform admin)
+# keyed by the NORMALIZED (trim+lowercase) login id, with a UNIQUE index on the
+# key. `admin` is a reserved per-salon internal alias (every salon auto-creates
+# a login_id="admin" owner account) so it is NOT globally registered and staff
+# may not choose it.
+# ============================================================================
+
+RESERVED_LOGIN_IDS = {"admin"}
+
+
+def normalize_login_id(login_id: str) -> str:
+    return (login_id or "").strip().lower()
+
+
+async def claim_login_id(login_id: str, owner_type: str, owner_id: str, salon_id: Optional[str] = None):
+    """Reserve a login id platform-wide for a given owner. Raises 409 on conflict.
+    Idempotent for the same owner (re-claiming your own id is fine). Also releases
+    the owner's previous id if it changed. `admin` is reserved and skipped."""
+    key = normalize_login_id(login_id)
+    if not key:
+        raise HTTPException(status_code=400, detail="Login ID is required.")
+    if key in RESERVED_LOGIN_IDS:
+        # reserved internal alias — never globally registered; block staff use
+        if owner_type != "salon_admin":
+            raise HTTPException(status_code=409, detail="This login ID is reserved. Please choose another.")
+        return
+    # structural check via registry
+    existing = await db.login_ids.find_one({"key": key}, {"_id": 0})
+    if existing and existing.get("owner_id") != owner_id:
+        raise HTTPException(status_code=409, detail="This login ID is already in use on the platform.")
+    # belt & suspenders — cross-collection scan (case-insensitive)
+    clash = await db.salon_users.find_one(
+        {"login_id": {"$regex": f"^{re.escape(login_id.strip())}$", "$options": "i"}, "id": {"$ne": owner_id}},
+        {"_id": 0, "id": 1, "login_id": 1},
+    )
+    if clash and normalize_login_id(clash.get("login_id")) not in RESERVED_LOGIN_IDS:
+        raise HTTPException(status_code=409, detail="This login ID is already in use on the platform.")
+    # release any prior id held by this owner, then register the new one
+    await db.login_ids.delete_many({"owner_id": owner_id, "key": {"$ne": key}})
+    await db.login_ids.update_one(
+        {"key": key},
+        {"$set": {
+            "key": key, "login_id": login_id.strip(), "owner_type": owner_type,
+            "owner_id": owner_id, "salon_id": salon_id,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+
+
+async def release_login_id(owner_id: str):
+    try:
+        await db.login_ids.delete_many({"owner_id": owner_id})
+    except Exception:
+        pass
+
+
+async def is_login_id_available(login_id: str, exclude_owner_id: Optional[str] = None) -> bool:
+    key = normalize_login_id(login_id)
+    if not key or key in RESERVED_LOGIN_IDS:
+        return False
+    existing = await db.login_ids.find_one({"key": key}, {"_id": 0, "owner_id": 1})
+    if existing and existing.get("owner_id") != exclude_owner_id:
+        return False
+    clash = await db.salon_users.find_one(
+        {"login_id": {"$regex": f"^{re.escape(login_id.strip())}$", "$options": "i"},
+         **({"id": {"$ne": exclude_owner_id}} if exclude_owner_id else {})},
+        {"_id": 0, "login_id": 1},
+    )
+    if clash and normalize_login_id(clash.get("login_id")) not in RESERVED_LOGIN_IDS:
+        return False
+    return True
+
+
+@api_router.get("/salon/login-id-available")
+async def check_login_id_available_api(login_id: str, exclude_owner_id: Optional[str] = None):
+    """Async availability check for signup/staff forms."""
+    ok = await is_login_id_available(login_id, exclude_owner_id)
+    return {"available": ok, "login_id": login_id, "normalized": normalize_login_id(login_id)}
+
+
+async def reconcile_login_id_registry():
+    """Idempotent startup pass — populate the login_ids registry from existing
+    salon_users so future create/update checks see historical IDs. Reserved
+    ('admin') aliases are skipped. Conflicts (same normalized id on 2+ owners)
+    are logged; the first owner wins the registry row."""
+    try:
+        users = await db.salon_users.find(
+            {"login_id": {"$exists": True, "$ne": None}},
+            {"_id": 0, "id": 1, "login_id": 1, "salon_id": 1},
+        ).to_list(100000)
+    except Exception as e:
+        logger.warning(f"[login-id reconcile] read failed: {e}")
+        return
+    seen = {}
+    conflicts = []
+    for u in users:
+        key = normalize_login_id(u.get("login_id"))
+        if not key or key in RESERVED_LOGIN_IDS:
+            continue
+        if key in seen:
+            conflicts.append((key, seen[key], u.get("id")))
+            continue
+        seen[key] = u.get("id")
+        try:
+            await db.login_ids.update_one(
+                {"key": key},
+                {"$set": {"key": key, "login_id": (u.get("login_id") or "").strip(),
+                          "owner_type": "staff", "owner_id": u.get("id"), "salon_id": u.get("salon_id"),
+                          "updated_at": datetime.now(timezone.utc).isoformat()},
+                 "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": datetime.now(timezone.utc).isoformat()}},
+                upsert=True,
+            )
+        except Exception:
+            pass
+    if conflicts:
+        logger.warning(f"[login-id reconcile] {len(conflicts)} duplicate login_id conflicts detected: {conflicts[:20]}")
+    else:
+        logger.info(f"[login-id reconcile] registry synced for {len(seen)} login IDs, no conflicts")
+
+
+
 @api_router.post("/salon/users", response_model=SalonUser)
 async def create_salon_user(user_data: SalonUserCreate, current_user=Depends(get_current_salon_admin)):
     """Create new salon user (admin only)"""
@@ -6339,10 +6601,15 @@ async def create_salon_user(user_data: SalonUserCreate, current_user=Depends(get
     if not mobile.startswith("+91"):
         mobile = f"+91{mobile}"
     
-    # Check if login_id already exists
-    existing_login = await db.salon_users.find_one({"login_id": user_data.login_id}, {"_id": 0})
-    if existing_login:
-        raise HTTPException(status_code=400, detail="Login ID already exists")
+    # Check if login_id already exists (platform-wide, case-insensitive).
+    # Validate now; the registry row is written after the user id is generated.
+    _key = normalize_login_id(user_data.login_id)
+    if not _key:
+        raise HTTPException(status_code=400, detail="Login ID is required.")
+    if _key in RESERVED_LOGIN_IDS:
+        raise HTTPException(status_code=409, detail="This login ID is reserved. Please choose another.")
+    if not await is_login_id_available(user_data.login_id):
+        raise HTTPException(status_code=409, detail="This login ID is already in use on the platform.")
     
     # Check if mobile already exists
     existing_mobile = await db.salon_users.find_one({"mobile": mobile}, {"_id": 0})
@@ -6443,6 +6710,8 @@ async def create_salon_user(user_data: SalonUserCreate, current_user=Depends(get
     }
     
     await db.salon_users.insert_one(new_user)
+    # WS3 — register the login id in the platform-wide registry
+    await claim_login_id(user_data.login_id, owner_type="staff", owner_id=new_user["id"], salon_id=user_data.salon_id)
     
     # Remove password_hash from response
     response_user = new_user.copy()
@@ -6500,11 +6769,14 @@ async def update_salon_user(user_id: str, update_data: SalonUserUpdate, current_
         update_fields["mobile"] = mobile
     
     if update_data.login_id:
-        # Check login_id doesn't exist for other users
-        existing = await db.salon_users.find_one({"login_id": update_data.login_id, "id": {"$ne": user_id}}, {"_id": 0})
-        if existing:
-            raise HTTPException(status_code=400, detail="Login ID already exists")
-        update_fields["login_id"] = update_data.login_id
+        # WS3 — platform-wide uniqueness (case-insensitive) via the registry
+        _key = normalize_login_id(update_data.login_id)
+        if not _key:
+            raise HTTPException(status_code=400, detail="Login ID is required.")
+        if _key in RESERVED_LOGIN_IDS:
+            raise HTTPException(status_code=409, detail="This login ID is reserved. Please choose another.")
+        await claim_login_id(update_data.login_id, owner_type="staff", owner_id=user_id, salon_id=salon_id)
+        update_fields["login_id"] = update_data.login_id.strip()
     
     if update_data.password:
         if len(update_data.password) < 6:
@@ -18838,10 +19110,18 @@ async def startup_event():
             db.invoices.create_index([("salon_id", 1), ("date", -1)], background=True),
             db.customers.create_index("phone", background=True),
             db.salon_branches.create_index([("salon_id", 1), ("is_active", 1)], background=True),
+            db.login_ids.create_index("key", unique=True, background=True),
+            db.login_ids.create_index("owner_id", background=True),
+            db.categories.create_index([("salon_id", 1), ("type", 1), ("slug", 1)], unique=True, background=True),
         )
         logger.info("[STARTUP] MongoDB indexes ensured for hot query paths")
     except Exception as _idx_e:
         logger.warning(f"[STARTUP] index creation reported: {_idx_e}")
+    # WS3 — populate the platform-wide login-id registry from existing accounts
+    try:
+        await reconcile_login_id_registry()
+    except Exception as e:
+        logger.error(f"[STARTUP] login-id reconcile failed: {e}")
     # Jul 2026 — cleanup legacy predefined services (all non-General global services)
     try:
         await cleanup_legacy_predefined_services()

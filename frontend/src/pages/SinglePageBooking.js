@@ -581,7 +581,7 @@ export default function SinglePageBooking() {
         // (we no longer pass available_only — we want on-leave barbers visible but greyed-out).
         axios.get(`${API}/salons/${salonId}/barbers?customer_view=true&date=${formData.date || getTodayIST()}${branchSuffix}`),
         axios.get(`${API}/salons/${salonId}/services/enabled`),
-        axios.get(`${API}/services/categories`)
+        axios.get(`${API}/salons/${salonId}/categories?type=service`)
       ]);
       setSalon(salonRes.data);
 
@@ -625,10 +625,11 @@ export default function SinglePageBooking() {
       // We pre-add it as a placeholder; if recentServices is empty, we'll filter it out below.
       orderedCategories.push({ name: "Favorites", thumbnail_url: defaultThumbnails["Favorites"], _isFavorites: true });
       
-      // 3) Real service categories (only those that actually have services at this salon)
+      // 3) Real service categories — canonical per-salon taxonomy (WS4).
+      //    Only those that actually have services at this salon, in sort_order.
       rawCategories.forEach(cat => {
         if (categoriesWithServices.has(cat.name) && !orderedCategories.find(c => c.name === cat.name)) {
-          orderedCategories.push(cat);
+          orderedCategories.push({ ...cat, thumbnail_url: cat.thumbnail_url || defaultThumbnails[cat.name] || defaultThumbnails["General"] });
         }
       });
       // Catch any service category that wasn't in the master list (custom categories)

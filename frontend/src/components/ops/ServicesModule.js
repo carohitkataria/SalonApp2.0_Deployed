@@ -40,6 +40,7 @@ export default function ServicesModule({ salonId, getAuthHeaders }) {
   useEffect(() => { injectZenCss(); }, []);
   const [services, setServices] = useState([]);
   const [subs, setSubs] = useState({ Services: [], Packages: [] });
+  const [cats, setCats] = useState([]); // WS4 — canonical categories from the endpoint
   const [selCat, setSelCat] = useState('Services');
   const [selSub, setSelSub] = useState(null); // null = all
   const [search, setSearch] = useState('');
@@ -155,6 +156,11 @@ export default function ServicesModule({ salonId, getAuthHeaders }) {
         Services: sub.data?.Services || [],
         Packages: sub.data?.Packages || [],
       });
+      // WS4 — canonical category list (single source of truth, shared with customer + staff)
+      try {
+        const cr = await axios.get(`${API}/salons/${salonId}/categories?type=service`, { headers: authHeadersRef.current() });
+        setCats(cr.data?.categories || []);
+      } catch (_) { /* fall back to derived names */ }
     } catch (e) {
       console.error('load services', e);
       toast.error('Failed to load services');
