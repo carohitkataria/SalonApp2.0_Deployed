@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv('/app/backend/.env')
 
-BASE_URL = (os.environ.get('REACT_APP_BACKEND_URL') or 'https://amend-deploy.preview.emergentagent.com').rstrip('/')
+BASE_URL = (os.environ.get('REACT_APP_BACKEND_URL') or 'https://busy-boyd-7.preview.emergentagent.com').rstrip('/')
 SECRET_KEY = os.environ['JWT_SECRET_KEY']
 
 
