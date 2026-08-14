@@ -2790,22 +2790,52 @@ async def twilio_inbound_whatsapp(request: Request):
     except Exception as e:
         logger.warning(f"[wa-inbound] signature validation error: {e}")
 
-    from_number = params.get("From", "")            # whatsapp:+9179…
-    to_number = params.get("To", "")
-    body = params.get("Body", "") or ""
-    profile_name = params.get("ProfileName") or ""
-    wa_id = params.get("WaId") or ""
-    message_sid = params.get("MessageSid") or params.get("SmsSid") or ""
-    num_media = 0
-    try:
-        num_media = int(params.get("NumMedia", "0"))
-    except Exception:
-        num_media = 0
+    # Twilio can deliver inbound WhatsApp in two shapes depending on how the
+    # sender/messaging-service is wired:
+    #   (a) standard Messaging webhook  -> From / Body / MessageSid / ProfileName
+    #   (b) Conversations webhook        -> EventType=onMessageAdded / Author / Body
+    # Normalise both into the same variables so we always capture the message.
+    event_type = params.get("EventType") or ""
+    is_conversations = bool(event_type)
+    our_sender_digits = _last10(os.environ.get("TWILIO_WHATSAPP_NUMBER", ""))
 
-    # Media (images/docs) — represent as a short text note if no body.
-    media_urls = [params.get(f"MediaUrl{i}") for i in range(num_media) if params.get(f"MediaUrl{i}")]
-    if not body and media_urls:
-        body = f"[media] {media_urls[0]}"
+    if is_conversations:
+        # Only care about newly-added messages.
+        if event_type != "onMessageAdded":
+            return Response(content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                            media_type="application/xml")
+        from_number = params.get("Author", "")           # whatsapp:+9179…
+        # Skip echoes of our own business/outbound messages.
+        if _last10(from_number) == our_sender_digits:
+            return Response(content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                            media_type="application/xml")
+        to_number = os.environ.get("TWILIO_WHATSAPP_NUMBER", "")
+        body = params.get("Body", "") or ""
+        profile_name = ""
+        wa_id = _last10(from_number)
+        message_sid = params.get("MessageSid") or params.get("Sid") or ""
+        num_media = 0
+        media_urls = []
+    else:
+        from_number = params.get("From", "")            # whatsapp:+9179…
+        to_number = params.get("To", "")
+        body = params.get("Body", "") or ""
+        profile_name = params.get("ProfileName") or ""
+        wa_id = params.get("WaId") or ""
+        message_sid = params.get("MessageSid") or params.get("SmsSid") or ""
+        # Ignore any inbound that is actually our own number (safety).
+        if _last10(from_number) and _last10(from_number) == our_sender_digits:
+            return Response(content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                            media_type="application/xml")
+        num_media = 0
+        try:
+            num_media = int(params.get("NumMedia", "0"))
+        except Exception:
+            num_media = 0
+        # Media (images/docs) — represent as a short text note if no body.
+        media_urls = [params.get(f"MediaUrl{i}") for i in range(num_media) if params.get(f"MediaUrl{i}")]
+        if not body and media_urls:
+            body = f"[media] {media_urls[0]}"
 
     cust_digits = _last10(from_number or wa_id)
     e164 = ""
