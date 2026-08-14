@@ -19195,6 +19195,103 @@ async def admin_update_subscription_plan(
     return plan
 
 
+# =====================================================================
+# ONE-OFF DATA MIGRATION ENDPOINT (temporary — remove after production seed)
+# Copies data from a source Mongo (the external Atlas cluster) or an uploaded
+# JSON dump ZIP into THIS app's database. Intended to be run ONCE against the
+# production deployment (whose pod can reach the external Atlas), because the
+# managed prod DB is not reachable from the preview/build environment.
+# Guarded by a single-use token.
+# =====================================================================
+_ONEOFF_MIGRATION_TOKEN = "f2152ff65750e700951ff04636655d72fa70866757e59119"
+
+
+@api_router.post("/admin/_oneoff_migrate")
+async def _oneoff_migrate(payload: dict = Body(...)):
+    if not payload or payload.get("token") != _ONEOFF_MIGRATION_TOKEN:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    mode = (payload.get("mode") or "atlas").lower()
+    drop_target = payload.get("drop_target", True)
+    only = set(payload.get("only") or [])          # optional subset of collections
+    skip = set(payload.get("skip") or [])
+    report = {}
+    errors = {}
+
+    async def _load_into(cname, docs):
+        if only and cname not in only:
+            return None
+        if cname in skip:
+            return None
+        try:
+            if drop_target:
+                await db[cname].delete_many({})
+            n = 0
+            for i in range(0, len(docs), 500):
+                batch = docs[i:i + 500]
+                if batch:
+                    await db[cname].insert_many(batch, ordered=False)
+                    n += len(batch)
+            return n
+        except Exception as e:
+            errors[cname] = str(e)[:200]
+            return report.get(cname)
+
+    if mode == "atlas":
+        src_url = payload.get("source_mongo_url")
+        src_db = payload.get("source_db") or "salonhub"
+        if not src_url:
+            raise HTTPException(status_code=400, detail="source_mongo_url required")
+        src_client = AsyncIOMotorClient(src_url, serverSelectionTimeoutMS=25000)
+        try:
+            src = src_client[src_db]
+            colls = await src.list_collection_names()
+            for cname in colls:
+                if cname.startswith("system."):
+                    continue
+                docs = await src[cname].find({}).to_list(length=None)
+                res = await _load_into(cname, docs)
+                if res is not None:
+                    report[cname] = res
+        finally:
+            src_client.close()
+
+    elif mode == "zip":
+        import zipfile
+        import urllib.request
+        zip_url = payload.get("zip_url")
+        if not zip_url:
+            raise HTTPException(status_code=400, detail="zip_url required")
+        with urllib.request.urlopen(zip_url, timeout=60) as resp:
+            raw = resp.read()
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+        for name in zf.namelist():
+            if not name.endswith(".json"):
+                continue
+            cname = name.split("/")[-1][:-5]
+            try:
+                docs = json.loads(zf.read(name).decode("utf-8"))
+                if isinstance(docs, dict):
+                    docs = [docs]
+                res = await _load_into(cname, docs)
+                if res is not None:
+                    report[cname] = res
+            except Exception as e:
+                errors[cname] = str(e)[:200]
+    else:
+        raise HTTPException(status_code=400, detail="mode must be 'atlas' or 'zip'")
+
+    return {
+        "status": "ok",
+        "mode": mode,
+        "target_db": db.name,
+        "collections_loaded": report,
+        "total_docs": sum(report.values()),
+        "errors": errors,
+    }
+
+
+
 
 
 # Include router - MUST be after ALL @api_router routes are defined
