@@ -558,4 +558,4 @@ Testing agent iteration_26 report: **17/17 backend targeted tests PASS**, 6/7 fr
 - New router `salon_whatsapp_sender.py`: `GET /whatsapp-sender`, `POST /whatsapp-sender/request` (salon), `PUT /whatsapp-sender/config`, `POST /whatsapp-sender/activate`, `POST /whatsapp-sender/test` (last 3 platform-owner-only, role=platform_admin).
 - Marketing → Settings → **WhatsApp Sender** card (`MarketingSettingsPanel.js`): plain-language sender + status pill, salon request form, owner-only connect/activate/test.
 
-**Env note:** `.env` files were missing on restore and recreated (MONGO_URL=mongodb://localhost:27017, DB_NAME=salonapp). Twilio live credentials set. Admin login: `POST /api/salon/users/login` identifier=`admin` password=`salon123`, salon_id=2f4764b7-ee56-41fa-8b36-e89d8ed2150e.
+**Env note:** `.env` files were missing on restore and recreated (MONGO_URL=mongodb://localhost:27017, DB_NAME=salonapp). Twilio live credentials set. Admin login: `POST /api/salon/users/login` identifier=`admin` password=`salon123`, salon_id=release-candidate-16.
