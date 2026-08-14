@@ -1416,13 +1416,40 @@ metadata:
 
 test_plan:
   current_focus:
-    - "WS3 WhatsApp Sender per-salon routing endpoints"
-    - "WS2 Salon State/PIN + address book + shop checkout guard"
+    - "Owner Console — WhatsApp pending tag + connect/activate action buttons"
+    - "WS4 — Platform-owner marketing wallet credit + ledger"
+    - "WS5 — Approved template send logging + constants module"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 backend:
+  - task: "Owner Console — WhatsApp connect/activate + WS4 wallet credit (platform router)"
+    implemented: true
+    working: "NA"
+    file: "platform_admin_management.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "NEW platform-owner endpoints (require platform_admin token from /api/platform/auth/*). DO NOT TEST YET — user will confirm. Endpoints: GET /api/platform/whatsapp-requests; GET /api/platform/salons (now includes per-row whatsapp summary); PUT /api/platform/salons/{id}/whatsapp-sender {messaging_service_sid|sender_number}; POST /api/platform/salons/{id}/whatsapp-sender/activate {active}; GET /api/platform/salons/{id}/wallet; POST /api/platform/salons/{id}/wallet/credit {amount, note}. All return 403 without platform auth (verified)."
+  - task: "WS5 — WhatsApp template send logging + wallet metering hook"
+    implemented: true
+    working: "NA"
+    file: "server.py, whatsapp_templates.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "record_whatsapp_send() writes whatsapp_send_log (message_sid+status) after each of the 4 template sends and applies a wallet-debit hook for wallet-metered templates (operational queue/invoice templates are not metered). Constants in whatsapp_templates.py. Per-message-type gating already enforced by existing notification settings. DO NOT TEST YET."
+
+agent_communication:
+    - agent: "main"
+      message: "Built Owner Console WhatsApp tag+actions, WS4 (platform-owner wallet credit + ledger), and WS5 (template send logging + constants). User asked to WAIT for backend+frontend testing until they confirm — DO NOT run testing agents yet. All new platform routes verified registered (403 without auth). Backend boots clean; frontend compiles."
   - task: "WS3 — Per-salon WhatsApp Sender config endpoints"
     implemented: true
     working: true

@@ -16,6 +16,7 @@ import {
   Shield, LogOut, Loader2, Crown, Search, Building2, Users, IndianRupee,
   AlertTriangle, Check, X, Eye, Pause, Play, Settings2, ArrowLeft, History,
   Clock, BadgePercent, Megaphone, BarChart3, Package, Tag, RefreshCw,
+  MessageCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -94,6 +95,9 @@ export default function PlatformDashboardPage() {
   // Modal state for override actions
   const [modal, setModal] = useState(null); // {type, salonId} | null
   const [modalSubmitting, setModalSubmitting] = useState(false);
+  const [whatsappForm, setWhatsappForm] = useState({ messaging_service_sid: '', sender_number: '' });
+  const [walletForm, setWalletForm] = useState({ amount: '', note: '' });
+  const [walletData, setWalletData] = useState(null);
 
   // Suspend modal local state
   const [suspendReason, setSuspendReason] = useState('');
@@ -185,6 +189,81 @@ export default function PlatformDashboardPage() {
       const d = err?.response?.data?.detail;
       toast.error(typeof d === 'string' ? d : 'Could not reactivate salon');
     }
+  };
+
+  // WS3 owner-console — connect + activate a salon's own WhatsApp sender.
+  const submitWhatsappConnect = async () => {
+    const salonId = modal?.salonId;
+    if (!salonId) return;
+    const msgSid = (whatsappForm.messaging_service_sid || '').trim();
+    const sender = (whatsappForm.sender_number || '').trim();
+    if (!msgSid && !sender) {
+      toast.error('Enter a Messaging Service SID or a sender number');
+      return;
+    }
+    setModalSubmitting(true);
+    try {
+      await axios.put(`${API}/platform/salons/${salonId}/whatsapp-sender`,
+        { messaging_service_sid: msgSid || null, sender_number: sender || null }, { headers });
+      await axios.post(`${API}/platform/salons/${salonId}/whatsapp-sender/activate`,
+        { active: true }, { headers });
+      toast.success('WhatsApp sender connected & activated');
+      setModal(null);
+      fetchSalons();
+    } catch (err) {
+      const d = err?.response?.data?.detail;
+      toast.error(typeof d === 'string' ? d : 'Could not connect WhatsApp sender');
+    } finally { setModalSubmitting(false); }
+  };
+
+  // WS4 owner-console — open wallet modal + load balance/ledger.
+  const openWalletModal = async (salon) => {
+    setWalletForm({ amount: '', note: '' });
+    setWalletData(null);
+    setModal({ type: 'wallet', salonId: salon.id, salon });
+    try {
+      const r = await axios.get(`${API}/platform/salons/${salon.id}/wallet`, { headers });
+      setWalletData(r.data);
+    } catch (err) {
+      toast.error('Could not load wallet');
+    }
+  };
+
+  const submitWalletCredit = async () => {
+    const salonId = modal?.salonId;
+    const amount = parseFloat(walletForm.amount);
+    if (!salonId) return;
+    if (!amount || amount <= 0) { toast.error('Enter a valid amount'); return; }
+    if (!walletForm.note || walletForm.note.trim().length < 2) { toast.error('Add a note'); return; }
+    setModalSubmitting(true);
+    try {
+      await axios.post(`${API}/platform/salons/${salonId}/wallet/credit`,
+        { amount, note: walletForm.note.trim() }, { headers });
+      toast.success(`Credited INR ${amount.toLocaleString('en-IN')}`);
+      setWalletForm({ amount: '', note: '' });
+      const r = await axios.get(`${API}/platform/salons/${salonId}/wallet`, { headers });
+      setWalletData(r.data);
+    } catch (err) {
+      const d = err?.response?.data?.detail;
+      toast.error(typeof d === 'string' ? d : 'Could not credit wallet');
+    } finally { setModalSubmitting(false); }
+  };
+
+
+  const submitWhatsappRevert = async () => {
+    const salonId = modal?.salonId;
+    if (!salonId) return;
+    setModalSubmitting(true);
+    try {
+      await axios.post(`${API}/platform/salons/${salonId}/whatsapp-sender/activate`,
+        { active: false }, { headers });
+      toast.success('Reverted to SalonHub default number');
+      setModal(null);
+      fetchSalons();
+    } catch (err) {
+      const d = err?.response?.data?.detail;
+      toast.error(typeof d === 'string' ? d : 'Could not revert');
+    } finally { setModalSubmitting(false); }
   };
 
   const handleChangePhone = async (salonId, newPhone, reason) => {
@@ -634,6 +713,7 @@ export default function PlatformDashboardPage() {
                         <th className="text-left px-4 py-3 font-bold">Plan</th>
                         <th className="text-left px-4 py-3 font-bold">Expiry</th>
                         <th className="text-left px-4 py-3 font-bold">Status</th>
+                        <th className="text-left px-4 py-3 font-bold">WhatsApp</th>
                         <th className="text-right px-4 py-3 font-bold">Actions</th>
                       </tr>
                     </thead>
@@ -656,6 +736,9 @@ export default function PlatformDashboardPage() {
                           <td className="px-4 py-3">
                             <StatusPill {...s} />
                           </td>
+                          <td className="px-4 py-3">
+                            <WhatsAppTag wa={s.whatsapp} />
+                          </td>
                           <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                             <div className="flex justify-end gap-1">
                               {(s.status || 'active') === 'suspended' ? (
@@ -663,6 +746,26 @@ export default function PlatformDashboardPage() {
                               ) : (
                                 <button onClick={() => { setModal({ type: 'suspend', salonId: s.id }); setSuspendReason(''); }} className="p-1.5 rounded hover:bg-rose-500/15 text-rose-400" title="Suspend"><Pause className="w-3.5 h-3.5" /></button>
                               )}
+                              <button
+                                onClick={() => {
+                                  setWhatsappForm({
+                                    messaging_service_sid: s.whatsapp?.messaging_service_sid || '',
+                                    sender_number: s.whatsapp?.sender_number || s.whatsapp?.requested_number || '',
+                                  });
+                                  setModal({ type: 'whatsapp', salonId: s.id, salon: s });
+                                }}
+                                className={`p-1.5 rounded ${s.whatsapp?.status === 'pending' ? 'bg-amber-500/20 text-amber-500 hover:bg-amber-500/30 animate-pulse' : 'hover:bg-emerald-500/15 text-emerald-400'}`}
+                                title={s.whatsapp?.status === 'pending' ? 'Pending WhatsApp request — connect now' : 'WhatsApp sender'}
+                              >
+                                <MessageCircle className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => openWalletModal(s)}
+                                className="p-1.5 rounded hover:bg-violet-500/15 text-violet-400"
+                                title="Marketing wallet — add credit"
+                              >
+                                <IndianRupee className="w-3.5 h-3.5" />
+                              </button>
                               <button onClick={() => handleViewAs(s.id)} className="p-1.5 rounded hover:bg-sky-500/15 text-sky-400" title="View as"><Eye className="w-3.5 h-3.5" /></button>
                               <button onClick={() => openDetail(s.id)} className="p-1.5 rounded hover:bg-primary/15 text-primary" title="Open detail"><Settings2 className="w-3.5 h-3.5" /></button>
                             </div>
@@ -718,10 +821,38 @@ export default function PlatformDashboardPage() {
         compForm={compForm}
         setCompForm={setCompForm}
         submitComp={submitComp}
+        whatsappForm={whatsappForm}
+        setWhatsappForm={setWhatsappForm}
+        submitWhatsappConnect={submitWhatsappConnect}
+        submitWhatsappRevert={submitWhatsappRevert}
+        walletForm={walletForm}
+        setWalletForm={setWalletForm}
+        walletData={walletData}
+        submitWalletCredit={submitWalletCredit}
       />
     </div>
   );
 }
+
+function WhatsAppTag({ wa }) {
+  const status = wa?.status || 'none';
+  if (status === 'pending') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 text-amber-500 border border-amber-500/30 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide">
+        <MessageCircle className="w-3 h-3" /> Pending
+      </span>
+    );
+  }
+  if (status === 'active') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 text-emerald-500 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide" title={wa?.sending_from}>
+        <MessageCircle className="w-3 h-3" /> Own number
+      </span>
+    );
+  }
+  return <span className="text-[10px] text-muted-foreground/70">Default</span>;
+}
+
 
 function SummaryCard({ icon, label, value, sub }) {
   return (
@@ -743,6 +874,8 @@ function OverrideModals({
   overrideForm, setOverrideForm, submitOverrideBranches,
   trialForm, setTrialForm, submitExtendTrial,
   compForm, setCompForm, submitComp,
+  whatsappForm, setWhatsappForm, submitWhatsappConnect, submitWhatsappRevert,
+  walletForm, setWalletForm, walletData, submitWalletCredit,
 }) {
   if (!modal) return null;
   const { type } = modal;
@@ -757,8 +890,109 @@ function OverrideModals({
             {type === 'override_branches' && 'Override branch cap'}
             {type === 'extend_trial' && 'Extend trial period'}
             {type === 'comp' && 'Grant complimentary access'}
+            {type === 'whatsapp' && 'WhatsApp sender'}
+            {type === 'wallet' && 'Marketing wallet'}
           </DialogTitle>
         </DialogHeader>
+
+        {type === 'wallet' && (
+          <div className="space-y-3">
+            <div className="rounded-lg bg-card border border-border p-3 text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground">{modal?.salon?.salon_name}</span>
+                <span className="text-lg font-bold text-foreground">
+                  {walletData ? `₹${((walletData.balance_minor || 0) / 100).toLocaleString('en-IN')}` : '…'}
+                </span>
+              </div>
+              <div className="text-[10px] text-muted-foreground/70 mt-0.5">Current marketing wallet balance</div>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="text-xs uppercase tracking-widest text-muted-foreground/80 font-bold">Amount (₹)</label>
+                <Input type="number" min={1} value={walletForm.amount} onChange={(e) => setWalletForm({ ...walletForm, amount: e.target.value })} placeholder="500" className="mt-1 bg-card border-border" autoFocus />
+              </div>
+              <div className="col-span-2">
+                <label className="text-xs uppercase tracking-widest text-muted-foreground/80 font-bold">Note</label>
+                <Input value={walletForm.note} onChange={(e) => setWalletForm({ ...walletForm, note: e.target.value })} placeholder="e.g. goodwill credit" className="mt-1 bg-card border-border" />
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <Button onClick={submitWalletCredit} disabled={submitting} className="bg-gradient-to-r from-violet-500 to-violet-600 text-white">
+                {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Add credit'}
+              </Button>
+            </div>
+            <div>
+              <div className="text-xs uppercase tracking-widest text-muted-foreground/80 font-bold mb-1">Transaction log</div>
+              <div className="max-h-52 overflow-y-auto rounded-lg border border-border divide-y divide-border/50">
+                {!walletData ? (
+                  <div className="p-3 text-xs text-muted-foreground">Loading…</div>
+                ) : (walletData.ledger || []).length === 0 ? (
+                  <div className="p-3 text-xs text-muted-foreground">No transactions yet.</div>
+                ) : walletData.ledger.map((row) => (
+                  <div key={row.id} className="p-2.5 text-xs flex justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-medium text-foreground truncate">{row.note || row.type}</div>
+                      <div className="text-[10px] text-muted-foreground/70">
+                        {row.actor?.name ? `${row.actor.name} · ` : ''}{new Date(row.created_at).toLocaleString('en-IN')}
+                      </div>
+                    </div>
+                    <div className={`font-bold whitespace-nowrap ${(row.amount_minor || 0) >= 0 ? 'text-emerald-500' : 'text-rose-400'}`}>
+                      {(row.amount_minor || 0) >= 0 ? '+' : '−'}₹{Math.abs((row.amount_minor || 0) / 100).toLocaleString('en-IN')}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="flex justify-end pt-1">
+              <Button variant="ghost" onClick={() => setModal(null)}>Close</Button>
+            </div>
+          </div>
+        )}
+
+
+        {type === 'whatsapp' && (() => {
+          const wa = modal?.salon?.whatsapp || {};
+          const isActive = wa.status === 'active';
+          return (
+            <div className="space-y-3">
+              <div className="rounded-lg bg-card border border-border p-3 text-xs space-y-1">
+                <div className="flex justify-between"><span className="text-muted-foreground">Salon</span><span className="font-medium">{modal?.salon?.salon_name}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Currently sending from</span><span className="font-medium">{wa.sending_from || 'SalonHub default'}</span></div>
+                {wa.status === 'pending' && (
+                  <>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Requested number</span><span className="font-mono">{wa.requested_number || '—'}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Business name</span><span>{wa.business_name || '—'}</span></div>
+                  </>
+                )}
+              </div>
+              {wa.status === 'pending' && (
+                <div className="rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400 px-3 py-2 text-xs font-medium">
+                  This salon requested to send from its own WhatsApp number. Register it in Twilio, then paste its Messaging Service SID (or the sender number) below and connect.
+                </div>
+              )}
+              <div>
+                <label className="text-xs uppercase tracking-widest text-muted-foreground/80 font-bold">Messaging Service SID (MG…)</label>
+                <Input value={whatsappForm.messaging_service_sid} onChange={(e) => setWhatsappForm({ ...whatsappForm, messaging_service_sid: e.target.value })} placeholder="MGxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" className="mt-1 bg-card border-border font-mono text-xs" autoFocus />
+              </div>
+              <div>
+                <label className="text-xs uppercase tracking-widest text-muted-foreground/80 font-bold">Sender number (fallback)</label>
+                <Input value={whatsappForm.sender_number} onChange={(e) => setWhatsappForm({ ...whatsappForm, sender_number: e.target.value })} placeholder="+91XXXXXXXXXX" className="mt-1 bg-card border-border" />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="ghost" onClick={() => setModal(null)}>Cancel</Button>
+                {isActive && (
+                  <Button variant="outline" onClick={submitWhatsappRevert} disabled={submitting}>
+                    {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Revert to default'}
+                  </Button>
+                )}
+                <Button onClick={submitWhatsappConnect} disabled={submitting} className="bg-gradient-to-r from-emerald-500 to-emerald-600 text-white">
+                  {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : (isActive ? 'Update & keep live' : 'Connect & activate')}
+                </Button>
+              </div>
+            </div>
+          );
+        })()}
+
 
         {type === 'suspend' && (
           <div className="space-y-3">

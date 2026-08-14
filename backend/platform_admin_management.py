@@ -186,6 +186,192 @@ async def _existing_active_sub(salon_id: str) -> Optional[dict]:
 
 # ---------- Endpoint: list + search ----------
 
+import os as _os
+
+
+def _wa_summary(wa: Optional[dict]) -> dict:
+    """WS3 owner-console — compact WhatsApp sender summary for a salon row."""
+    w = wa or {}
+    platform_from = _os.environ.get("TWILIO_WHATSAPP_NUMBER", "").replace("whatsapp:", "")
+    status = w.get("status") or "none"
+    is_own_active = w.get("mode") == "own" and status == "active"
+    if is_own_active:
+        num = w.get("sender_number") or ""
+        sending_from = f"Own number {num}".strip()
+    else:
+        sending_from = f"SalonHub default ({platform_from})" if platform_from else "SalonHub default"
+    return {
+        "status": status,                      # none | pending | active
+        "mode": w.get("mode") or "platform",
+        "sending_from": sending_from,
+        "requested_number": w.get("requested_number"),
+        "business_name": w.get("business_name"),
+        "sender_number": w.get("sender_number"),
+        "messaging_service_sid": w.get("messaging_service_sid"),
+        "own_waba": bool(w.get("own_waba")),
+    }
+
+
+@management_router.get("/whatsapp-requests")
+async def list_whatsapp_requests(admin=Depends(require_platform_admin)):
+    """WS3 owner-console — all salons that have requested their own WhatsApp
+    number and are awaiting the platform owner to connect + activate."""
+    cursor = _db.salons.find(
+        {"whatsapp.status": "pending", "is_deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "salon_name": 1, "owner_name": 1, "phone": 1, "city": 1, "whatsapp": 1},
+    ).sort("whatsapp.requested_at", 1)
+    rows = []
+    async for s in cursor:
+        rows.append({
+            "id": s["id"],
+            "salon_name": s.get("salon_name"),
+            "owner_name": s.get("owner_name"),
+            "phone": s.get("phone"),
+            "city": s.get("city"),
+            "whatsapp": _wa_summary(s.get("whatsapp")),
+        })
+    return {"rows": rows, "total": len(rows)}
+
+
+class WhatsAppConnectRequest(BaseModel):
+    messaging_service_sid: Optional[str] = None
+    sender_number: Optional[str] = None
+    own_waba: Optional[bool] = None
+    template_overrides: Optional[dict] = None
+
+
+@management_router.put("/salons/{salon_id}/whatsapp-sender")
+async def connect_whatsapp_sender(
+    salon_id: str, body: WhatsAppConnectRequest, admin=Depends(require_platform_admin),
+):
+    """WS3 owner-console — paste the salon's Messaging Service SID / sender
+    number (does NOT go live until activated)."""
+    salon = await _db.salons.find_one({"id": salon_id}, {"_id": 0, "id": 1, "whatsapp": 1})
+    if salon is None:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    wa = dict(salon.get("whatsapp") or {})
+    if body.messaging_service_sid is not None:
+        wa["messaging_service_sid"] = body.messaging_service_sid.strip() or None
+    if body.sender_number is not None:
+        num = body.sender_number.strip()
+        if num and not num.startswith("+"):
+            num = "+" + num.lstrip("0")
+        wa["sender_number"] = num or None
+    if body.own_waba is not None:
+        wa["own_waba"] = bool(body.own_waba)
+    if body.template_overrides is not None:
+        wa["template_overrides"] = body.template_overrides
+    wa["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await _db.salons.update_one({"id": salon_id}, {"$set": {"whatsapp": wa}})
+    await _write_audit(admin=admin, action="whatsapp_connect", target="salons", target_id=salon_id, payload={k: v for k, v in body.model_dump().items() if v is not None})
+    return {"ok": True, "whatsapp": _wa_summary(wa)}
+
+
+class WhatsAppActivateRequest(BaseModel):
+    active: bool
+
+
+@management_router.post("/salons/{salon_id}/whatsapp-sender/activate")
+async def activate_whatsapp_sender(
+    salon_id: str, body: WhatsAppActivateRequest, admin=Depends(require_platform_admin),
+):
+    """WS3 owner-console — flip a salon's own WhatsApp sender live (or revert to
+    the platform default). Routing changes instantly — every send runs through
+    twilio_service.resolve_sender()."""
+    salon = await _db.salons.find_one({"id": salon_id}, {"_id": 0, "id": 1, "whatsapp": 1, "salon_name": 1, "owner_name": 1})
+    if salon is None:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    wa = dict(salon.get("whatsapp") or {})
+    if body.active:
+        if not wa.get("messaging_service_sid") and not wa.get("sender_number"):
+            raise HTTPException(status_code=400, detail="Set a Messaging Service SID or sender number before activating.")
+        wa["mode"] = "own"
+        wa["status"] = "active"
+        wa["activated_at"] = datetime.now(timezone.utc).isoformat()
+    else:
+        wa["mode"] = "platform"
+        wa["status"] = "none"
+    wa["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await _db.salons.update_one({"id": salon_id}, {"$set": {"whatsapp": wa}})
+    await _write_audit(admin=admin, action="whatsapp_activate", target="salons", target_id=salon_id, payload={"active": body.active})
+
+    # Best-effort notify the salon that its own number is live.
+    if body.active and _send_whatsapp_notification and salon.get("phone"):
+        try:
+            await _send_whatsapp_notification(
+                salon["phone"],
+                f"Good news! {salon.get('salon_name') or 'Your salon'} now sends WhatsApp messages from its own number.",
+                "whatsapp_sender_activated",
+            )
+        except Exception:
+            pass
+    return {"ok": True, "whatsapp": _wa_summary(wa)}
+
+
+# ---------- WS4: Platform-owner marketing wallet credit + view ----------
+
+import salon_marketing_settings as _mkt  # reuse wallet helpers (shared _db)
+
+
+class WalletCreditRequest(BaseModel):
+    amount: float = Field(..., gt=0, le=1000000, description="Amount to credit, in INR")
+    note: str = Field(..., min_length=2, max_length=300)
+
+
+@management_router.get("/salons/{salon_id}/wallet")
+async def owner_get_wallet(salon_id: str, admin=Depends(require_platform_admin)):
+    """WS4 — platform-owner view of a salon's marketing wallet + credit log."""
+    salon = await _db.salons.find_one({"id": salon_id}, {"_id": 0, "id": 1, "salon_name": 1})
+    if salon is None:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    wallet = await _mkt._get_or_create_wallet(salon_id)
+    ledger = []
+    async for row in _db.wallet_ledger.find({"salon_id": salon_id}, {"_id": 0}).sort("created_at", -1).limit(100):
+        ledger.append(row)
+    return {
+        "salon_id": salon_id,
+        "salon_name": salon.get("salon_name"),
+        "balance_minor": int(wallet.get("balance_minor") or 0),
+        "currency": wallet.get("currency") or "INR",
+        "marketing_status": wallet.get("marketing_status"),
+        "ledger": ledger,
+    }
+
+
+@management_router.post("/salons/{salon_id}/wallet/credit")
+async def owner_credit_wallet(salon_id: str, body: WalletCreditRequest, admin=Depends(require_platform_admin)):
+    """WS4 — platform-owner-only manual credit to a salon's marketing wallet.
+    Records amount, note, actor (owner) and timestamp in the shared wallet ledger
+    (visible to both owner and salon). Activates marketing on first credit."""
+    salon = await _db.salons.find_one({"id": salon_id}, {"_id": 0, "id": 1})
+    if salon is None:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    amount_minor = int(round(body.amount * 100))
+    wallet = await _mkt._get_or_create_wallet(salon_id)
+    new_balance = int(wallet.get("balance_minor") or 0) + amount_minor
+
+    set_fields = {"balance_minor": new_balance, "updated_at": datetime.now(timezone.utc).isoformat()}
+    # A manual credit counts as a recharge → activate marketing so sends can flow.
+    if not wallet.get("first_recharge_at"):
+        set_fields["first_recharge_at"] = datetime.now(timezone.utc).isoformat()
+    set_fields["marketing_status"] = "active"
+    await _db.wallets.update_one({"salon_id": salon_id}, {"$set": set_fields})
+
+    actor = {
+        "type": "platform_owner",
+        "id": (admin.get("id") or admin.get("sub") or admin.get("user_id")),
+        "name": admin.get("name") or admin.get("email") or admin.get("mobile") or "Platform owner",
+    }
+    entry = await _mkt._insert_ledger(
+        salon_id=salon_id, type_="adjustment", amount_minor=amount_minor,
+        balance_after_minor=new_balance, channel=None,
+        note=body.note.strip(), actor=actor,
+    )
+    await _write_audit(admin=admin, action="wallet_credit", target="salons", target_id=salon_id, payload={"amount": body.amount, "note": body.note})
+    return {"ok": True, "balance_minor": new_balance, "entry": entry}
+
+
+
 @management_router.get("/salons")
 async def list_salons(
     q: Optional[str] = None,
@@ -256,6 +442,7 @@ async def list_salons(
             "trial_ends_at": sub_state.get("trial_ends_at"),
             "current_amount": sub.get("total_amount") or sub_state.get("total_amount"),
             "max_branches_effective": sub_state.get("max_branches_effective"),
+            "whatsapp": _wa_summary(salon.get("whatsapp")),
         })
 
     await _write_audit(

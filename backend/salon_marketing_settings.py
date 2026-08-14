@@ -149,6 +149,7 @@ async def _insert_ledger(
     salon_id: str, type_: str, amount_minor: int, balance_after_minor: int,
     channel: Optional[str] = None, ref: Optional[str] = None,
     twilio_usage_key: Optional[str] = None, note: Optional[str] = None,
+    actor: Optional[dict] = None,
 ):
     row = {
         "id": str(uuid.uuid4()),
@@ -160,6 +161,7 @@ async def _insert_ledger(
         "ref": ref,
         "twilio_usage_key": twilio_usage_key,
         "note": note,
+        "actor": actor,          # WS4 — who made this entry (e.g. platform owner)
         "created_at": _now_iso(),
     }
     await _db.wallet_ledger.insert_one(dict(row))

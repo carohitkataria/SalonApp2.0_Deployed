@@ -2656,6 +2656,46 @@ def build_action_links(token_id: str, salon_id: str) -> str:
     return f"\n\n🔁 *Reschedule:* {reschedule_url}\n❌ *Cancel:* {cancel_url}"
 
 
+async def record_whatsapp_send(salon_id: str, template_name: str, to: str, result: dict, salon: dict = None):
+    """WS5 — persist every business-initiated WhatsApp template send (message SID
+    + delivery status) and, for wallet-metered message types, debit the salon's
+    prepaid marketing wallet. Operational queue/invoice templates are NOT metered
+    so they always deliver; the hook is here for future promotional templates."""
+    try:
+        import whatsapp_templates as _wt
+        await db.whatsapp_send_log.insert_one({
+            "id": str(uuid.uuid4()),
+            "salon_id": salon_id,
+            "template_name": template_name,
+            "message_type": _wt.message_type_for(template_name),
+            "to": to,
+            "status": result.get("status"),
+            "message_sid": result.get("message_sid"),
+            "sender": result.get("sender"),
+            "error": result.get("error"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        # Wallet metering hook (no-op for operational templates today).
+        if result.get("status") == "sent" and _wt.consumes_wallet(template_name):
+            try:
+                import salon_marketing_settings as _mkt
+                wallet = await _mkt._get_or_create_wallet(salon_id)
+                cost_minor = int(os.environ.get("WA_TEMPLATE_COST_MINOR", "0") or 0)
+                if cost_minor > 0:
+                    new_bal = max(0, int(wallet.get("balance_minor") or 0) - cost_minor)
+                    await db.wallets.update_one({"salon_id": salon_id}, {"$set": {"balance_minor": new_bal}})
+                    await _mkt._insert_ledger(
+                        salon_id=salon_id, type_="debit", amount_minor=-cost_minor,
+                        balance_after_minor=new_bal, channel="whatsapp",
+                        note=f"WhatsApp template: {template_name}",
+                    )
+            except Exception as _e:
+                logger.warning(f"[WS5] wallet debit skipped for {salon_id}: {_e}")
+    except Exception as e:
+        logger.warning(f"[WS5] record_whatsapp_send failed: {e}")
+
+
+
 async def send_booking_notification(token_data: dict, notification_type: str):
     """Send WhatsApp notification for booking events"""
     try:
@@ -2705,6 +2745,7 @@ async def send_booking_notification(token_data: dict, notification_type: str):
                 barber_name=(token_data.get('barber_name') or 'Any available'),
                 salon=salon,
             )
+            await record_whatsapp_send(token_data.get('salon_id',''), 'booking_confirmation', phone, result, salon)
             logger.info(
                 f"Notification sent: booking_confirmation to {phone}, status: {result.get('status')}"
             )
@@ -2732,6 +2773,7 @@ async def send_booking_notification(token_data: dict, notification_type: str):
                 amount=token_data.get('total_amount') or token_data.get('amount') or 0,
                 salon=salon,
             )
+            await record_whatsapp_send(token_data.get('salon_id',''), 'booking_completed', phone, result, salon)
             logger.info(
                 f"Notification sent: booking_completed to {phone}, status: {result.get('status')}"
             )
@@ -2759,6 +2801,7 @@ async def send_booking_notification(token_data: dict, notification_type: str):
                 token_number=token_data.get('token_number', 0),
                 salon=salon,
             )
+            await record_whatsapp_send(token_data.get('salon_id',''), 'your_turn_now', phone, result, salon)
             logger.info(
                 f"Notification sent: your_turn_now to {phone}, status: {result.get('status')}"
             )
@@ -2898,7 +2941,7 @@ async def check_and_notify_nearby_tokens(salon_id: str, barber_id: str, date: st
                     salon_doc = await db.salons.find_one({"id": salon_id}, {"_id": 0})
                     salon_name_for_msg = (salon_doc or {}).get("name") or (salon_doc or {}).get("salon_name") or "the salon"
 
-                    await send_token_approaching_template(
+                    _ta_result = await send_token_approaching_template(
                         phone_number=phone,
                         customer_name=token.get('customer_name') or 'Customer',
                         token_number=token_number,
@@ -2908,6 +2951,7 @@ async def check_and_notify_nearby_tokens(salon_id: str, barber_id: str, date: st
                         current_serving=current_serving,
                         salon=salon_doc,
                     )
+                    await record_whatsapp_send(salon_id, 'token_approaching', phone, _ta_result or {}, salon_doc)
 
             await db.tokens.update_one(
                 {"id": token.get('id')},
