@@ -371,6 +371,16 @@ async def owner_credit_wallet(salon_id: str, body: WalletCreditRequest, admin=De
     return {"ok": True, "balance_minor": new_balance, "entry": entry}
 
 
+@management_router.get("/salons/{salon_id}/whatsapp-log")
+async def owner_whatsapp_log(salon_id: str, limit: int = 50, admin=Depends(require_platform_admin)):
+    """WS — recent business-initiated WhatsApp sends for a salon with their live
+    delivery status (updated by the Twilio status-callback webhook)."""
+    rows = []
+    async for row in _db.whatsapp_send_log.find({"salon_id": salon_id}, {"_id": 0}).sort("created_at", -1).limit(max(1, min(200, limit))):
+        rows.append(row)
+    return {"rows": rows, "total": len(rows)}
+
+
 
 @management_router.get("/salons")
 async def list_salons(

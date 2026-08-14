@@ -98,6 +98,9 @@ export default function PlatformDashboardPage() {
   const [whatsappForm, setWhatsappForm] = useState({ messaging_service_sid: '', sender_number: '' });
   const [walletForm, setWalletForm] = useState({ amount: '', note: '' });
   const [walletData, setWalletData] = useState(null);
+  const [waRequests, setWaRequests] = useState([]);
+  const [waReqLoading, setWaReqLoading] = useState(false);
+  const [waLog, setWaLog] = useState(null);
 
   // Suspend modal local state
   const [suspendReason, setSuspendReason] = useState('');
@@ -142,6 +145,35 @@ export default function PlatformDashboardPage() {
   }, [token, headers, q, page, pageSize, statusFilter]);
 
   useEffect(() => { if (tab === 'salons') fetchSalons(); }, [tab, fetchSalons]);
+
+  // WS — Pending WhatsApp requests panel.
+  const fetchWaRequests = useCallback(async () => {
+    setWaReqLoading(true);
+    try {
+      const r = await axios.get(`${API}/platform/whatsapp-requests`, { headers });
+      setWaRequests(r.data?.rows || []);
+    } catch {
+      toast.error('Failed to load WhatsApp requests');
+    } finally {
+      setWaReqLoading(false);
+    }
+  }, [headers]);
+  useEffect(() => { if (tab === 'whatsapp') fetchWaRequests(); }, [tab, fetchWaRequests]);
+
+  // Open the WhatsApp connect modal AND load the salon's delivery log.
+  const openWhatsappModal = async (salon) => {
+    setWhatsappForm({
+      messaging_service_sid: salon.whatsapp?.messaging_service_sid || '',
+      sender_number: salon.whatsapp?.sender_number || salon.whatsapp?.requested_number || '',
+    });
+    setWaLog(null);
+    setModal({ type: 'whatsapp', salonId: salon.id, salon });
+    try {
+      const r = await axios.get(`${API}/platform/salons/${salon.id}/whatsapp-log`, { headers });
+      setWaLog(r.data?.rows || []);
+    } catch { /* non-fatal */ }
+  };
+
 
   // Salon detail fetch
   const openDetail = async (salonId) => {
@@ -210,6 +242,7 @@ export default function PlatformDashboardPage() {
       toast.success('WhatsApp sender connected & activated');
       setModal(null);
       fetchSalons();
+      if (tab === 'whatsapp') fetchWaRequests();
     } catch (err) {
       const d = err?.response?.data?.detail;
       toast.error(typeof d === 'string' ? d : 'Could not connect WhatsApp sender');
@@ -260,6 +293,7 @@ export default function PlatformDashboardPage() {
       toast.success('Reverted to SalonHub default number');
       setModal(null);
       fetchSalons();
+      if (tab === 'whatsapp') fetchWaRequests();
     } catch (err) {
       const d = err?.response?.data?.detail;
       toast.error(typeof d === 'string' ? d : 'Could not revert');
@@ -644,6 +678,7 @@ export default function PlatformDashboardPage() {
         <div className="max-w-7xl mx-auto px-4 flex gap-1 overflow-x-auto">
           {[
             { id: 'salons', label: 'Salons', icon: Building2 },
+            { id: 'whatsapp', label: 'WhatsApp requests', icon: MessageCircle },
             { id: 'suppliers', label: 'Suppliers', icon: Package },
             { id: 'discounts', label: 'Discount codes', icon: Tag },
             { id: 'analytics', label: 'Analytics', icon: BarChart3 },
@@ -747,13 +782,7 @@ export default function PlatformDashboardPage() {
                                 <button onClick={() => { setModal({ type: 'suspend', salonId: s.id }); setSuspendReason(''); }} className="p-1.5 rounded hover:bg-rose-500/15 text-rose-400" title="Suspend"><Pause className="w-3.5 h-3.5" /></button>
                               )}
                               <button
-                                onClick={() => {
-                                  setWhatsappForm({
-                                    messaging_service_sid: s.whatsapp?.messaging_service_sid || '',
-                                    sender_number: s.whatsapp?.sender_number || s.whatsapp?.requested_number || '',
-                                  });
-                                  setModal({ type: 'whatsapp', salonId: s.id, salon: s });
-                                }}
+                                onClick={() => openWhatsappModal(s)}
                                 className={`p-1.5 rounded ${s.whatsapp?.status === 'pending' ? 'bg-amber-500/20 text-amber-500 hover:bg-amber-500/30 animate-pulse' : 'hover:bg-emerald-500/15 text-emerald-400'}`}
                                 title={s.whatsapp?.status === 'pending' ? 'Pending WhatsApp request — connect now' : 'WhatsApp sender'}
                               >
@@ -796,6 +825,58 @@ export default function PlatformDashboardPage() {
           </>
         )}
 
+        {tab === 'whatsapp' && (
+          <>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <div className="text-sm font-bold text-foreground">Salons awaiting WhatsApp connection</div>
+                <div className="text-xs text-muted-foreground/80">Salons that requested to send from their own number. Connect a Messaging Service SID (or number) and activate.</div>
+              </div>
+              <Button variant="outline" size="sm" onClick={fetchWaRequests} disabled={waReqLoading}>
+                <RefreshCw className={`w-3 h-3 ${waReqLoading ? 'animate-spin' : ''}`} />
+              </Button>
+            </div>
+            <div className="bg-card/60 border border-border rounded-2xl overflow-hidden">
+              {waReqLoading ? (
+                <div className="py-20 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>
+              ) : waRequests.length === 0 ? (
+                <div className="py-20 text-center text-muted-foreground/80 text-sm">No pending WhatsApp requests.</div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="bg-background/60">
+                    <tr className="text-[10px] uppercase tracking-widest text-muted-foreground/80 border-b border-border">
+                      <th className="text-left px-4 py-3 font-bold">Salon</th>
+                      <th className="text-left px-4 py-3 font-bold">Owner</th>
+                      <th className="text-left px-4 py-3 font-bold">Requested number</th>
+                      <th className="text-left px-4 py-3 font-bold">Business name</th>
+                      <th className="text-right px-4 py-3 font-bold">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {waRequests.map((r) => (
+                      <tr key={r.id} className="border-b border-border/40 last:border-0 hover:bg-background/40">
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-foreground">{r.salon_name}</div>
+                          {r.city && <div className="text-xs text-muted-foreground/80">{r.city}</div>}
+                        </td>
+                        <td className="px-4 py-3 text-foreground/80">{r.owner_name || '—'}</td>
+                        <td className="px-4 py-3 font-mono text-xs text-foreground/80">{r.whatsapp?.requested_number || '—'}</td>
+                        <td className="px-4 py-3 text-foreground/80">{r.whatsapp?.business_name || '—'}</td>
+                        <td className="px-4 py-3 text-right">
+                          <Button size="sm" onClick={() => openWhatsappModal(r)} className="bg-gradient-to-r from-emerald-500 to-emerald-600 text-white">
+                            <MessageCircle className="w-3.5 h-3.5 mr-1" /> Connect &amp; activate
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </>
+        )}
+
+
         {tab === 'suppliers' && <SuppliersTab headers={headers} />}
         {tab === 'discounts' && <DiscountCodesTab headers={headers} />}
         {tab === 'analytics' && <AnalyticsTab headers={headers} />}
@@ -825,6 +906,7 @@ export default function PlatformDashboardPage() {
         setWhatsappForm={setWhatsappForm}
         submitWhatsappConnect={submitWhatsappConnect}
         submitWhatsappRevert={submitWhatsappRevert}
+        waLog={waLog}
         walletForm={walletForm}
         setWalletForm={setWalletForm}
         walletData={walletData}
@@ -874,7 +956,7 @@ function OverrideModals({
   overrideForm, setOverrideForm, submitOverrideBranches,
   trialForm, setTrialForm, submitExtendTrial,
   compForm, setCompForm, submitComp,
-  whatsappForm, setWhatsappForm, submitWhatsappConnect, submitWhatsappRevert,
+  whatsappForm, setWhatsappForm, submitWhatsappConnect, submitWhatsappRevert, waLog,
   walletForm, setWalletForm, walletData, submitWalletCredit,
 }) {
   if (!modal) return null;
@@ -988,6 +1070,30 @@ function OverrideModals({
                 <Button onClick={submitWhatsappConnect} disabled={submitting} className="bg-gradient-to-r from-emerald-500 to-emerald-600 text-white">
                   {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : (isActive ? 'Update & keep live' : 'Connect & activate')}
                 </Button>
+              </div>
+              <div>
+                <div className="text-xs uppercase tracking-widest text-muted-foreground/80 font-bold mb-1">Recent sends &amp; delivery status</div>
+                <div className="max-h-44 overflow-y-auto rounded-lg border border-border divide-y divide-border/50">
+                  {waLog === null ? (
+                    <div className="p-3 text-xs text-muted-foreground">Loading…</div>
+                  ) : waLog.length === 0 ? (
+                    <div className="p-3 text-xs text-muted-foreground">No WhatsApp messages sent yet.</div>
+                  ) : waLog.map((m) => {
+                    const st = String(m.status || '').toLowerCase();
+                    const cls = ['delivered', 'read'].includes(st) ? 'text-emerald-500'
+                      : ['failed', 'undelivered'].includes(st) ? 'text-rose-400'
+                      : 'text-amber-500';
+                    return (
+                      <div key={m.id} className="p-2.5 text-xs flex justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-medium text-foreground truncate">{m.template_name} → {m.to}</div>
+                          <div className="text-[10px] text-muted-foreground/70">{new Date(m.created_at).toLocaleString('en-IN')}</div>
+                        </div>
+                        <div className={`font-bold uppercase whitespace-nowrap ${cls}`}>{m.status || '—'}</div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           );

@@ -2696,6 +2696,34 @@ async def record_whatsapp_send(salon_id: str, template_name: str, to: str, resul
 
 
 
+@api_router.post("/twilio/status-callback")
+async def twilio_status_callback(request: Request):
+    """WS — Twilio delivery status webhook. Twilio POSTs form-encoded updates
+    (MessageSid + MessageStatus: queued|sent|delivered|read|undelivered|failed)
+    as the message progresses. We update the matching whatsapp_send_log row so
+    delivery status is visible in one place. Public + unauthenticated by design."""
+    try:
+        form = await request.form()
+        message_sid = form.get("MessageSid") or form.get("SmsSid")
+        status = form.get("MessageStatus") or form.get("SmsStatus")
+        if not message_sid or not status:
+            return {"ok": True, "ignored": True}
+        error_code = form.get("ErrorCode")
+        now = datetime.now(timezone.utc).isoformat()
+        await db.whatsapp_send_log.update_one(
+            {"message_sid": message_sid},
+            {
+                "$set": {"status": status, "error_code": error_code, "status_updated_at": now},
+                "$push": {"status_history": {"status": status, "error_code": error_code, "at": now}},
+            },
+        )
+    except Exception as e:
+        logger.warning(f"[twilio-status-callback] failed: {e}")
+    # Always 200 so Twilio doesn't retry indefinitely.
+    return {"ok": True}
+
+
+
 async def send_booking_notification(token_data: dict, notification_type: str):
     """Send WhatsApp notification for booking events"""
     try:

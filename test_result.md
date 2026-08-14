@@ -1449,6 +1449,8 @@ backend:
 
 agent_communication:
     - agent: "main"
+      message: "Added Delivery Status (Twilio status callbacks) + Pending WhatsApp Requests tab. Backend: POST /api/twilio/status-callback (public webhook, updates whatsapp_send_log status+history — verified via curl: sent→delivered works); status_callback URL now attached to all Twilio sends; GET /api/platform/salons/{id}/whatsapp-log (owner). Frontend: new 'WhatsApp requests' owner-console tab (lists pending salons + Connect&activate); WhatsApp modal now shows 'Recent sends & delivery status' with color-coded pills. Verified end-to-end in browser with a real platform token. Backend boots clean, frontend compiles. NOTE: platform-auth endpoints need a platform_admin JWT (from /api/platform/auth/*), which the salon-admin login does NOT provide — I verified these via a minted owner token. If you run automated tests, the public webhook is directly testable; platform endpoints need platform auth."
+    - agent: "main"
       message: "Built Owner Console WhatsApp tag+actions, WS4 (platform-owner wallet credit + ledger), and WS5 (template send logging + constants). User asked to WAIT for backend+frontend testing until they confirm — DO NOT run testing agents yet. All new platform routes verified registered (403 without auth). Backend boots clean; frontend compiles."
   - task: "WS3 — Per-salon WhatsApp Sender config endpoints"
     implemented: true

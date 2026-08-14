@@ -47,6 +47,21 @@ PLATFORM_MSG_SVC = os.environ.get('TWILIO_WHATSAPP_MESSAGING_SERVICE_SID') or No
 PLATFORM_FROM = WHATSAPP_NUMBER  # already 'whatsapp:+...'
 
 
+def _status_callback_url():
+    """Public URL Twilio POSTs delivery status updates (queued→sent→delivered→
+    read / failed) to. Must be publicly reachable and unauthenticated."""
+    base = (
+        os.environ.get('BACKEND_PUBLIC_URL')
+        or os.environ.get('PUBLIC_BACKEND_URL')
+        or os.environ.get('APP_URL')
+        or os.environ.get('APP_BASE_URL')
+        or ''
+    ).rstrip('/')
+    if not base:
+        return None
+    return f"{base}/api/twilio/status-callback"
+
+
 def _platform_sender() -> dict:
     """create() kwargs for the platform default sender."""
     if PLATFORM_MSG_SVC:
@@ -286,6 +301,9 @@ async def send_whatsapp_template(
             "content_variables": json.dumps(safe_vars),
         }
         create_kwargs.update(sender_kwargs)
+        _cb = _status_callback_url()
+        if _cb:
+            create_kwargs["status_callback"] = _cb
 
         message = client.messages.create(**create_kwargs)
         logger.info(
@@ -545,11 +563,11 @@ async def send_whatsapp_notification(phone_number: str, message: str, template_n
         
         # Send WhatsApp message — WS3: route through the per-salon sender.
         sender_kwargs = resolve_sender(salon)
-        whatsapp_message = client.messages.create(
-            body=message,
-            to=to_whatsapp,
-            **sender_kwargs,
-        )
+        create_kwargs = dict(body=message, to=to_whatsapp, **sender_kwargs)
+        _cb = _status_callback_url()
+        if _cb:
+            create_kwargs["status_callback"] = _cb
+        whatsapp_message = client.messages.create(**create_kwargs)
         
         logger.info(f"WhatsApp notification sent to {phone_number}. Template: {template_name}, SID: {whatsapp_message.sid}")
         
