@@ -206,15 +206,13 @@ export default function QueueTabV2({
             </div>
           )}
         </div>
-        <div className="qv2-viewinfo">
-          {view === 'list' ? (
-            <>Viewing bookings for <b>{dateMode === 'range'
+        {view === 'list' && (
+          <div className="qv2-viewinfo">
+            Viewing bookings for <b>{dateMode === 'range'
               ? `${dateFrom || '—'} → ${dateTo || '—'}`
-              : new Date(date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</b></>
-          ) : (
-            <>Calendar · drag to reschedule, click a slot to book</>
-          )}
-        </div>
+              : new Date(date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</b>
+          </div>
+        )}
       </div>
 
       {view === 'calendar' && (

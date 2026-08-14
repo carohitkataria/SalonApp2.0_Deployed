@@ -104,6 +104,80 @@
 
 user_problem_statement: "Implement multi-user role-based access system for salon with Admin and Staff roles. Add staff management with employee fields (department, designation, emergency contact, Aadhar, DOJ, DOB, compensation, documents). Create hamburger menu navigation with role-based access control. Add 'Manage Staff Access' section, Financials and Customer Master placeholders. Add notification rules with toggles for both salon and customer sides, including WhatsApp toggles for customer. Add Reschedule/Cancel action links to WhatsApp messages with link-based cancel flow. Fix notification bell overlapping the Map view button on customer search page."
 
+#=== CURRENT SESSION (publish-prep + Glam Central37 fixes) — test these first ===
+current_session_backend:
+  - task: "WhatsApp inbound webhook (Twilio) — sync customer replies into platform chat"
+    implemented: true
+    working: true
+    file: "backend/server.py (POST /api/whatsapp/twilio-inbound, _route_inbound_to_salon, _last10)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "New public webhook. Parses Twilio form POST (From/To/Body/ProfileName/WaId/MessageSid/NumMedia), soft X-Twilio-Signature validation (logs but doesn't drop), dedupes on MessageSid, routes to the salon the customer most recently interacted with (whatsapp_messages then tokens by last-10 digits), stores in whatsapp_messages with direction='in', returns empty TwiML 200. Verified manually: reply from +917976441272 routed to salon 909b8e81 (Glam Central37) and appears via GET /api/salons/{id}/conversations. Twilio sender webhook auto-configured to this endpoint. TEST: POST form-encoded to /api/whatsapp/twilio-inbound with a From that has prior history and confirm a whatsapp_messages doc (direction in) is created + dedupe on repeated MessageSid + empty-XML 200 response."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ WHATSAPP INBOUND WEBHOOK FULLY TESTED AND WORKING: Comprehensive testing completed successfully for salon 909b8e81-ed8d-4c1c-9305-7545d1d4ce44 (Glam Central37). TEST RESULTS: 1) POST /api/whatsapp/twilio-inbound with form-encoded data (From=whatsapp:+917976441272, To=whatsapp:+918560934455, Body='Test inbound from tester', ProfileName='Tester', WaId=7976441272, MessageSid=SMauto_test_20260814_183526, NumMedia=0) - ✅ PASS (HTTP 200, Content-Type: application/xml, response body is exactly '<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>' as required). 2) PERSISTENCE VERIFICATION - ✅ PASS (message stored in MongoDB whatsapp_messages collection with direction='in', customer_phone='+917976441272' containing 7976441272, salon_id='909b8e81-ed8d-4c1c-9305-7545d1d4ce44' correctly routed to Glam Central37, text='Test inbound from tester'). 3) DEDUPE TEST - ✅ PASS (re-POSTing same MessageSid returns 200 but only ONE whatsapp_messages doc exists, dedupe working correctly). 4) SOFT SIGNATURE VALIDATION - ✅ PASS (POST without X-Twilio-Signature header still returns 200, soft validation working as designed). 5) CLEANUP - ✅ COMPLETED (deleted 2 test messages with MessageSid starting with 'SMauto_test_'). CRITICAL REQUIREMENT MET: Endpoint accepts form-encoded POST (NOT JSON), returns empty TwiML XML 200, persists with correct direction/salon routing, dedupes on MessageSid. The WhatsApp inbound webhook is production-ready and fully functional."
+  - task: "Service taxonomy migration — category -> sub_category, category set to Services/Packages (all salons)"
+    implemented: true
+    working: true
+    file: "backend/migrate_service_categories.py (ran once); customer endpoints /services/enabled, /menu"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Migrated 534 services (511 Services, 23 Packages). sub_category now holds fine-grained buckets. TEST: GET /api/salons/909b8e81-ed8d-4c1c-9305-7545d1d4ce44/services/enabled and /menu return services with category in {Services,Packages} and populated sub_category; nothing 500s."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ SERVICE TAXONOMY MIGRATION FULLY TESTED AND WORKING: Comprehensive testing completed successfully for salon 909b8e81-ed8d-4c1c-9305-7545d1d4ce44 (Glam Central37). TEST RESULTS: 1) GET /api/salons/{salon_id}/services/enabled - ✅ PASS (HTTP 200, returned 135 services. ALL services have valid category field with values from {Services, Packages}. Verified first 10 services: 10 Services, 0 Packages. All services have populated sub_category field with fine-grained buckets like 'Hair Treatment', 'Hair Colour', 'Facials & Cleanup', etc. Sample service: name='Rebonding - Long (Women)', category='Services', sub_category='Hair Treatment'). 2) GET /api/salons/{salon_id}/menu - ✅ PASS (HTTP 200, returned 135 services in menu. All services have category='Services' or 'Packages'. Distribution: 135 Services, 0 Packages. Note: This salon has only Services category, no Packages - this is valid data state). CRITICAL REQUIREMENTS MET: Every service's category is either 'Services' or 'Packages' (no other values), sub_category is populated with fine-grained taxonomy buckets, no 500 errors on either endpoint. The service taxonomy migration is production-ready and working correctly across all customer-facing endpoints."
+
+current_session_frontend:
+  - task: "Customer booking Book crash fix (ReferenceError: customer is not defined)"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/pages/SinglePageBooking.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Undefined `customer` in a useEffect replaced with `user` (useAuth). Also grouping now uses svcBucket = sub_category || category so fine-grained tabs survive the taxonomy migration. TEST at /book/909b8e81-ed8d-4c1c-9305-7545d1d4ce44: page loads, services grouped by sub-category, selecting service + barber + slot and clicking Book does NOT crash."
+  - task: "Salon dashboard top-panel shake fix (scroll hysteresis)"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/pages/salon/home_v2/HomeV2Shell.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Topbar collapse now uses hysteresis (collapse >72px, expand <8px) to stop oscillation at borderline heights."
+  - task: "Calendar view redesign — full 24h + zoom + compact toolbar + list/calendar toggle"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/pages/salon/home_v2/QueueCalendarView.js, QueueTabV2.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Grid now spans full 24h (00:00-24:00) with zoom in/out control (px-per-minute), auto-scrolls to now/business start, removed descriptive heading, kept Date + Barbers filters and List/Calendar toggle. TEST in salon home Queue tab -> Calendar view."
+
+current_session_test_plan:
+  current_focus:
+    - "WhatsApp inbound webhook (Twilio)"
+    - "Service taxonomy migration endpoints"
+  test_all: false
+  test_priority: "high_first"
+
+
 backend:
   - task: "Salon store — MOQ guard + supplier-aware shipping/GST + SKU on order lines + supplier_phone enrichment + cancel copy + concern endpoint + supplier deliver payment_mode"
     implemented: true
@@ -9204,4 +9278,111 @@ agent_communication:
         - TEST 2c failed due to barber capacity constraints from previous test bookings, not a bug in the service_assignments feature
         
         All backend endpoints are production-ready. The bug-fix batch is complete and verified.
+
+    - agent: testing
+      message: |
+        PUBLISH-PREP BACKEND TESTING COMPLETED - WHATSAPP INBOUND + SERVICE TAXONOMY
+        
+        Comprehensive backend testing completed for the two current_session_backend tasks as requested in review_request.
+        
+        Target Salon: 909b8e81-ed8d-4c1c-9305-7545d1d4ce44 (Glam Central37)
+        Base URL: https://release-candidate-16.preview.emergentagent.com/api
+        
+        TEST RESULTS SUMMARY: 2/2 tests PASSED ✅
+        
+        ═══════════════════════════════════════════════════════════════════════════════
+        TEST 1 — WHATSAPP INBOUND WEBHOOK (TWILIO)
+        ═══════════════════════════════════════════════════════════════════════════════
+        
+        ✅ TEST 1.1: POST /api/whatsapp/twilio-inbound (form-encoded) - PASS
+           - Sent form-encoded POST (NOT JSON) with Twilio fields:
+             • From: whatsapp:+917976441272
+             • To: whatsapp:+918560934455
+             • Body: Test inbound from tester
+             • ProfileName: Tester
+             • WaId: 7976441272
+             • MessageSid: SMauto_test_20260814_183526
+             • NumMedia: 0
+           - HTTP 200 ✅
+           - Content-Type: application/xml ✅
+           - Response body EXACTLY matches required TwiML:
+             '<?xml version="1.0" encoding="UTF-8"?><Response></Response>' ✅
+        
+        ✅ TEST 1.2: MongoDB persistence verification - PASS
+           - Message stored in whatsapp_messages collection ✅
+           - direction: 'in' ✅
+           - customer_phone: '+917976441272' (contains 7976441272) ✅
+           - salon_id: '909b8e81-ed8d-4c1c-9305-7545d1d4ce44' (Glam Central37) ✅
+           - text: 'Test inbound from tester' ✅
+           - Routing logic correctly matched customer to Glam Central37 salon ✅
+        
+        ✅ TEST 1.3: Dedupe test (same MessageSid twice) - PASS
+           - Re-POSTed same MessageSid ✅
+           - HTTP 200 returned ✅
+           - Only ONE whatsapp_messages doc exists (dedupe working) ✅
+        
+        ✅ TEST 1.4: Soft signature validation (no X-Twilio-Signature) - PASS
+           - POST without X-Twilio-Signature header ✅
+           - HTTP 200 returned (soft validation working as designed) ✅
+        
+        ✅ TEST 1.5: Cleanup - COMPLETED
+           - Deleted 2 test messages (MessageSid starting with 'SMauto_test_') ✅
+        
+        ═══════════════════════════════════════════════════════════════════════════════
+        TEST 2 — SERVICE TAXONOMY MIGRATION
+        ═══════════════════════════════════════════════════════════════════════════════
+        
+        ✅ TEST 2.1: GET /api/salons/{salon_id}/services/enabled - PASS
+           - HTTP 200 ✅
+           - Total services: 135 ✅
+           - ALL services have valid category field ✅
+           - Category values: ONLY 'Services' or 'Packages' (no other values) ✅
+           - Verified first 10 services: 10 Services, 0 Packages ✅
+           - ALL services have populated sub_category field ✅
+           - Sample sub_categories: 'Hair Treatment', 'Hair Colour', 'Facials & Cleanup' ✅
+           - Sample service:
+             • name: 'Rebonding - Long (Women)'
+             • category: 'Services'
+             • sub_category: 'Hair Treatment'
+        
+        ✅ TEST 2.2: GET /api/salons/{salon_id}/menu - PASS
+           - HTTP 200 ✅
+           - Total services in menu: 135 ✅
+           - ALL services have category='Services' or 'Packages' ✅
+           - Distribution: 135 Services, 0 Packages ✅
+           - Note: This salon has only Services category (no Packages) - valid data state
+        
+        ═══════════════════════════════════════════════════════════════════════════════
+        CRITICAL FINDINGS
+        ═══════════════════════════════════════════════════════════════════════════════
+        
+        ✅ WHATSAPP INBOUND WEBHOOK WORKING:
+           - Accepts form-encoded POST (NOT JSON) as required by Twilio ✅
+           - Returns empty TwiML XML 200 response ✅
+           - Persists messages with direction='in' ✅
+           - Routes to correct salon (909b8e81 Glam Central37) ✅
+           - Dedupes on MessageSid ✅
+           - Soft signature validation (logs but doesn't drop) ✅
+           - Production-ready for Twilio webhook integration ✅
+        
+        ✅ SERVICE TAXONOMY MIGRATION WORKING:
+           - Every service's category is either 'Services' or 'Packages' (no other values) ✅
+           - sub_category populated with fine-grained taxonomy buckets ✅
+           - No 500 errors on /services/enabled or /menu endpoints ✅
+           - Migration successfully completed across all customer-facing endpoints ✅
+        
+        ═══════════════════════════════════════════════════════════════════════════════
+        CONCLUSION
+        ═══════════════════════════════════════════════════════════════════════════════
+        
+        Both publish-prep backend features are WORKING CORRECTLY and PRODUCTION-READY:
+        1. ✅ WhatsApp inbound webhook (Twilio) - FULLY FUNCTIONAL
+        2. ✅ Service taxonomy migration - FULLY FUNCTIONAL
+        
+        No issues found. All requirements from review_request met.
+        
+        MAIN AGENT ACTION REQUIRED:
+        ✅ Both current_session_backend tasks marked as working=true and needs_retesting=false
+        ✅ All backend tests passed with no major issues
+        ✅ Ready to summarize and finish
 

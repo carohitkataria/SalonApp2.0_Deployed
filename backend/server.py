@@ -2723,6 +2723,135 @@ async def twilio_status_callback(request: Request):
     return {"ok": True}
 
 
+def _last10(raw) -> str:
+    """Last 10 digits of a phone number — used to match a customer across the
+    different stored phone formats (+91…, 91…, 0…, whatsapp:+…)."""
+    d = re.sub(r"\D", "", str(raw or ""))
+    return d[-10:] if len(d) >= 10 else d
+
+
+async def _route_inbound_to_salon(last10: str):
+    """Attribute an inbound WhatsApp message to the salon the customer most
+    recently interacted with (prior chat message first, then any booking)."""
+    if not last10:
+        return None
+    best_salon, best_ts = None, ""
+    try:
+        wm = await db.whatsapp_messages.find(
+            {"customer_phone": {"$regex": re.escape(last10) + r"$"}}
+        ).sort("created_at", -1).to_list(1)
+        if wm:
+            best_salon, best_ts = wm[0].get("salon_id"), wm[0].get("created_at") or ""
+    except Exception:
+        pass
+    try:
+        tk = await db.tokens.find(
+            {"phone": {"$regex": re.escape(last10) + r"$"}}
+        ).sort("created_at", -1).to_list(1)
+        if tk:
+            t_ts = tk[0].get("updated_at") or tk[0].get("created_at") or ""
+            if not best_salon or (t_ts and t_ts > best_ts):
+                best_salon = tk[0].get("salon_id") or best_salon
+    except Exception:
+        pass
+    return best_salon
+
+
+@api_router.post("/whatsapp/twilio-inbound")
+async def twilio_inbound_whatsapp(request: Request):
+    """WS — Twilio inbound WhatsApp webhook. Twilio POSTs form-encoded data when
+    a customer sends a WhatsApp message to our sender. We persist it into
+    ``whatsapp_messages`` (direction='in') so it appears in the salon's platform
+    chat. Public + unauthenticated by design (Twilio calls it).
+
+    Signature is validated softly: an invalid signature is logged but the message
+    is still processed, so real customer replies are never silently dropped due
+    to proxy URL-reconstruction quirks."""
+    try:
+        form = await request.form()
+        params = {k: str(v) for k, v in form.multi_items()} if hasattr(form, "multi_items") else dict(form)
+    except Exception as e:
+        logger.warning(f"[wa-inbound] could not parse form: {e}")
+        return Response(content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                        media_type="application/xml")
+
+    # --- soft signature validation ---
+    try:
+        from twilio.request_validator import RequestValidator
+        auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+        signature = request.headers.get("X-Twilio-Signature")
+        if auth_token and signature:
+            proto = request.headers.get("x-forwarded-proto", "https")
+            host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+            public_url = f"{proto}://{host}{request.url.path}"
+            ok = RequestValidator(auth_token).validate(public_url, params, signature)
+            if not ok:
+                logger.warning(f"[wa-inbound] signature check failed for url={public_url} (processing anyway)")
+    except Exception as e:
+        logger.warning(f"[wa-inbound] signature validation error: {e}")
+
+    from_number = params.get("From", "")            # whatsapp:+9179…
+    to_number = params.get("To", "")
+    body = params.get("Body", "") or ""
+    profile_name = params.get("ProfileName") or ""
+    wa_id = params.get("WaId") or ""
+    message_sid = params.get("MessageSid") or params.get("SmsSid") or ""
+    num_media = 0
+    try:
+        num_media = int(params.get("NumMedia", "0"))
+    except Exception:
+        num_media = 0
+
+    # Media (images/docs) — represent as a short text note if no body.
+    media_urls = [params.get(f"MediaUrl{i}") for i in range(num_media) if params.get(f"MediaUrl{i}")]
+    if not body and media_urls:
+        body = f"[media] {media_urls[0]}"
+
+    cust_digits = _last10(from_number or wa_id)
+    e164 = ""
+    try:
+        e164 = _normalize_phone_e164(from_number.replace("whatsapp:", "").strip())
+    except Exception:
+        e164 = "+" + re.sub(r"\D", "", from_number)
+
+    # De-duplicate on MessageSid (Twilio retries webhooks).
+    if message_sid:
+        existing = await db.whatsapp_messages.find_one({"message_sid": message_sid}, {"_id": 1})
+        if existing:
+            return Response(content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                            media_type="application/xml")
+
+    salon_id = await _route_inbound_to_salon(cust_digits)
+
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "salon_id": salon_id,
+        "customer_phone": e164 or cust_digits,
+        "customer_name": profile_name or "Guest",
+        "direction": "in",
+        "text": body,
+        "channel": "whatsapp",
+        "provider": "twilio",
+        "kind": "message",
+        "status": "received",
+        "read": False,
+        "message_sid": message_sid,
+        "wa_id": wa_id,
+        "to_number": to_number,
+        "created_at": now,
+    }
+    try:
+        await db.whatsapp_messages.insert_one(doc)
+        logger.info(f"[wa-inbound] stored msg from {e164} -> salon={salon_id} sid={message_sid}")
+    except Exception as e:
+        logger.warning(f"[wa-inbound] insert failed: {e}")
+
+    return Response(content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                    media_type="application/xml")
+
+
+
 
 async def send_booking_notification(token_data: dict, notification_type: str):
     """Send WhatsApp notification for booking events"""

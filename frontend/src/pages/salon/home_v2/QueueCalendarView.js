@@ -12,7 +12,10 @@ import { toast } from 'sonner';
 /*  - Drag & drop (time/session + reassign barber) -> staff-reschedule*/
 /* ------------------------------------------------------------------ */
 
-const PX_PER_MIN = 1.7;
+const PX_PER_MIN = 1.7;              // legacy default (kept for reference)
+// Zoom: vertical pixels-per-minute. Lower = more compact (see more of the day).
+const ZOOM_LEVELS = [0.5, 0.7, 0.9, 1.2, 1.5, 1.9, 2.4];
+const DEFAULT_ZOOM_IDX = 2;          // 0.9 px/min -> a full 24h day fits comfortably
 const COL_WIDTH = 184;
 const RAIL_WIDTH = 66;
 const SESSIONS = ['Morning', 'Noon', 'Evening'];
@@ -85,6 +88,10 @@ export default function QueueCalendarView({
   const [pop, setPop] = useState(null);       // {token, x, y, mode:'view'|'reschedule'}
   const [dragId, setDragId] = useState(null);
   const gridRef = useRef(null);
+  // Zoom (pixels-per-minute) with persistence per salon.
+  const [zoomIdx, setZoomIdx] = useState(DEFAULT_ZOOM_IDX);
+  const pxPerMin = ZOOM_LEVELS[zoomIdx];
+  const didAutoScroll = useRef(false);
 
   const activeBarbers = useMemo(
     () => (barbers || []).filter((b) => b.is_active !== false),
@@ -159,13 +166,10 @@ export default function QueueCalendarView({
     return () => window.removeEventListener('salon:refresh-tokens', h);
   }, [fetchTokens]);
 
-  /* ---- geometry ---- */
-  const dayStart = useMemo(() => (windows.Morning?.start ?? 9) * 60, [windows]);
-  const dayEnd = useMemo(() => {
-    const ends = SESSIONS.map((s) => (windows[s]?.end ?? DEFAULT_WINDOWS[s].end) * 60);
-    return Math.max(...ends, dayStart + 120);
-  }, [windows, dayStart]);
-  const totalHeight = Math.max((dayEnd - dayStart) * PX_PER_MIN, 300);
+  /* ---- geometry (full 24h day, Zenoti-style) ---- */
+  const dayStart = 0;              // 00:00
+  const dayEnd = 24 * 60;          // 24:00 — full day always visible
+  const totalHeight = Math.max((dayEnd - dayStart) * pxPerMin, 300);
 
   const tokenDuration = useCallback((t) => {
     if (Number(t.total_service_minutes) > 0) return Number(t.total_service_minutes);
@@ -250,15 +254,24 @@ export default function QueueCalendarView({
 
   const isToday = calDate === istDate(0);
   const nowMin = istNowMinutes();
-  const nowTop = isToday && nowMin >= dayStart && nowMin <= dayEnd ? (nowMin - dayStart) * PX_PER_MIN : null;
+  const nowTop = isToday && nowMin >= dayStart && nowMin <= dayEnd ? (nowMin - dayStart) * pxPerMin : null;
 
   const hourLabels = useMemo(() => {
     const out = [];
     const startH = Math.floor(dayStart / 60);
     const endH = Math.ceil(dayEnd / 60);
-    for (let h = startH; h <= endH; h++) out.push({ h, top: (h * 60 - dayStart) * PX_PER_MIN });
+    for (let h = startH; h <= endH; h++) out.push({ h, top: (h * 60 - dayStart) * pxPerMin });
     return out;
-  }, [dayStart, dayEnd]);
+  }, [dayStart, dayEnd, pxPerMin]);
+
+  /* Auto-scroll to business start (or now) once, so a full-24h grid doesn't
+     dump the user at midnight. */
+  useEffect(() => {
+    if (didAutoScroll.current || !gridRef.current) return;
+    const target = isToday ? Math.max(nowMin - 90, 0) : ((windows.Morning?.start ?? 9) * 60 - 30);
+    gridRef.current.scrollTop = Math.max((target - dayStart) * pxPerMin, 0);
+    didAutoScroll.current = true;
+  }, [isToday, nowMin, windows, dayStart, pxPerMin]);
 
   /* ---- interactions ---- */
   const closePop = () => setPop(null);
@@ -288,7 +301,7 @@ export default function QueueCalendarView({
     if (!gridRef.current) return;
     const rect = gridRef.current.getBoundingClientRect();
     const y = e.clientY - rect.top + gridRef.current.scrollTop;
-    const min = Math.round((y / PX_PER_MIN + dayStart) / 5) * 5;
+    const min = Math.round((y / pxPerMin + dayStart) / 5) * 5;
     openNewBooking(barberId, sessionOfMinute(min), Math.max(dayStart, min));
   };
 
@@ -319,7 +332,7 @@ export default function QueueCalendarView({
     }
     const rect = gridRef.current.getBoundingClientRect();
     const y = e.clientY - rect.top + gridRef.current.scrollTop;
-    let min = Math.round((y / PX_PER_MIN + dayStart) / 5) * 5;
+    let min = Math.round((y / pxPerMin + dayStart) / 5) * 5;
     min = Math.max(dayStart, Math.min(min, dayEnd - 5));
     const session = sessionOfMinute(min);
     if (calDate < istDate(0) || (isToday && min < nowMin - 1)) {
@@ -358,10 +371,27 @@ export default function QueueCalendarView({
           <span className="qcal-datelabel">{prettyDate(calDate)}{loading ? ' · …' : ''}</span>
         </div>
 
-        <div className="qcal-legend">
-          {LEGEND.map((l) => (
-            <span key={l.label} className="qcal-lg"><i style={{ background: l.c }} />{l.label}</span>
-          ))}
+        <div className="qcal-midtools">
+          <div className="qcal-zoom" title="Zoom calendar">
+            <button
+              className="qcal-zbtn"
+              onClick={() => setZoomIdx((i) => Math.max(0, i - 1))}
+              disabled={zoomIdx <= 0}
+              title="Zoom out"
+            >−</button>
+            <span className="qcal-zlabel">{Math.round(pxPerMin / ZOOM_LEVELS[DEFAULT_ZOOM_IDX] * 100)}%</span>
+            <button
+              className="qcal-zbtn"
+              onClick={() => setZoomIdx((i) => Math.min(ZOOM_LEVELS.length - 1, i + 1))}
+              disabled={zoomIdx >= ZOOM_LEVELS.length - 1}
+              title="Zoom in"
+            >+</button>
+          </div>
+          <div className="qcal-legend">
+            {LEGEND.map((l) => (
+              <span key={l.label} className="qcal-lg"><i style={{ background: l.c }} />{l.label}</span>
+            ))}
+          </div>
         </div>
 
         <div className="qcal-filterwrap">
@@ -434,8 +464,8 @@ export default function QueueCalendarView({
             {SESSIONS.map((s) => {
               const st = (windows[s]?.start ?? DEFAULT_WINDOWS[s].start) * 60;
               const en = (windows[s]?.end ?? DEFAULT_WINDOWS[s].end) * 60;
-              const top = (st - dayStart) * PX_PER_MIN;
-              const h = (en - st) * PX_PER_MIN;
+              const top = (st - dayStart) * pxPerMin;
+              const h = (en - st) * pxPerMin;
               return (
                 <div key={s} className="qcal-band" style={{ top, height: h, background: BAND_TINT[s] }}>
                   <span className="qcal-bandlabel" style={{ color: BAND_LABEL[s] }}>{s} · {fmtTimeLabel(st)}–{fmtTimeLabel(en)}</span>
@@ -474,8 +504,8 @@ export default function QueueCalendarView({
                       onDragStart={() => setDragId(p.t.id)}
                       onDragEnd={() => setDragId(null)}
                       style={{
-                        top: (p.start - dayStart) * PX_PER_MIN,
-                        height: Math.max(p.dur * PX_PER_MIN - 3, 26),
+                        top: (p.start - dayStart) * pxPerMin,
+                        height: Math.max(p.dur * pxPerMin - 3, 26),
                         left, width: w - 3,
                         background: meta.bg, borderColor: meta.bd,
                         opacity: dragId === p.t.id ? 0.4 : 1,
@@ -609,7 +639,13 @@ const CSS = `
 .qcal-today:hover{border-color:var(--vi);color:var(--vi);}
 .qcal-datepick{height:32px;border:1px solid #E5E7EB;border-radius:9px;padding:0 8px;font-size:13px;color:#374151;}
 .qcal-datelabel{font-size:13px;color:#6B7280;font-weight:600;}
-.qcal-legend{display:flex;gap:12px;flex-wrap:wrap;margin-left:auto;}
+.qcal-midtools{display:flex;align-items:center;gap:14px;margin-left:auto;flex-wrap:wrap;}
+.qcal-zoom{display:inline-flex;align-items:center;gap:2px;background:#F3F4F6;border:1px solid #E5E7EB;border-radius:9px;padding:2px;}
+.qcal-zbtn{width:28px;height:28px;border:none;background:#fff;border-radius:7px;font-size:18px;line-height:1;font-weight:700;cursor:pointer;color:#374151;box-shadow:0 1px 2px rgba(0,0,0,.06);}
+.qcal-zbtn:hover:not(:disabled){color:var(--vi);}
+.qcal-zbtn:disabled{opacity:.4;cursor:default;box-shadow:none;background:transparent;}
+.qcal-zlabel{min-width:42px;text-align:center;font-size:12px;font-weight:700;color:#4B5563;}
+.qcal-legend{display:flex;gap:12px;flex-wrap:wrap;}
 .qcal-lg{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:#4B5563;}
 .qcal-lg i{width:12px;height:12px;border-radius:4px;display:inline-block;}
 .qcal-filterwrap{position:relative;}

@@ -227,7 +227,15 @@ export default function HomeV2Shell({
       </aside>
 
       {/* ===== MAIN ===== */}
-      <main className="main" ref={mainRef} onScroll={(e) => setTopbarScrolled(e.currentTarget.scrollTop > 40)}>
+      <main className="main" ref={mainRef} onScroll={(e) => {
+        // Hysteresis: collapse only after a meaningful scroll (>72px) and
+        // expand again only near the very top (<8px). The wide dead-zone stops
+        // the topbar from oscillating ("shaking") when content height is
+        // borderline — collapsing the bar removes overflow, which would
+        // otherwise immediately re-expand it in a feedback loop.
+        const y = e.currentTarget.scrollTop;
+        setTopbarScrolled((prev) => (prev ? y > 8 : y > 72));
+      }}>
         {showTopbar && (
           <header className={`topbar ${topbarScrolled ? 'is-scrolled' : ''}`} ref={topbarRef}>
             <div className="brand">

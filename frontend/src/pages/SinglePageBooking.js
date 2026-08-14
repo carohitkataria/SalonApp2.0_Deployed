@@ -19,6 +19,12 @@ import BookingIdentitySheet from '@/components/BookingIdentitySheet';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+// After the category taxonomy migration, the fine-grained bucket a service
+// belongs to lives in `sub_category` (e.g. "Facial", "Hair Cut") and `category`
+// is the top-level "Services"/"Packages" split. For customer-facing grouping we
+// want the fine-grained bucket, falling back to legacy `category` for un-migrated data.
+const svcBucket = (s) => (s?.sub_category || s?.category || 'General');
+
 // Helper functions for IST time (Asia/Kolkata) — reliable regardless of browser timezone
 const _istDateFmt = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -481,12 +487,12 @@ export default function SinglePageBooking() {
 
   // Fetch the logged-in customer's loyalty points (for redeem-at-checkout)
   useEffect(() => {
-    const ph = customer?.phone;
+    const ph = user?.phone;
     if (!salonId || !ph) { setCustomerPoints(null); return; }
     axios.get(`${API}/salons/${salonId}/customers/${ph}/loyalty-points`)
       .then(r => setCustomerPoints(r.data))
       .catch(() => setCustomerPoints(null));
-  }, [salonId, customer]);
+  }, [salonId, user]);
 
   // Re-validate / clear coupon when the cart total changes
   useEffect(() => {
@@ -550,7 +556,7 @@ export default function SinglePageBooking() {
   // Initialize open categories
   useEffect(() => {
     const services = (fastestAvailable || formData.barberId === 'any') ? salonServices : barberServices;
-    const categories = [...new Set(services.map(s => s.category || 'General'))];
+    const categories = [...new Set(services.map(s => svcBucket(s)))];
     const initial = {};
     categories.forEach((cat, idx) => {
       initial[cat] = idx === 0; // Open first category by default
@@ -610,7 +616,7 @@ export default function SinglePageBooking() {
       // Determine which categories actually have services available at this salon
       const enabledServices = servicesRes.data || [];
       const categoriesWithServices = new Set(
-        enabledServices.map(s => s.category || 'General').filter(Boolean)
+        enabledServices.map(s => svcBucket(s)).filter(Boolean)
       );
       
       const rawCategories = categoriesRes.data.categories || [];
@@ -1445,7 +1451,7 @@ export default function SinglePageBooking() {
   );
   
   const groupedServices = filteredServices.reduce((acc, service) => {
-    const category = service.category || 'General';
+    const category = svcBucket(service);
     if (!acc[category]) acc[category] = [];
     acc[category].push(service);
     return acc;
@@ -2202,7 +2208,7 @@ export default function SinglePageBooking() {
                   }
                   // Hide normal service categories that have no enabled services
                   if (cat.name !== 'All' && cat.name !== 'Favorites' && cat.name !== 'Packages') {
-                    const hasAny = (genderFilteredServices || []).some(s => (s.category || 'General') === cat.name);
+                    const hasAny = (genderFilteredServices || []).some(s => svcBucket(s) === cat.name);
                     if (!hasAny) return false;
                   }
                   return true;
@@ -2382,7 +2388,7 @@ export default function SinglePageBooking() {
                 }
               } else {
                 // Show services for selected category
-                displayServices = filteredServices.filter(s => s.category === selectedCategory);
+                displayServices = filteredServices.filter(s => svcBucket(s) === selectedCategory);
                 
                 // Apply search filter
                 if (searchQuery) {

@@ -54,8 +54,8 @@ export default function SalonMenuPage() {
     const q = search.trim().toLowerCase();
     (menu?.services || []).forEach((s) => {
       if (q && !(s.service_name || '').toLowerCase().includes(q)
-            && !(s.category || '').toLowerCase().includes(q)) return;
-      const cat = s.category || 'General';
+            && !(s.sub_category || s.category || '').toLowerCase().includes(q)) return;
+      const cat = s.sub_category || s.category || 'General';
       if (!out[cat]) out[cat] = [];
       out[cat].push(s);
     });
