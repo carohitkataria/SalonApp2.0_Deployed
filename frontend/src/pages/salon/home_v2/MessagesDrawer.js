@@ -78,7 +78,7 @@ const WaTag = () => (
   <span className="wa-tag" title="Sent on WhatsApp via Twilio"><WaIcon /> WhatsApp · Twilio</span>
 );
 
-export default function MessagesDrawer({ open, onClose, salonId, getAuthHeaders }) {
+export default function MessagesDrawer({ open, onClose, salonId, getAuthHeaders, onUnreadChange }) {
   const [convos, setConvos] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -87,33 +87,67 @@ export default function MessagesDrawer({ open, onClose, salonId, getAuthHeaders 
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(false);
   const bodyRef = useRef(null);
+  const activeIdRef = useRef(null);
+  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
 
   const headers = useCallback(() => (getAuthHeaders ? getAuthHeaders() : {}), [getAuthHeaders]);
 
-  const load = useCallback(async () => {
+  const emitUnread = useCallback((list) => {
+    if (typeof onUnreadChange === 'function') {
+      const total = (list || []).reduce((s, c) => s + (c.unread || 0), 0);
+      onUnreadChange(total);
+    }
+  }, [onUnreadChange]);
+
+  const load = useCallback(async (silent = false) => {
     if (!salonId) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
-      const [c, t] = await Promise.all([
-        axios.get(`${API}/salons/${salonId}/conversations`, { headers: headers() }),
-        axios.get(`${API}/salons/${salonId}/message-templates`, { headers: headers() }),
-      ]);
+      const reqs = [axios.get(`${API}/salons/${salonId}/conversations`, { headers: headers() })];
+      if (!silent) reqs.push(axios.get(`${API}/salons/${salonId}/message-templates`, { headers: headers() }));
+      const [c, t] = await Promise.all(reqs);
       const list = c.data?.conversations || [];
       setConvos(list);
-      setTemplates(t.data?.templates || []);
+      if (t) setTemplates(t.data?.templates || []);
       setActiveId((prev) => prev || (list[0] ? list[0].phone : null));
+      emitUnread(list);
     } catch (e) {
-      toast.error('Could not load messages');
-    } finally { setLoading(false); }
-  }, [salonId, headers]);
+      if (!silent) toast.error('Could not load messages');
+    } finally { if (!silent) setLoading(false); }
+  }, [salonId, headers, emitUnread]);
 
   useEffect(() => { if (open) load(); }, [open, load]);
 
+  // Near-real-time: poll conversations every 4s while the drawer is open.
+  useEffect(() => {
+    if (!open) return undefined;
+    const id = setInterval(() => load(true), 4000);
+    return () => clearInterval(id);
+  }, [open, load]);
+
   const active = convos.find((c) => c.phone === activeId) || null;
+
+  // Mark a conversation read when it is opened (clears its unread badge).
+  const markRead = useCallback(async (phone) => {
+    if (!salonId || !phone) return;
+    try {
+      await axios.post(`${API}/salons/${salonId}/conversations/${phone}/mark-read`, {}, { headers: headers() });
+    } catch { /* silent */ }
+    setConvos((arr) => {
+      const next = arr.map((c) => c.phone === phone ? { ...c, unread: 0 } : c);
+      emitUnread(next);
+      return next;
+    });
+  }, [salonId, headers, emitUnread]);
+
+  useEffect(() => {
+    const c = convos.find((x) => x.phone === activeId);
+    if (activeId && c && c.unread > 0) markRead(activeId);
+  }, [activeId, convos, markRead]);
 
   useEffect(() => {
     if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
-  }, [active, activeId]);
+  }, [active?.msgs?.length, activeId]);
 
   const send = async () => {
     const text = draft.trim();
@@ -128,6 +162,7 @@ export default function MessagesDrawer({ open, onClose, salonId, getAuthHeaders 
         { text, customer_name: active.name }, { headers: headers() });
       if (data?.send_status === 'sent') toast.success('Message sent on WhatsApp');
       else toast.message('Saved to chat — WhatsApp delivery pending (check Twilio setup)');
+      load(true);
     } catch (e) {
       toast.error(e?.response?.data?.detail || 'Send failed');
     } finally { setSending(false); }

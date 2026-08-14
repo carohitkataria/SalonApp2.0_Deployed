@@ -10831,11 +10831,18 @@ async def redeem_loyalty_points(salon_id: str, phone: str, body: dict = Body(...
 _CONV_PALETTE = ["#6C4FE0", "#12A594", "#E8952B", "#3E93E8", "#E5484D", "#8B5CF6", "#0EA5E9", "#F59E0B"]
 
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
 def _fmt_time(dt_val):
+    """Format a timestamp for the chat UI in India Standard Time (IST)."""
     try:
         if isinstance(dt_val, str):
             dt_val = datetime.fromisoformat(dt_val.replace("Z", "+00:00"))
-        return dt_val.strftime("%d %b · %I:%M %p").lstrip("0")
+        # Assume naive timestamps are UTC (that's how we store created_at).
+        if dt_val.tzinfo is None:
+            dt_val = dt_val.replace(tzinfo=timezone.utc)
+        return dt_val.astimezone(_IST).strftime("%d %b · %I:%M %p").lstrip("0")
     except Exception:
         return ""
 
@@ -10961,6 +10968,28 @@ async def send_conversation_message(salon_id: str, phone: str, body: dict = Body
     await db.whatsapp_messages.insert_one(doc)
     doc.pop("_id", None)
     return {"message": {"f": "out", "t": text, "tm": _fmt_time(now), "channel": "whatsapp", "provider": doc["provider"]}, "send_status": result.get("status")}
+
+
+@api_router.get("/salons/{salon_id}/messages/unread-count")
+async def get_unread_message_count(salon_id: str, current_user=Depends(get_current_salon_user)):
+    """Count of unread inbound (guest→salon) WhatsApp messages — powers the badge
+    on the Messages icon."""
+    count = await db.whatsapp_messages.count_documents(
+        {"salon_id": salon_id, "direction": "in", "read": {"$ne": True}}
+    )
+    return {"count": count}
+
+
+@api_router.post("/salons/{salon_id}/conversations/{phone}/mark-read")
+async def mark_conversation_read(salon_id: str, phone: str, current_user=Depends(get_current_salon_user)):
+    """Mark all inbound messages from a guest as read (called when a chat is opened)."""
+    last10 = _last10(phone)
+    query = {"salon_id": salon_id, "direction": "in", "read": {"$ne": True}}
+    if last10:
+        query["customer_phone"] = {"$regex": re.escape(last10) + r"$"}
+    res = await db.whatsapp_messages.update_many(query, {"$set": {"read": True}})
+    return {"updated": res.modified_count}
+
 
 
 

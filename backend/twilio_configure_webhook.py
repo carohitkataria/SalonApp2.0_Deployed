@@ -17,8 +17,7 @@ API_KEY_SECRET = os.environ["TWILIO_API_KEY_SECRET"]
 
 SENDER_SID = os.environ.get("TWILIO_WHATSAPP_SENDER_SID", "XEdbdf073a4d655e73a597e13b45c779d2")
 # Public base URL Twilio should call. Override via env after deploying to prod.
-BASE = os.environ.get("PUBLIC_WEBHOOK_BASE",
-                      "https://b0664db4-3ec8-47e2-9132-a1ebdf992f22.preview.emergentagent.com").rstrip("/")
+BASE = os.environ.get("PUBLIC_WEBHOOK_BASE", "https://salonhub.in").rstrip("/")
 WEBHOOK_URL = f"{BASE}/api/whatsapp/twilio-inbound"
 STATUS_URL = f"{BASE}/api/webhooks/twilio-status"  # existing status callback route
 

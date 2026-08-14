@@ -170,6 +170,35 @@ current_session_frontend:
         -agent: "main"
         -comment: "Grid now spans full 24h (00:00-24:00) with zoom in/out control (px-per-minute), auto-scrolls to now/business start, removed descriptive heading, kept Date + Barbers filters and List/Calendar toggle. TEST in salon home Queue tab -> Calendar view."
 
+  - task: "Chat IST timestamps + unread-count + mark-read endpoints"
+    implemented: true
+    working: true
+    file: "backend/server.py (_fmt_time IST, GET /api/salons/{id}/messages/unread-count, POST /api/salons/{id}/conversations/{phone}/mark-read)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "1) _fmt_time now converts stored UTC created_at to Asia/Kolkata (+5:30) so chat timestamps (tm/last_tm) show IST. 2) New GET /messages/unread-count returns {count} of direction=in & read!=true. 3) New POST /conversations/{phone}/mark-read marks a guest's inbound messages read (matched by last-10 digits). Both require salon auth (get_current_salon_user). TEST: seed an inbound whatsapp_messages doc (direction in, read false, salon 909b8e81), GET conversations -> tm looks like IST; GET unread-count -> count>=1; POST mark-read for that phone -> unread-count drops to 0. Then delete the seeded doc."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ CHAT IST TIMESTAMPS + UNREAD-COUNT + MARK-READ ENDPOINTS FULLY TESTED AND WORKING: Comprehensive testing completed successfully for salon 909b8e81-ed8d-4c1c-9305-7545d1d4ce44 (Glam Central37) with ALL 3 tests passing. AUTHENTICATION: Admin login working perfectly with identifier='admin', password='salon123', salon_id correctly resolved to 909b8e81-ed8d-4c1c-9305-7545d1d4ce44. TEST RESULTS: 1) IST TIMESTAMPS - ✅ PASS (GET /api/salons/{salon_id}/conversations returned 200 with 6 conversations. Found conversation for +917976441272 with 7 messages. Test message 'hello test' has tm='15 Aug · 01:01 AM'. CRITICAL VERIFICATION: Raw created_at (UTC): 2026-08-14T19:31:07.681923+00:00, Expected IST time: 2026-08-15 01:01:07 IST (UTC+5:30), Expected IST format: '15 Aug · 01:01 AM', Actual tm field: '15 Aug · 01:01 AM'. EXACT MATCH - IST conversion working correctly with · separator format). 2) UNREAD COUNT - ✅ PASS (GET /api/salons/{salon_id}/messages/unread-count returned 200 with {count: 3} >= 1 as expected, includes seeded unread inbound message). 3) MARK READ - ✅ PASS (POST /api/salons/{salon_id}/conversations/{phone}/mark-read returned 200 with {updated: 1}. MongoDB verification: seeded message now has read=true. Unread count decreased from 3 to 2 as expected). AUTH-GUARD - ✅ ALL PASS (All 3 endpoints correctly return 403 Forbidden when called without Authorization header: conversations, unread-count, mark-read). CLEANUP - ✅ COMPLETED (Deleted 1 seeded test message, no test data pollution). CRITICAL REQUIREMENTS MET: _fmt_time correctly converts UTC to IST (Asia/Kolkata +5:30), timestamps formatted as 'DD MMM · HH:MM AM/PM', unread-count accurately counts direction=in & read!=true messages, mark-read updates read status and decreases unread count, all endpoints require salon auth. The chat feature backend is production-ready and fully functional."
+
+current_session_frontend_chat:
+  - task: "Messages drawer realtime polling + IST + unread badge on Messages icon"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/pages/salon/home_v2/MessagesDrawer.js, HomeV2Shell.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "MessagesDrawer polls conversations every 4s while open (silent), marks a chat read on open, and reports total unread to the shell. HomeV2Shell polls /messages/unread-count every 12s and shows a red count dot on the Messages icon (same style as notifications). Frontend testing only with user permission."
+
+
 current_session_test_plan:
   current_focus:
     - "WhatsApp inbound webhook (Twilio)"
@@ -9384,5 +9413,61 @@ agent_communication:
         MAIN AGENT ACTION REQUIRED:
         ✅ Both current_session_backend tasks marked as working=true and needs_retesting=false
         ✅ All backend tests passed with no major issues
+        ✅ Ready to summarize and finish
+
+    - agent: testing
+      message: |
+        ═══════════════════════════════════════════════════════════════════════════════
+        CHAT IST TIMESTAMPS + UNREAD-COUNT + MARK-READ ENDPOINTS TESTING COMPLETE
+        ═══════════════════════════════════════════════════════════════════════════════
+        
+        Tested three salon-authenticated backend endpoints for SalonHub chat feature
+        for salon 909b8e81-ed8d-4c1c-9305-7545d1d4ce44 (Glam Central37).
+        
+        TEST RESULTS SUMMARY:
+        ═══════════════════════════════════════════════════════════════════════════════
+        
+        ✅ TEST 1 - IST TIMESTAMPS: PASS
+           - GET /api/salons/{salon_id}/conversations returned 200
+           - Found conversation for +917976441272 with 7 messages
+           - Test message 'hello test' has tm='15 Aug · 01:01 AM'
+           - VERIFIED: UTC 2026-08-14T19:31:07 → IST 2026-08-15 01:01:07 (UTC+5:30)
+           - Format matches expected: '15 Aug · 01:01 AM' with · separator
+           - _fmt_time correctly converts UTC to Asia/Kolkata timezone
+        
+        ✅ TEST 2 - UNREAD COUNT: PASS
+           - GET /api/salons/{salon_id}/messages/unread-count returned 200
+           - Response: {count: 3} >= 1 as expected
+           - Correctly counts direction=in & read!=true messages
+        
+        ✅ TEST 3 - MARK READ: PASS
+           - POST /api/salons/{salon_id}/conversations/{phone}/mark-read returned 200
+           - Response: {updated: 1}
+           - MongoDB verification: seeded message now has read=true
+           - Unread count decreased from 3 to 2 as expected
+        
+        ✅ AUTH-GUARD: ALL PASS
+           - All 3 endpoints correctly return 403 without Authorization header
+           - conversations endpoint: 403 ✅
+           - unread-count endpoint: 403 ✅
+           - mark-read endpoint: 403 ✅
+        
+        ✅ CLEANUP: COMPLETED
+           - Deleted 1 seeded test message
+           - No test data pollution in production database
+        
+        ═══════════════════════════════════════════════════════════════════════════════
+        CONCLUSION
+        ═══════════════════════════════════════════════════════════════════════════════
+        
+        The "Chat IST timestamps + unread-count + mark-read endpoints" task is
+        WORKING CORRECTLY and PRODUCTION-READY. All 3 endpoints functioning as
+        expected with proper IST timezone conversion, accurate unread counting,
+        and correct read status updates.
+        
+        MAIN AGENT ACTION REQUIRED:
+        ✅ Task "Chat IST timestamps + unread-count + mark-read endpoints" marked as
+           working=true and needs_retesting=false
+        ✅ All backend tests passed with no issues
         ✅ Ready to summarize and finish
 

@@ -24,11 +24,14 @@
  *   • The New Appointment and Add Guest drawers live inside the shell so
  *     they work on every page — a global CTA the user can hit from anywhere.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
+import axios from 'axios';
 import { HOME_V2_CSS } from './styles';
+
+const SHELL_API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 import AppointmentDrawer from './AppointmentDrawer';
 import CustomerDrawer from './CustomerDrawer';
 import GlobalSearchDropdown from './GlobalSearchDropdown';
@@ -115,6 +118,23 @@ export default function HomeV2Shell({
   const [ordersOpen, setOrdersOpen] = useState(false);
   const [notifCount, setNotifCount] = useState(unreadNotifCount || 0);
   useEffect(() => { setNotifCount(unreadNotifCount || 0); }, [unreadNotifCount]);
+
+  // Unread guest-message count -> badge on the Messages icon. Polled so new
+  // WhatsApp replies surface in near-real-time even when the drawer is closed.
+  const [msgCount, setMsgCount] = useState(0);
+  const fetchMsgCount = useCallback(async () => {
+    if (!salonId) return;
+    try {
+      const { data } = await axios.get(`${SHELL_API}/salons/${salonId}/messages/unread-count`,
+        { headers: getAuthHeaders ? getAuthHeaders() : {} });
+      setMsgCount(data?.count || 0);
+    } catch { /* silent */ }
+  }, [salonId, getAuthHeaders]);
+  useEffect(() => {
+    fetchMsgCount();
+    const id = setInterval(fetchMsgCount, 12000);
+    return () => clearInterval(id);
+  }, [fetchMsgCount]);
 
   // Mobile "More" bottom-sheet state (Phase 2)
   const [moreOpen, setMoreOpen] = useState(false);
@@ -204,7 +224,12 @@ export default function HomeV2Shell({
         <button className="ribbon__btn" data-tip="Retail Sale" onClick={() => navigate('/salon/dashboard?tab=inventory')}><I.cart /></button>
         <button className="ribbon__btn" data-tip="Shop Orders" data-testid="ribbon-orders-btn" onClick={() => setOrdersOpen(true)}><I.bag /></button>
         <div className="ribbon__sep" />
-        <button className="ribbon__btn" data-tip="Messages" data-testid="ribbon-messages-btn" onClick={() => setMessagesOpen(true)}><I.chat /></button>
+        <button className="ribbon__btn" data-tip="Messages" data-testid="ribbon-messages-btn" onClick={() => setMessagesOpen(true)}>
+          <I.chat />
+          {msgCount > 0 && (
+            <span className="dot">{msgCount > 9 ? '9+' : msgCount}</span>
+          )}
+        </button>
         <button
           className="ribbon__btn"
           data-tip="Notifications"
@@ -348,9 +373,10 @@ export default function HomeV2Shell({
 
       <MessagesDrawer
         open={messagesOpen}
-        onClose={() => setMessagesOpen(false)}
+        onClose={() => { setMessagesOpen(false); fetchMsgCount(); }}
         salonId={salonId}
         getAuthHeaders={getAuthHeaders}
+        onUnreadChange={setMsgCount}
       />
     </div>
   );
