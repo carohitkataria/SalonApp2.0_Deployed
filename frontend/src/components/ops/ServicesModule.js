@@ -1,1433 +1,911 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+/**
+ * ServicesModule — Service & Package configuration (redesign 2026).
+ *
+ * Two-pane layout: a category-grouped list (collapsible, favourite-sorted,
+ * per-row enable switch + bulk select) and an INLINE editor (no add-drawer).
+ * Services and Packages are separate sections chosen by the top tab.
+ *
+ * Backed by the existing service API plus the new classification / ops-settings
+ * endpoints. Tier × length price matrices persist to `axes` + `price_matrix`;
+ * packages persist to `package_items` (service + day-offset + price) +
+ * `package_price`.
+ */
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { injectZenCss, Icon, rupee } from './opsTheme';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
-const CATEGORIES = ['Services', 'Packages'];
-const GENDERS = ['Men', 'Women', 'Unisex'];
 
-/** Blank service template. */
-const BLANK = {
-  id: null,
-  service_name: '',
-  description: '',
-  category: 'Services',
-  sub_category: '',
-  gender_tag: 'Unisex',
-  default_duration: 30,
-  base_price: 0,
-  price_type: 'fixed',
-  is_favorite: false,
-  available_at_home: false,
-  home_price: 0,
-  thumbnail_url: '',
-  images: [],
-  gst_rate: null,
-  hsn_code: '',
+const rupee = (n) => '₹' + Number(n || 0).toLocaleString('en-IN');
+const isPkg = (s) => (s.category || '') === 'Packages';
+/* Flat price-matrix key so the editor + booking page agree. */
+const matKey = (tier, length, axes) => {
+  const t = (axes || []).includes('tier');
+  const l = (axes || []).includes('length');
+  if (t && l) return `${tier}__${length}`;
+  if (t) return `${tier}`;
+  if (l) return `${length}`;
+  return 'flat';
 };
 
-function fmtCompactINR(n) {
-  const v = Number(n || 0);
-  if (v >= 10000000) return '₹' + (v / 10000000).toFixed(2).replace(/\.00$/, '') + ' Cr';
-  if (v >= 100000) return '₹' + (v / 100000).toFixed(2).replace(/\.00$/, '') + ' L';
-  if (v >= 1000) return '₹' + (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
-  return '₹' + v.toLocaleString('en-IN');
+/* ---------------- injected styles (scoped to .svc2) ---------------- */
+let _cssDone = false;
+function injectCss() {
+  if (_cssDone || typeof document === 'undefined') return;
+  _cssDone = true;
+  const css = `
+.svc2{--p:#6C4FE0;--p6:#5B3FD1;--p05:#F1EEFF;--p1:#E7E2FF;--p2:#D6CBFF;--bg:#F6F6FB;--sf:#fff;--sf2:#FBFBFE;--ink:#23252F;--inks:#3C3F4E;--mut:#7C8092;--mut2:#9A9EAE;--line:#E3E3EC;--lines:#CBD0DE;--ok:#2FA96A;--bad:#E45C86;--badbg:#FCEAF1;--gold:#C9992B;--goldbg:#FBF3DF;font-family:'Inter',system-ui,sans-serif;color:var(--ink);font-size:13px;display:flex;flex-direction:column;height:100%;min-height:0;box-sizing:border-box;padding:14px 4px 30px}
+.svc2 *{box-sizing:border-box}
+.svc2 button{font-family:inherit;cursor:pointer}
+.svc2 .num{font-variant-numeric:tabular-nums}
+.svc2 .phead{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:14px;padding:0 6px}
+.svc2 .phead h2{font-size:22px;font-weight:800;letter-spacing:-.5px;display:flex;align-items:center;gap:10px;color:var(--ink);margin:0}
+.svc2 .phead .hic{width:34px;height:34px;border-radius:10px;background:var(--p05);color:var(--p);display:grid;place-items:center;flex:none}
+.svc2 .phead .hic svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2}
+.svc2 .phead .psub{font-size:12.5px;color:var(--mut);font-weight:600;margin-top:2px}
+.svc2 .main{display:grid;grid-template-columns:290px 1fr;min-height:0;flex:1;border:1.5px solid var(--line);border-radius:14px;overflow:hidden;background:var(--sf)}
+.svc2 .listcol{border-right:1.5px solid var(--line);background:var(--sf);display:flex;flex-direction:column;min-height:0}
+.svc2 .typetabs{display:flex;gap:4px;padding:8px 8px 0}
+.svc2 .typetabs button{flex:1;padding:7px;border:1.5px solid var(--line);background:var(--sf2);border-radius:8px 8px 0 0;font-weight:800;font-size:11.5px;color:var(--mut);border-bottom:0}
+.svc2 .typetabs button.on{background:var(--p);color:#fff;border-color:var(--p)}
+.svc2 .toolbar{display:flex;align-items:center;gap:5px;padding:8px;border-bottom:1.5px solid var(--line)}
+.svc2 .toolbar .search{flex:1;min-width:0;border:1.5px solid var(--lines);border-radius:8px;padding:6px 9px;font-family:inherit;font-size:12px}
+.svc2 .tbtn{width:32px;height:32px;border-radius:8px;border:1.5px solid var(--lines);background:var(--sf);color:var(--inks);display:grid;place-items:center;flex:none}
+.svc2 .tbtn svg{width:15px;height:15px}
+.svc2 .tbtn:hover{border-color:var(--p2);color:var(--p);background:var(--p05)}
+.svc2 .tbtn.pri{background:var(--p);border-color:var(--p);color:#fff}
+.svc2 .listscroll{overflow:auto;flex:1;min-height:0;padding:6px}
+.svc2 .selbar{display:flex;align-items:center;gap:8px;padding:6px 8px;margin-bottom:4px;background:var(--p05);border:1.5px solid var(--p2);border-radius:8px;font-size:11.5px;font-weight:700;color:var(--p6)}
+.svc2 .selbar .del{margin-left:auto;color:var(--bad);background:transparent;border:0;font-weight:800;display:inline-flex;align-items:center;gap:4px}
+.svc2 .selbar .del svg{width:13px;height:13px}
+.svc2 .catblock{margin-bottom:4px}
+.svc2 .cathead{display:flex;align-items:center;gap:7px;padding:6px 7px;border-radius:8px;cursor:pointer}
+.svc2 .cathead:hover{background:var(--sf2)}
+.svc2 .cathead .chev{width:13px;height:13px;color:var(--mut);transition:.15s;flex:none}
+.svc2 .cathead.open .chev{transform:rotate(90deg)}
+.svc2 .cathead .thumb{width:24px;height:24px;border-radius:6px;background:var(--p05);flex:none;display:grid;place-items:center;color:var(--p);overflow:hidden;font-weight:800;font-size:11px}
+.svc2 .cathead .thumb img{width:100%;height:100%;object-fit:cover}
+.svc2 .cathead .cn{font-weight:800;font-size:12.5px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.svc2 .cathead .cc{font-size:10px;font-weight:800;color:var(--mut);background:var(--sf2);border:1px solid var(--line);border-radius:20px;padding:1px 7px}
+.svc2 .cathead .catdel{opacity:0;color:var(--mut);background:transparent;border:0;padding:2px}
+.svc2 .cathead:hover .catdel{opacity:1}
+.svc2 .cathead .catdel:hover{color:var(--bad)}
+.svc2 .cathead .catdel svg{width:13px;height:13px}
+.svc2 .srow{display:flex;align-items:center;gap:8px;padding:7px 8px 7px 26px;border-radius:8px;cursor:pointer;margin-bottom:1px}
+.svc2 .srow:hover{background:var(--sf2)}
+.svc2 .srow.sel{background:var(--p);color:#fff}
+.svc2 .srow.off{opacity:.5}
+.svc2 .srow .chk{width:15px;height:15px;flex:none;accent-color:var(--p)}
+.svc2 .srow .star{background:transparent;border:0;padding:0;color:var(--mut2);flex:none;line-height:0}
+.svc2 .srow .star svg{width:15px;height:15px}
+.svc2 .srow .star.on{color:var(--gold)}
+.svc2 .srow.sel .star.on{color:#FFD873}
+.svc2 .srow.sel .star{color:rgba(255,255,255,.6)}
+.svc2 .srow .sn{flex:1;font-weight:600;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.svc2 .srow .mxi{color:var(--p);flex:none;display:inline-flex}
+.svc2 .srow.sel .mxi{color:#fff}
+.svc2 .srow .mxi svg{width:12px;height:12px}
+.svc2 .msw{position:relative;width:28px;height:16px;flex:none}
+.svc2 .msw input{opacity:0;width:0;height:0}
+.svc2 .msl{position:absolute;inset:0;background:var(--lines);border-radius:20px;transition:.15s}
+.svc2 .msl:before{content:"";position:absolute;width:12px;height:12px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.15s}
+.svc2 .msw input:checked+.msl{background:var(--ok)}
+.svc2 .msw input:checked+.msl:before{transform:translateX(12px)}
+.svc2 .srow.sel .msl{background:rgba(255,255,255,.35)}
+.svc2 .srow.sel .msw input:checked+.msl{background:#fff}
+.svc2 .srow.sel .msw input:checked+.msl:before{background:var(--p)}
+.svc2 .emptylist{padding:20px;color:var(--mut);font-size:12px}
+.svc2 .editcol{overflow:auto;min-height:0;padding:14px 18px 40px;background:var(--bg)}
+.svc2 .ehead{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.svc2 .ehead input.title{flex:1;border:1.5px solid transparent;border-radius:8px;padding:6px 8px;font-size:16px;font-weight:800;font-family:inherit;background:transparent;min-width:0}
+.svc2 .ehead input.title:hover{background:var(--sf2)}
+.svc2 .ehead input.title:focus{outline:none;border-color:var(--p);background:#fff}
+.svc2 .ehead .badge{font-size:9.5px;font-weight:800;padding:3px 9px;border-radius:6px;background:var(--p05);color:var(--p);text-transform:uppercase;letter-spacing:.05em;flex:none}
+.svc2 .ehead .badge.pkg{background:var(--goldbg);color:var(--gold)}
+.svc2 .ehead .fav{width:34px;height:34px;border-radius:9px;border:1.5px solid var(--lines);background:var(--sf);color:var(--mut2);display:grid;place-items:center;flex:none}
+.svc2 .ehead .fav.on{color:var(--gold);border-color:var(--gold);background:var(--goldbg)}
+.svc2 .ehead .fav svg{width:17px;height:17px}
+.svc2 .ehead .en{display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:700;color:var(--inks);flex:none}
+.svc2 .fcard{background:var(--sf);border:1.5px solid var(--line);border-radius:12px;padding:11px 12px;margin-bottom:10px}
+.svc2 .fcard>.cl{font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.svc2 .fcard>.cl svg{width:13px;height:13px;color:var(--p)}
+.svc2 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.svc2 .f label{display:block;font-size:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--mut2);margin-bottom:3px}
+.svc2 .f input,.svc2 .f select,.svc2 .f textarea{width:100%;border:1.5px solid var(--lines);border-radius:8px;padding:7px 9px;font-family:inherit;font-size:13px;background:var(--sf2)}
+.svc2 .f textarea{resize:vertical;min-height:60px}
+.svc2 .f input:focus,.svc2 .f select:focus,.svc2 .f textarea:focus{outline:none;border-color:var(--p);background:#fff;box-shadow:0 0 0 3px var(--p05)}
+.svc2 .segtog{display:inline-flex;border:1.5px solid var(--lines);border-radius:9px;overflow:hidden;width:100%}
+.svc2 .segtog button{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:7px 9px;border:0;border-right:1.5px solid var(--line);background:var(--sf);color:var(--mut);font-weight:700;font-size:12px}
+.svc2 .segtog button:last-child{border-right:0}
+.svc2 .segtog button.on{background:var(--p);color:#fff}
+.svc2 .segtog.pink button.on{background:var(--bad)}
+.svc2 .axisbar{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+.svc2 .axistog{display:flex;align-items:center;gap:8px}
+.svc2 .sw{position:relative;width:33px;height:18px;flex:none}
+.svc2 .sw input{opacity:0;width:0;height:0}
+.svc2 .sl{position:absolute;inset:0;background:var(--lines);border-radius:20px;transition:.15s}
+.svc2 .sl:before{content:"";position:absolute;width:14px;height:14px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.15s}
+.svc2 .sw input:checked+.sl{background:var(--p)}
+.svc2 .sw input:checked+.sl:before{transform:translateX(15px)}
+.svc2 .axistog .t{font-weight:700;font-size:12.5px;color:var(--inks)}
+.svc2 table.mx{border-collapse:separate;border-spacing:0;width:100%;font-size:12px;margin-top:10px}
+.svc2 table.mx th,.svc2 table.mx td{border:1.5px solid var(--line);padding:0}
+.svc2 table.mx th{background:var(--sf2);font-size:9.5px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:var(--inks);padding:7px 8px;text-align:center}
+.svc2 table.mx th.rowh{text-align:left;color:var(--p6)}
+.svc2 table.mx td input{width:100%;border:0;background:transparent;padding:9px 8px;font-family:inherit;font-size:13px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums}
+.svc2 table.mx td input:focus{outline:none;background:var(--p05)}
+.svc2 .flatprice{display:flex;align-items:center;gap:8px;margin-top:10px}
+.svc2 .flatprice .cur{font-size:20px;font-weight:800}
+.svc2 .flatprice input{width:150px;border:1.5px solid var(--lines);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:15px;font-weight:700}
+.svc2 .thumbrow{display:flex;gap:10px;align-items:flex-start}
+.svc2 .thumbbox{width:64px;height:64px;border-radius:10px;border:1.5px dashed var(--lines);display:grid;place-items:center;color:var(--mut2);flex:none;background:var(--sf2);cursor:pointer;overflow:hidden}
+.svc2 .thumbbox:hover{border-color:var(--p);color:var(--p)}
+.svc2 .thumbbox svg{width:20px;height:20px}
+.svc2 .thumbbox img{width:100%;height:100%;object-fit:cover}
+.svc2 .thumbside{flex:1;min-width:0}
+.svc2 .orsplit{display:flex;align-items:center;gap:8px;margin:6px 0;color:var(--mut2);font-size:10px;font-weight:800}
+.svc2 .orsplit:before,.svc2 .orsplit:after{content:"";height:1px;background:var(--line);flex:1}
+.svc2 .pkgitem{display:flex;align-items:center;gap:9px;padding:8px 9px;border:1.5px solid var(--line);border-radius:9px;margin-bottom:6px;background:var(--sf)}
+.svc2 .pkgitem .seq{width:22px;height:22px;border-radius:50%;background:var(--p05);color:var(--p);display:grid;place-items:center;font-weight:800;font-size:11px;flex:none}
+.svc2 .pkgitem .pn{flex:1;min-width:0}
+.svc2 .pkgitem .pn select{width:100%;border:1.5px solid var(--lines);border-radius:7px;padding:5px 7px;font-family:inherit;font-size:12.5px;font-weight:700}
+.svc2 .pkgitem .day{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:700;color:var(--mut)}
+.svc2 .pkgitem .day input{width:48px;border:1.5px solid var(--lines);border-radius:7px;padding:4px 6px;font-family:inherit;font-size:12px;text-align:center}
+.svc2 .pkgitem .price input{width:78px;border:1.5px solid var(--lines);border-radius:7px;padding:5px 7px;font-family:inherit;font-size:12px;text-align:right}
+.svc2 .pkgitem .x{color:var(--mut);background:transparent;border:0;padding:2px}
+.svc2 .pkgitem .x:hover{color:var(--bad)}
+.svc2 .pkgitem .x svg{width:14px;height:14px}
+.svc2 .addsvc{width:100%;padding:9px;border:1.5px dashed var(--p2);background:var(--p05);color:var(--p);border-radius:9px;font-weight:800;font-size:12px;display:flex;align-items:center;justify-content:center;gap:6px;margin-top:2px}
+.svc2 .addsvc svg{width:14px;height:14px}
+.svc2 .pkgsum{display:flex;justify-content:space-between;align-items:center;padding:9px 2px 2px;font-weight:800;font-size:13px;border-top:1.5px dashed var(--line);margin-top:8px}
+.svc2 .pkgsum .strike{color:var(--mut);font-weight:600;text-decoration:line-through;margin-right:8px}
+.svc2 .pkgsum input{width:110px;border:1.5px solid var(--lines);border-radius:8px;padding:6px 8px;font-family:inherit;font-size:14px;font-weight:800;text-align:right}
+.svc2 details.adv{border:1.5px dashed var(--lines);border-radius:12px;margin-bottom:10px}
+.svc2 details.adv summary{list-style:none;padding:9px 12px;font-weight:800;font-size:12px;color:var(--inks);cursor:pointer;display:flex;align-items:center;gap:7px}
+.svc2 details.adv summary::-webkit-details-marker{display:none}
+.svc2 details.adv summary svg{width:14px;height:14px;transition:.15s}
+.svc2 details.adv[open] summary svg{transform:rotate(90deg)}
+.svc2 details.adv .in{padding:0 12px 12px}
+.svc2 .savebar{display:flex;gap:8px;justify-content:flex-end;margin-top:4px}
+.svc2 .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:9px;font-weight:700;font-size:12.5px;border:1.5px solid transparent}
+.svc2 .btn svg{width:15px;height:15px}
+.svc2 .btn--pri{background:var(--p);color:#fff}
+.svc2 .btn--ghost{background:var(--sf);color:var(--inks);border-color:var(--lines)}
+.svc2 .btn--danger{background:var(--badbg);color:var(--bad)}
+.svc2 .editempty{color:var(--mut);padding:60px 20px;text-align:center}
+/* drawers */
+.svc2-scrim{position:fixed;inset:0;background:rgba(30,32,50,.34);z-index:9998;opacity:0;pointer-events:none;transition:.2s}
+.svc2-scrim.show{opacity:1;pointer-events:auto}
+.svc2-dr{position:fixed;top:0;right:0;height:100%;width:440px;max-width:94vw;background:#fff;box-shadow:0 12px 44px rgba(30,32,50,.18);z-index:9999;transform:translateX(100%);transition:.24s;display:flex;flex-direction:column;font-family:'Inter',system-ui,sans-serif;color:#23252F;font-size:13px}
+.svc2-dr.open{transform:none}
+.svc2-dr *{box-sizing:border-box}
+.svc2-dr .drh{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1.5px solid #E3E3EC;flex:none}
+.svc2-dr .drh h3{margin:0;font-size:15px;font-weight:800;flex:1}
+.svc2-dr .drh .close{width:32px;height:32px;border-radius:8px;border:1.5px solid #CBD0DE;background:#fff;color:#3C3F4E;display:grid;place-items:center}
+.svc2-dr .drh .close svg{width:16px;height:16px}
+.svc2-dr .drbody{overflow:auto;padding:14px 16px;flex:1}
+.svc2-dr .clstabs{display:flex;gap:4px;margin-bottom:12px;border:1.5px solid #E3E3EC;border-radius:9px;padding:3px;background:#FBFBFE}
+.svc2-dr .clstabs button{flex:1;padding:7px;border:0;background:transparent;border-radius:7px;font-weight:800;font-size:11.5px;color:#7C8092}
+.svc2-dr .clstabs button.on{background:#6C4FE0;color:#fff}
+.svc2-dr .clsrow{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1.5px solid #E3E3EC;border-radius:10px;margin-bottom:7px;background:#fff}
+.svc2-dr .clsrow .th{width:40px;height:40px;border-radius:9px;background:#F1EEFF;color:#6C4FE0;display:grid;place-items:center;flex:none;cursor:pointer;border:1.5px dashed transparent;overflow:hidden}
+.svc2-dr .clsrow .th img{width:100%;height:100%;object-fit:cover}
+.svc2-dr .clsrow .th svg{width:16px;height:16px}
+.svc2-dr .clsrow .cinput{flex:1;min-width:0;border:1.5px solid #CBD0DE;border-radius:8px;padding:7px 9px;font-family:inherit;font-size:13px;font-weight:600}
+.svc2-dr .clsrow .x{color:#7C8092;background:transparent;border:0;padding:2px}
+.svc2-dr .clsrow .x svg{width:15px;height:15px}
+.svc2-dr .addcls{width:100%;padding:9px;border:1.5px dashed #D6CBFF;background:#F1EEFF;color:#6C4FE0;border-radius:9px;font-weight:800;font-size:12px;display:flex;align-items:center;justify-content:center;gap:6px}
+.svc2-dr .addcls svg{width:14px;height:14px}
+.svc2-dr .clsnote{font-size:10.5px;color:#7C8092;margin:2px 0 10px;display:flex;gap:6px}
+.svc2-dr .clsnote svg{width:14px;height:14px;color:#6C4FE0;flex:none}
+.svc2-dr .setrow{display:flex;align-items:center;gap:10px;padding:12px;border:1.5px solid #E3E3EC;border-radius:10px;margin-bottom:10px}
+.svc2-dr .setrow .info{flex:1}
+.svc2-dr .setrow .info .st{font-weight:800;font-size:13px}
+.svc2-dr .setrow .info .sd{font-size:11.5px;color:#7C8092;margin-top:2px}
+.svc2-dr .msgprev{background:#FDF3E4;border:1.5px solid #F0D9AE;border-radius:10px;padding:11px 12px;font-size:12px;color:#8A5A12;display:flex;gap:8px}
+.svc2-dr .msgprev svg{width:15px;height:15px;flex:none;margin-top:1px}
+.svc2-dr .drop{border:1.5px dashed #CBD0DE;border-radius:12px;padding:26px;text-align:center;color:#7C8092;background:#FBFBFE;margin-bottom:12px;cursor:pointer}
+.svc2-dr .drop svg{width:26px;height:26px;color:#6C4FE0;margin-bottom:6px}
+.svc2-dr .drop b{color:#23252F}
+.svc2-dr .btnfull{width:100%;justify-content:center;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:9px;font-weight:700;font-size:12.5px;border:1.5px solid #CBD0DE;background:#fff;color:#3C3F4E;margin-bottom:14px}
+.svc2-dr .btnfull svg{width:15px;height:15px}
+.svc2-dr .steps{font-size:12px;color:#3C3F4E;padding-left:18px}
+.svc2-dr .steps li{margin-bottom:6px}
+.svc2-dr .codepill{font-family:ui-monospace,monospace;font-size:11px;background:#FBFBFE;border:1px solid #E3E3EC;border-radius:5px;padding:1px 5px}
+`;
+  const el = document.createElement('style');
+  el.id = 'svc2-css';
+  el.textContent = css;
+  document.head.appendChild(el);
 }
 
+/* tiny inline icon set */
+const I = {
+  plus: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>,
+  list: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 6h16M4 12h16M4 18h10"/><circle cx="19" cy="18" r="2"/></svg>,
+  upload: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 15V3M8 7l4-4 4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>,
+  eye: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>,
+  chev: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 6l6 6-6 6"/></svg>,
+  star: (fill) => <svg viewBox="0 0 24 24" fill={fill ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2"><path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5L12 17l-4.9 2.6.9-5.5-4-3.9L9.5 8z"/></svg>,
+  grid: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>,
+  box: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 8l9-5 9 5-9 5-9-5zM3 8v8l9 5 9-5V8"/></svg>,
+  trash: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>,
+  x: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>,
+  save: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12l5 5L20 7"/></svg>,
+  img: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>,
+  info: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>,
+};
+
+const fileToDataUrl = (file) => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(r.result);
+  r.onerror = rej;
+  r.readAsDataURL(file);
+});
+
 export default function ServicesModule({ salonId, getAuthHeaders }) {
-  useEffect(() => { injectZenCss(); }, []);
+  useEffect(injectCss, []);
+  const authRef = useRef(getAuthHeaders);
+  useEffect(() => { authRef.current = getAuthHeaders; }, [getAuthHeaders]);
+  const H = useCallback(() => ({ headers: authRef.current() }), []);
+
   const [services, setServices] = useState([]);
-  const [subs, setSubs] = useState({ Services: [], Packages: [] });
-  const [cats, setCats] = useState([]); // WS4 — canonical categories from the endpoint
-  const [selCat, setSelCat] = useState('Services');
-  const [selSub, setSelSub] = useState(null); // null = all
+  const [cls, setCls] = useState({ tiers: ['Basic', 'Standard', 'Premium', 'Ultra'], lengths: ['Short', 'Medium', 'Long', 'XL'], categories: [], package_categories: [] });
+  const [ops, setOps] = useState({ show_online_prices: true });
+  const [curType, setCurType] = useState('Service'); // Service | Package
+  const [sel, setSel] = useState(null);
+  const [openCats, setOpenCats] = useState({});
+  const [checked, setChecked] = useState(() => new Set());
   const [search, setSearch] = useState('');
-  const [subFilter, setSubFilter] = useState('');   // filter chips in left rail
-  const [openCats, setOpenCats] = useState({ Services: true, Packages: true });
-  const [showAdd, setShowAdd] = useState(false);
-  const [editing, setEditing] = useState(null); // service being edited
-  const [addingSubFor, setAddingSubFor] = useState(null); // category being added-to
-  const [newSubName, setNewSubName] = useState('');
-  // Toolbar (right pane)
-  const [genderTab, setGenderTab] = useState('all'); // all | Men | Women
-  const [sortMode, setSortMode] = useState('default'); // default | price_asc | price_desc | bookings_desc
 
-  // Upload drawer state
+  const [classOpen, setClassOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [batches, setBatches] = useState([]);
-  const [batchesLoading, setBatchesLoading] = useState(false);
+  const [onlineOpen, setOnlineOpen] = useState(false);
 
-  // Metrics
-  const [overview, setOverview] = useState(null);
-  const [metByServiceId, setMetByServiceId] = useState({});
-  // Metrics detail drawer
-  const [metricsFor, setMetricsFor] = useState(null); // service being viewed
-
-  // Feb 2026 — bulk selection state (Set of service ids). Enables the
-  // floating action bar for Delete / Enable / Disable across many services.
-  const [bulkSelected, setBulkSelected] = useState(() => new Set());
-  const [bulkBusy, setBulkBusy] = useState(false);
-  const toggleBulk = (id) => setBulkSelected((prev) => {
-    const next = new Set(prev);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
-  const selectAllInList = (list) => setBulkSelected((prev) => {
-    const next = new Set(prev);
-    list.forEach((s) => next.add(s.id));
-    return next;
-  });
-  const clearBulk = () => setBulkSelected(new Set());
-
-  const authHeadersRef = useRef(getAuthHeaders);
-  useEffect(() => { authHeadersRef.current = getAuthHeaders; }, [getAuthHeaders]);
-
-  const fetchBatches = async () => {
-    if (!salonId) return;
-    setBatchesLoading(true);
-    try {
-      const res = await axios.get(
-        `${API}/salons/${salonId}/services/upload-batches`,
-        { headers: authHeadersRef.current() },
-      );
-      setBatches(Array.isArray(res.data?.batches) ? res.data.batches : []);
-    } catch (_) { /* keep prior list */ }
-    finally { setBatchesLoading(false); }
-  };
-
-  const openUploadDrawer = () => { setUploadOpen(true); fetchBatches(); };
-
-  const handleUploadCsv = async (file) => {
-    if (!file || !salonId) return;
-    setUploading(true);
-    try {
-      const fd = new FormData();
-      fd.append('file', file);
-      const res = await axios.post(
-        `${API}/salons/${salonId}/services/upload-csv`,
-        fd,
-        { headers: { ...authHeadersRef.current(), 'Content-Type': 'multipart/form-data' } },
-      );
-      const added = res.data?.created ?? 0;
-      const skipped = res.data?.skipped_duplicates ?? 0;
-      const errs = Array.isArray(res.data?.errors) ? res.data.errors.length : 0;
-      toast.success(`Uploaded — added ${added}${skipped ? `, skipped ${skipped}` : ''}${errs ? `, ${errs} error(s)` : ''}`);
-      await Promise.all([load(), fetchBatches(), loadMetrics()]);
-    } catch (err) {
-      const msg = err?.response?.data?.detail || 'Upload failed';
-      toast.error(typeof msg === 'string' ? msg : 'Upload failed');
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleRollbackBatch = async (batchId) => {
-    if (!salonId || !batchId) return;
-    if (!window.confirm('Undo this upload? Services created by this batch will be removed.')) return;
-    try {
-      const res = await axios.delete(
-        `${API}/salons/${salonId}/services/upload-batches/${batchId}`,
-        { headers: authHeadersRef.current() },
-      );
-      const removed = res.data?.removed ?? 0;
-      toast.success(`Rolled back — removed ${removed} service(s)`);
-      await Promise.all([load(), fetchBatches(), loadMetrics()]);
-    } catch (err) {
-      toast.error(err?.response?.data?.detail || 'Rollback failed');
-    }
-  };
-
-  const downloadTemplateUrl = `${API}/services/upload-template.csv`;
-
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!salonId) return;
     try {
-      const [svc, sub] = await Promise.all([
-        axios.get(`${API}/salons/${salonId}/services/all`, { headers: authHeadersRef.current() }),
-        axios.get(`${API}/salons/${salonId}/services/subcategories`),
+      const [svc, clr, opr] = await Promise.all([
+        axios.get(`${API}/salons/${salonId}/services/all`, H()),
+        axios.get(`${API}/salons/${salonId}/classification`).catch(() => ({ data: {} })),
+        axios.get(`${API}/salons/${salonId}/ops-settings`).catch(() => ({ data: {} })),
       ]);
       const raw = svc.data;
       const list = Array.isArray(raw) ? raw : (raw?.services || raw?.data || []);
-      setServices(list);
-      setSubs({
-        Services: sub.data?.Services || [],
-        Packages: sub.data?.Packages || [],
-      });
-      // WS4 — canonical category list (single source of truth, shared with customer + staff)
-      try {
-        const cr = await axios.get(`${API}/salons/${salonId}/categories?type=service`, { headers: authHeadersRef.current() });
-        setCats(cr.data?.categories || []);
-      } catch (_) { /* fall back to derived names */ }
+      setServices(list.filter((s) => s.is_active !== false));
+      if (clr.data && (clr.data.tiers || clr.data.lengths)) setCls((c) => ({ ...c, ...clr.data }));
+      if (opr.data) setOps((o) => ({ ...o, ...opr.data }));
     } catch (e) {
       console.error('load services', e);
       toast.error('Failed to load services');
     }
-  };
+  }, [salonId, H]);
 
-  const loadMetrics = async () => {
-    if (!salonId) return;
-    try {
-      const res = await axios.get(
-        `${API}/salons/${salonId}/services/metrics-overview`,
-        { headers: authHeadersRef.current() },
-      );
-      setOverview(res.data?.overview || null);
-      const map = {};
-      for (const r of (res.data?.per_service || [])) {
-        map[r.service_id] = r;
-      }
-      setMetByServiceId(map);
-    } catch (e) {
-      // Metrics are best-effort; don't spam a toast on failure.
-    }
-  };
+  useEffect(() => { load(); }, [load]);
 
-  useEffect(() => { load(); loadMetrics(); /* eslint-disable-line */ }, [salonId]);
+  const items = useMemo(
+    () => services.filter((s) => (curType === 'Package' ? isPkg(s) : !isPkg(s))),
+    [services, curType],
+  );
+  const groupKey = useCallback(
+    (s) => (curType === 'Package' ? (s.sub_category || 'General') : (s.category || 'General')),
+    [curType],
+  );
 
   const filtered = useMemo(() => {
-    // "Services" (default) is a catch-all: any service NOT explicitly tagged
-    // as a "Packages" category belongs here. This preserves legacy rows
-    // that used generic category names like "General".
-    let list = services.filter((s) => {
-      const c = s.category || 'Services';
-      return selCat === 'Packages' ? c === 'Packages' : c !== 'Packages';
-    });
-    if (selSub) list = list.filter((s) => (s.sub_category || '') === selSub);
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
-      list = list.filter(
-        (s) => (s.service_name || '').toLowerCase().includes(q) ||
-               (s.description || '').toLowerCase().includes(q) ||
-               (s.sub_category || '').toLowerCase().includes(q)
-      );
-    }
-    if (genderTab !== 'all') {
-      list = list.filter((s) => {
-        const t = (s.gender_tag || 'Unisex');
-        return t === genderTab || t === 'Unisex';
-      });
-    }
-    // Sort
-    if (sortMode === 'price_asc') list = [...list].sort((a, b) => (a.base_price || 0) - (b.base_price || 0));
-    else if (sortMode === 'price_desc') list = [...list].sort((a, b) => (b.base_price || 0) - (a.base_price || 0));
-    else if (sortMode === 'bookings_desc') {
-      list = [...list].sort((a, b) => (metByServiceId[b.id]?.bookings_30d || 0) - (metByServiceId[a.id]?.bookings_30d || 0));
-    }
-    return list;
-  }, [services, selCat, selSub, search, genderTab, sortMode, metByServiceId]);
+    const q = search.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter((s) => (s.service_name || '').toLowerCase().includes(q) || (groupKey(s) || '').toLowerCase().includes(q));
+  }, [items, search, groupKey]);
 
   const grouped = useMemo(() => {
-    if (selSub) return { [selSub]: filtered };
     const g = {};
-    for (const s of filtered) {
-      const k = s.sub_category || 'General';
-      g[k] = g[k] || [];
-      g[k].push(s);
-    }
+    filtered.forEach((s) => {
+      const k = groupKey(s);
+      (g[k] = g[k] || []).push(s);
+    });
+    Object.values(g).forEach((rows) => rows.sort((a, b) => ((b.is_favorite ? 1 : 0) - (a.is_favorite ? 1 : 0)) || (a.service_name || '').localeCompare(b.service_name || '')));
     return g;
-  }, [filtered, selSub]);
+  }, [filtered, groupKey]);
 
-  const countInCat = (cat) => services.filter((s) => {
-    const c = s.category || 'Services';
-    return cat === 'Packages' ? c === 'Packages' : c !== 'Packages';
-  }).length;
-  const countInSub = (cat, sub) => services.filter((s) => {
-    const c = s.category || 'Services';
-    const inCat = cat === 'Packages' ? c === 'Packages' : c !== 'Packages';
-    return inCat && (s.sub_category || '') === sub;
-  }).length;
+  const catThumb = useCallback((name) => {
+    const c = (cls.categories || []).find((x) => x.name === name);
+    return c && c.thumbnail_url ? c.thumbnail_url : null;
+  }, [cls.categories]);
 
-  const openNew = () => {
-    const chosenCat = selCat || 'Services';
-    const chosenSub = selSub || '';
-    // If user is filtered to a sub-category, prefill BOTH category + sub-category
-    // so it saves correctly on first click.
-    setEditing({ ...BLANK, category: chosenCat, sub_category: chosenSub });
-    setShowAdd(true);
+  /* ------------- row actions ------------- */
+  const toggleFav = async (s) => {
+    setServices((prev) => prev.map((x) => x.id === s.id ? { ...x, is_favorite: !x.is_favorite } : x));
+    try { await axios.put(`${API}/services/${s.id}/favorite?is_favorite=${!s.is_favorite}`, null, H()); }
+    catch { toast.error('Could not update favourite'); load(); }
   };
-  const openEdit = (svc) => { setEditing({ ...BLANK, ...svc }); setShowAdd(true); };
-
-  const saveSubcat = async (category) => {
-    const name = newSubName.trim();
-    if (!name) return;
+  const toggleEnabled = async (s) => {
+    const next = !(s.is_enabled !== false);
+    setServices((prev) => prev.map((x) => x.id === s.id ? { ...x, is_enabled: next } : x));
+    try { await axios.put(`${API}/salons/${salonId}/services/${s.id}/toggle?is_enabled=${next}`, null, H()); }
+    catch { toast.error('Could not toggle'); load(); }
+  };
+  const delOne = async (id) => {
+    try { await axios.delete(`${API}/services/${id}`, H()); toast.success('Deleted'); if (sel === id) setSel(null); load(); }
+    catch { toast.error('Delete failed'); }
+  };
+  const delCategory = async (catName) => {
+    const ids = items.filter((s) => groupKey(s) === catName).map((s) => s.id);
+    if (!ids.length) return;
+    if (!window.confirm(`Delete the entire "${catName}" group and its ${ids.length} ${curType.toLowerCase()}(s)?`)) return;
     try {
-      await axios.post(
-        `${API}/salons/${salonId}/services/subcategories`,
-        { category, name },
-        { headers: authHeadersRef.current() }
-      );
-      setSubs((s) => ({ ...s, [category]: Array.from(new Set([...(s[category] || []), name])).sort() }));
-      setNewSubName('');
-      setAddingSubFor(null);
-      toast.success(`Added "${name}"`);
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || 'Failed to add');
-    }
+      await axios.post(`${API}/salons/${salonId}/services/bulk-delete`, { service_ids: ids }, H());
+      toast.success('Group deleted'); load();
+    } catch { toast.error('Delete failed'); }
   };
-
-  const toggleFav = async (svc) => {
-    try {
-      await axios.put(
-        `${API}/services/${svc.id}/favorite`,
-        { is_favorite: !svc.is_favorite },
-        { headers: authHeadersRef.current() }
-      );
-      setServices((s) => s.map((x) => (x.id === svc.id ? { ...x, is_favorite: !svc.is_favorite } : x)));
-    } catch (e) {
-      try {
-        await axios.put(`${API}/services/${svc.id}/favorite?is_favorite=${!svc.is_favorite}`, null, { headers: authHeadersRef.current() });
-        setServices((s) => s.map((x) => (x.id === svc.id ? { ...x, is_favorite: !svc.is_favorite } : x)));
-      } catch (_) {
-        toast.error('Could not update favourite');
-      }
-    }
-  };
-
-  const deleteSvc = async (svc) => {
-    if (!window.confirm(`Delete "${svc.service_name}"?`)) return;
-    try {
-      await axios.delete(`${API}/services/${svc.id}`, { headers: authHeadersRef.current() });
-      setServices((s) => s.filter((x) => x.id !== svc.id));
-      loadMetrics();
-      toast.success('Deleted');
-    } catch (e) {
-      toast.error('Failed to delete');
-    }
-  };
-
-  // ---- Bulk actions ------------------------------------------------------
   const bulkDelete = async () => {
-    const ids = Array.from(bulkSelected);
-    if (!ids.length) return;
-    if (!window.confirm(`Delete ${ids.length} service(s)? Salon-owned services are removed permanently; global services are hidden from your menu only.`)) return;
-    setBulkBusy(true);
+    if (!checked.size) return;
+    if (!window.confirm(`Delete ${checked.size} selected ${curType.toLowerCase()}(s)?`)) return;
     try {
-      await axios.post(`${API}/salons/${salonId}/services/bulk-delete`,
-        { service_ids: ids }, { headers: authHeadersRef.current() });
-      // Refetch to reflect hard-delete + global disable in one hit.
-      const res = await axios.get(`${API}/salons/${salonId}/services/all`, { headers: authHeadersRef.current() });
-      setServices(Array.isArray(res.data) ? res.data : (res.data?.services || []));
-      loadMetrics();
-      clearBulk();
-      toast.success(`Removed ${ids.length} service(s)`);
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || 'Bulk delete failed');
-    } finally { setBulkBusy(false); }
+      await axios.post(`${API}/salons/${salonId}/services/bulk-delete`, { service_ids: [...checked] }, H());
+      toast.success('Deleted'); setChecked(new Set()); load();
+    } catch { toast.error('Bulk delete failed'); }
   };
-  const bulkSetEnabled = async (isEnabled) => {
-    const ids = Array.from(bulkSelected);
-    if (!ids.length) return;
-    setBulkBusy(true);
-    try {
-      await axios.post(`${API}/salons/${salonId}/services/bulk-toggle`,
-        { service_ids: ids, is_enabled: isEnabled }, { headers: authHeadersRef.current() });
-      // Locally patch is_enabled so UI updates instantly.
-      setServices((s) => s.map((x) => (bulkSelected.has(x.id) ? { ...x, is_enabled: isEnabled } : x)));
-      clearBulk();
-      toast.success(`${isEnabled ? 'Enabled' : 'Disabled'} ${ids.length} service(s)`);
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || 'Bulk toggle failed');
-    } finally { setBulkBusy(false); }
+  const toggleCheck = (id) => setChecked((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const newRecord = () => {
+    if (curType === 'Package') {
+      setSel({ __new: true, category: 'Packages', service_name: 'New package', sub_category: (cls.package_categories || [])[0] || 'General', gender_tag: 'Unisex', available_at_home: true, is_favorite: false, is_enabled: true, price_type: 'onwards', description: '', package_items: [], package_price: 0, thumbnail_url: '' });
+    } else {
+      const firstCat = (cls.categories || [])[0]?.name || [...new Set(items.map((s) => s.category))][0] || 'General';
+      setSel({ __new: true, category: firstCat, service_name: 'New service', gender_tag: 'Unisex', default_duration: 30, base_price: 0, price_type: 'fixed', axes: [], price_matrix: {}, is_favorite: false, is_enabled: true, available_at_home: false, description: '', thumbnail_url: '', gst_rate: null, hsn_code: '' });
+    }
   };
 
-  // ---- KPI cards ---------------------------------------------------------
-  const kpi = overview || {
-    total_menu: services.length,
-    services_count: services.filter((s) => (s.category || 'Services') !== 'Packages').length,
-    packages_count: services.filter((s) => (s.category || 'Services') === 'Packages').length,
-    revenue_30d: 0, bookings_30d: 0, avg_rating: 0, total_reviews: 0,
-    at_home_count: services.filter((s) => s.available_at_home).length,
-    favorites_count: services.filter((s) => s.is_favorite).length,
-  };
-
-  // ---- Search box context label (e.g., "within Hair Colour") ------------
-  const searchPlaceholder = selSub
-    ? `Search within ${selSub}...`
-    : `Search within ${selCat}...`;
-
-  const filteredSubs = (subs[selCat] || []).filter((s) => (
-    subFilter.trim() === '' || s.toLowerCase().includes(subFilter.trim().toLowerCase())
-  ));
+  const selService = useMemo(() => {
+    if (!sel) return null;
+    if (typeof sel === 'object') return sel;
+    return services.find((s) => s.id === sel) || null;
+  }, [sel, services]);
 
   return (
-    <div className="zen">
-      {/* Feb 2026 — Bulk action bar (appears when 1+ services are selected) */}
-      {bulkSelected.size > 0 && (
-        <div
-          data-testid="services-bulk-bar"
-          style={{
-            position: 'sticky', top: 0, zIndex: 20,
-            display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-            padding: '10px 14px', background: '#141C2E', color: '#fff',
-            borderRadius: 12, margin: '0 auto 12px', maxWidth: 1200,
-            boxShadow: '0 8px 30px rgba(20,28,46,.24)',
-          }}
-        >
-          <span style={{ fontWeight: 800 }}>{bulkSelected.size} selected</span>
-          <button
-            className="z-btn z-btn--ghost z-btn--sm"
-            style={{ background: 'rgba(255,255,255,.12)', border: 'none', color: '#fff' }}
-            onClick={() => bulkSetEnabled(true)}
-            disabled={bulkBusy}
-            data-testid="services-bulk-enable"
-          >
-            Enable
-          </button>
-          <button
-            className="z-btn z-btn--ghost z-btn--sm"
-            style={{ background: 'rgba(255,255,255,.12)', border: 'none', color: '#fff' }}
-            onClick={() => bulkSetEnabled(false)}
-            disabled={bulkBusy}
-            data-testid="services-bulk-disable"
-          >
-            Disable
-          </button>
-          <button
-            className="z-btn z-btn--sm"
-            style={{ background: '#E5484D', color: '#fff', border: 'none' }}
-            onClick={bulkDelete}
-            disabled={bulkBusy}
-            data-testid="services-bulk-delete"
-          >
-            Delete
-          </button>
-          <button
-            className="z-btn z-btn--ghost z-btn--sm"
-            style={{ marginLeft: 'auto', background: 'transparent', border: '1px solid rgba(255,255,255,.3)', color: '#fff' }}
-            onClick={clearBulk}
-            data-testid="services-bulk-clear"
-          >
-            Clear
-          </button>
+    <div className="svc2">
+      <div className="phead">
+        <div>
+          <h2>
+            <span className="hic">
+              <svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.66 5.66l1.06 1.06L4 19.14 4.86 20l6.12-6.12 1.06 1.06a4 4 0 0 0 5.66-5.66"/><circle cx="8" cy="8" r="2.2"/></svg>
+            </span>
+            Services &amp; Packages
+          </h2>
+          <div className="psub">Manage your service menu, packages, prices and classifications.</div>
         </div>
-      )}
-      <div className="z-wrap">
-        {/* ================= Page head ================= */}
-        <div className="z-phead">
-          <div>
-            <div className="eyebrow">Salon menu</div>
-            <h1>Menu &amp; Services</h1>
+      </div>
+      <div className="main">
+        {/* -------- LIST -------- */}
+        <div className="listcol">
+          <div className="typetabs">
+            {['Service', 'Package'].map((t) => (
+              <button key={t} className={curType === t ? 'on' : ''} onClick={() => { setCurType(t); setSel(null); setChecked(new Set()); }} data-testid={`svc-type-${t}`}>
+                {t}s
+              </button>
+            ))}
           </div>
-          <div className="z-actions">
-            <button
-              className="z-btn z-btn--ghost"
-              onClick={openUploadDrawer}
-              data-testid="services-upload-btn"
-              title="Bulk-add services from a CSV file"
-            >
-              <Icon name="upload" /> Upload template
-            </button>
-            <button className="z-btn z-btn--pri" onClick={openNew} data-testid="services-new-btn">
-              <Icon name="plus" /> New service
-            </button>
+          <div className="toolbar">
+            <input className="search" placeholder="Search…" value={search} onChange={(e) => setSearch(e.target.value)} data-testid="svc-search" />
+            <button className="tbtn pri" title="New" onClick={newRecord} data-testid="svc-new">{I.plus}</button>
+            <button className="tbtn" title="Manage classification" onClick={() => setClassOpen(true)} data-testid="svc-classify">{I.list}</button>
+            <button className="tbtn" title="Bulk upload / template" onClick={() => setUploadOpen(true)}>{I.upload}</button>
+            <button className="tbtn" title="Online price visibility" onClick={() => setOnlineOpen(true)}>{I.eye}</button>
           </div>
-        </div>
-
-        {/* ================= KPI Metrics row ================= */}
-        <div className="z-metrics">
-          <div className="z-metric g-blue">
-            <div className="k"><Icon name="layers" size={12} /> Total Menu</div>
-            <div className="v">{kpi.total_menu}</div>
-            <div className="sub">{kpi.services_count} services · {kpi.packages_count} packages</div>
-          </div>
-          <div className="z-metric g-mint">
-            <div className="k"><Icon name="chart" size={12} /> Revenue (30D)</div>
-            <div className="v">{fmtCompactINR(kpi.revenue_30d)}</div>
-            <div className="sub">across all bookings</div>
-          </div>
-          <div className="z-metric g-amber">
-            <div className="k"><Icon name="star" size={12} /> Favourites</div>
-            <div className="v">{kpi.favorites_count || 0}</div>
-            <div className="sub">marked as favourite</div>
-          </div>
-          <div className="z-metric g-rose">
-            <div className="k"><Icon name="home" size={12} /> At-Home</div>
-            <div className="v">{kpi.at_home_count}</div>
-            <div className="sub">services offered at home</div>
-          </div>
-        </div>
-
-        <div className="z-split">
-          {/* ============ Left rail — categories ============ */}
-          <div className="z-cats z-card">
-            <div className="z-cats-h">
-              <div className="cats-lbl">Categories</div>
-              <div className="z-cats-filter">
-                <Icon name="search" />
-                <input
-                  placeholder="Filter sub-categories..."
-                  value={subFilter}
-                  onChange={(e) => setSubFilter(e.target.value)}
-                  data-testid="filter-subcategories-input"
-                />
+          <div className="listscroll">
+            {checked.size > 0 && (
+              <div className="selbar">
+                <span>{checked.size} selected</span>
+                <button className="del" onClick={bulkDelete} data-testid="svc-bulk-del">{I.trash}Delete selected</button>
               </div>
-            </div>
-            <div className="z-cat-list">
-              {CATEGORIES.map((cat) => (
-                <div key={cat}>
-                  <div
-                    className={`z-cat-row ${selCat === cat ? 'sel' : ''} ${openCats[cat] ? 'open' : ''}`}
-                    onClick={() => {
-                      setSelCat(cat); setSelSub(null);
-                      setOpenCats((o) => ({ ...o, [cat]: !o[cat] || selCat !== cat }));
-                    }}
-                    data-testid={`cat-row-${cat.toLowerCase()}`}
-                  >
-                    <Icon name="chevR" className="chev" size={14} />
-                    <div className="z-cat-ico"><Icon name={cat === 'Services' ? 'scissors' : 'gift'} /></div>
-                    <div className="z-cat-name">{cat}</div>
-                    <div className="z-cat-count">{countInCat(cat)}</div>
-                  </div>
-                  {openCats[cat] && (
-                    <div className="z-subs">
-                      <div
-                        className={`z-sub-row ${selCat === cat && !selSub ? 'sel' : ''}`}
-                        onClick={() => { setSelCat(cat); setSelSub(null); }}
-                      >
-                        All <span className="cnt">{countInCat(cat)}</span>
-                      </div>
-                      {filteredSubs.map((sub) => (
-                        <div
-                          key={sub}
-                          className={`z-sub-row ${selCat === cat && selSub === sub ? 'sel' : ''}`}
-                          onClick={() => { setSelCat(cat); setSelSub(sub); }}
-                          data-testid={`sub-row-${sub.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
-                        >
-                          {sub} <span className="cnt">{countInSub(cat, sub)}</span>
-                        </div>
-                      ))}
-                      {(subs[cat] || []).length === 0 && !subFilter && (
-                        <div style={{ fontSize: 11.5, color: 'var(--z-muted-2)', padding: '4px 10px' }}>
-                          No sub-categories yet.
-                        </div>
-                      )}
-                      {addingSubFor === cat ? (
-                        <div className="z-sub-add-field">
-                          <input
-                            autoFocus
-                            placeholder="Sub-category name..."
-                            value={newSubName}
-                            onChange={(e) => setNewSubName(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === 'Enter') saveSubcat(cat); if (e.key === 'Escape') { setAddingSubFor(null); setNewSubName(''); } }}
-                          />
-                          <button className="z-btn z-btn--pri z-btn--sm" onClick={() => saveSubcat(cat)}>
-                            <Icon name="check" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="z-sub-add" onClick={() => { setAddingSubFor(cat); setNewSubName(''); }}>
-                          <Icon name="plus" /> New sub-category
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* ============ Right — services list ============ */}
-          <div>
-            {/* Sticky-style toolbar */}
-            <div className="z-toolbar-2">
-              <div className="z-search grow">
-                <Icon name="search" />
-                <input
-                  placeholder={searchPlaceholder}
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  data-testid="services-search-input"
-                />
-              </div>
-              <div className="z-seg" role="tablist" aria-label="Filter by gender">
-                {[
-                  { id: 'all', label: 'All' },
-                  { id: 'Men', label: 'Men' },
-                  { id: 'Women', label: 'Women' },
-                ].map((t) => (
-                  <button
-                    key={t.id}
-                    className={genderTab === t.id ? 'on' : ''}
-                    onClick={() => setGenderTab(t.id)}
-                    data-testid={`gender-tab-${t.id.toLowerCase()}`}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-              <select
-                className="z-select"
-                value={sortMode}
-                onChange={(e) => setSortMode(e.target.value)}
-                data-testid="services-sort-select"
-              >
-                <option value="default">Sort: Default</option>
-                <option value="price_asc">Price: Low → High</option>
-                <option value="price_desc">Price: High → Low</option>
-                <option value="bookings_desc">Most booked (30D)</option>
-              </select>
-            </div>
-
-            {Object.keys(grouped).length === 0 ? (
-              <div className="z-empty z-card">
-                <Icon name="scissors" size={40} /><br />
-                No services in this category yet.<br />
-                <button className="z-btn z-btn--pri" style={{ marginTop: 12 }} onClick={openNew}>
-                  <Icon name="plus" /> Add your first service
-                </button>
-              </div>
-            ) : (
-              Object.entries(grouped).map(([subName, list]) => (
-                <div key={subName}>
-                  <div className="z-group-h">
-                    <h3>{subName}</h3>
-                    <span className="cnt">{list.length} service{list.length === 1 ? '' : 's'}</span>
-                    <button
-                      className="z-btn z-btn--ghost z-btn--sm"
-                      style={{ marginLeft: 'auto' }}
-                      onClick={() => selectAllInList(list)}
-                      data-testid={`bulk-select-group-${subName}`}
-                    >
-                      Select all
-                    </button>
-                  </div>
-                  <div className="z-svc-grid">
-                    {list.map((svc) => (
-                      <ServiceCard
-                        key={svc.id}
-                        svc={svc}
-                        metrics={metByServiceId[svc.id] || null}
-                        onEdit={(e) => { e.stopPropagation(); openEdit(svc); }}
-                        onDelete={(e) => { e.stopPropagation(); deleteSvc(svc); }}
-                        onToggleFav={(e) => { e.stopPropagation(); toggleFav(svc); }}
-                        onClick={() => setMetricsFor(svc)}
-                        bulkChecked={bulkSelected.has(svc.id)}
-                        onToggleBulk={(e) => { e.stopPropagation(); toggleBulk(svc.id); }}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))
             )}
+            {Object.keys(grouped).length === 0 && (
+              <div className="emptylist">No {curType.toLowerCase()}s yet. Press + to add one.</div>
+            )}
+            {Object.keys(grouped).sort().map((cat) => {
+              const rows = grouped[cat];
+              const open = openCats[cat] !== false;
+              const thumb = catThumb(cat);
+              return (
+                <div className="catblock" key={cat}>
+                  <div className={`cathead ${open ? 'open' : ''}`} onClick={(e) => { if (e.target.closest('[data-catdel]')) return; setOpenCats((o) => ({ ...o, [cat]: !open })); }}>
+                    <span className="chev">{I.chev}</span>
+                    <span className="thumb">{thumb ? <img src={thumb} alt="" /> : (cat[0] || '?').toUpperCase()}</span>
+                    <span className="cn">{cat}</span>
+                    <span className="cc">{rows.length}</span>
+                    <button className="catdel" data-catdel title="Delete group" onClick={() => delCategory(cat)}>{I.trash}</button>
+                  </div>
+                  {open && rows.map((s) => {
+                    const enabled = s.is_enabled !== false;
+                    const on = selService && selService.id === s.id;
+                    const hasMatrix = (s.axes || []).length > 0;
+                    return (
+                      <div key={s.id} className={`srow ${on ? 'sel' : ''} ${!enabled ? 'off' : ''}`} onClick={(e) => { if (e.target.closest('.chk,.star,.msw')) return; setSel(s.id); }} data-testid={`svc-row-${s.id}`}>
+                        <input className="chk" type="checkbox" checked={checked.has(s.id)} onChange={() => toggleCheck(s.id)} onClick={(e) => e.stopPropagation()} />
+                        <button className={`star ${s.is_favorite ? 'on' : ''}`} title="Favourite" onClick={(e) => { e.stopPropagation(); toggleFav(s); }}>{I.star(s.is_favorite)}</button>
+                        <span className="sn">{s.service_name}</span>
+                        {isPkg(s) ? <span className="mxi" title="package">{I.box}</span> : (hasMatrix ? <span className="mxi" title="price matrix">{I.grid}</span> : null)}
+                        <label className="msw" onClick={(e) => e.stopPropagation()}>
+                          <input type="checkbox" checked={enabled} onChange={() => toggleEnabled(s)} />
+                          <span className="msl" />
+                        </label>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
           </div>
+        </div>
+
+        {/* -------- EDITOR -------- */}
+        <div className="editcol">
+          {!selService
+            ? <div className="editempty">Select an item, or press + to add one.</div>
+            : (selService.category === 'Packages'
+              ? <PackageEditor key={selService.id || 'new-pkg'} initial={selService} services={services} salonId={salonId} H={H} cls={cls} onDone={(deleted) => { setSel(null); load(); }} />
+              : <ServiceEditor key={selService.id || 'new-svc'} initial={selService} salonId={salonId} H={H} cls={cls} onDone={() => { setSel(null); load(); }} />)}
         </div>
       </div>
 
-      {/* Add / Edit drawer */}
-      {showAdd && (
-        <ServiceDrawer
-          initial={editing}
-          salonId={salonId}
-          getAuthHeaders={authHeadersRef.current}
-          subs={subs[editing?.category] || []}
-          allServices={services}
-          onSubCategoryCreate={(name) => saveSubcatForDrawer(editing?.category, name)}
-          onClose={() => { setShowAdd(false); setEditing(null); }}
-          onSaved={(saved, isNew) => {
-            setServices((s) => {
-              if (isNew) return [saved, ...s];
-              return s.map((x) => (x.id === saved.id ? { ...x, ...saved } : x));
-            });
-            setShowAdd(false);
-            setEditing(null);
-            loadMetrics();
-            toast.success(isNew ? 'Service added' : 'Service updated');
-          }}
-        />
-      )}
-
-      {/* Upload drawer — sample + upload + history w/ rollback */}
-      <UploadServicesDrawer
-        open={uploadOpen}
-        onClose={() => setUploadOpen(false)}
-        uploading={uploading}
-        onFilePicked={handleUploadCsv}
-        templateHref={downloadTemplateUrl}
-        batches={batches}
-        loading={batchesLoading}
-        onRollback={handleRollbackBatch}
-      />
-
-      {/* Service metrics detail drawer */}
-      {metricsFor && (
-        <ServiceMetricsDrawer
-          salonId={salonId}
-          getAuthHeaders={authHeadersRef.current}
-          svc={metricsFor}
-          summaryMetrics={metByServiceId[metricsFor.id] || null}
-          onEdit={() => { openEdit(metricsFor); setMetricsFor(null); }}
-          onClose={() => setMetricsFor(null)}
-        />
-      )}
-    </div>
-  );
-
-  async function saveSubcatForDrawer(category, name) {
-    if (!name) return null;
-    try {
-      await axios.post(
-        `${API}/salons/${salonId}/services/subcategories`,
-        { category, name },
-        { headers: authHeadersRef.current() }
-      );
-      setSubs((s) => ({ ...s, [category]: Array.from(new Set([...(s[category] || []), name])).sort() }));
-      return name;
-    } catch (e) {
-      toast.error('Failed to add sub-category');
-      return null;
-    }
-  }
-}
-
-function TrendPill({ pct }) {
-  if (pct == null || Number.isNaN(pct)) return <span className="tr flat">—</span>;
-  const p = Number(pct);
-  if (Math.abs(p) < 0.05) return <span className="tr flat">0%</span>;
-  const up = p > 0;
-  return (
-    <span className={`tr ${up ? '' : 'dn'}`}>
-      <Icon name={up ? 'trendUp' : 'trendDn'} size={11} /> {up ? '+' : ''}{p}%
-    </span>
-  );
-}
-
-function ServiceCard({ svc, metrics, onEdit, onDelete, onToggleFav, onClick, bulkChecked, onToggleBulk }) {
-  const emoji = (svc.category === 'Packages') ? '🎁' : '✂️';
-  return (
-    <div className={`z-svc-card ${bulkChecked ? 'z-svc-card--picked' : ''}`} onClick={onClick} data-testid={`service-card-${svc.id}`}>
-      {/* Bulk-select checkbox (Feb 2026) */}
-      <label
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          position: 'absolute', top: 10, left: 10, zIndex: 3,
-          background: 'rgba(255,255,255,.92)', borderRadius: 6, padding: 3,
-          border: '1px solid var(--z-line, #E6EBF4)',
-          display: 'inline-flex', alignItems: 'center', cursor: 'pointer',
-        }}
-        data-testid={`svc-bulk-checkbox-label-${svc.id}`}
-      >
-        <input
-          type="checkbox"
-          checked={!!bulkChecked}
-          onChange={onToggleBulk}
-          data-testid={`svc-bulk-checkbox-${svc.id}`}
-          style={{ margin: 0, cursor: 'pointer', width: 15, height: 15 }}
-        />
-      </label>
-      <div className="z-svc-main">
-        <div className="z-svc-thumb">
-          {svc.thumbnail_url ? <img src={svc.thumbnail_url} alt="" /> : <span>{emoji}</span>}
-        </div>
-        <div className="z-svc-body">
-          <div className="z-svc-title">
-            <h4>{svc.service_name}</h4>
-            <div className="z-svc-price">
-              {rupee(svc.base_price)}
-              {svc.price_type === 'onwards' && <span className="onwards">ONWARDS</span>}
-            </div>
-          </div>
-          {svc.description && <p className="z-svc-desc">{svc.description}</p>}
-          <div className="z-svc-tags">
-            <span className="z-pill z-pill--blue">{svc.gender_tag || 'Unisex'}</span>
-            <span className="z-pill"><Icon name="clock" size={12} /> {svc.default_duration || 30} min</span>
-            {svc.sub_category && <span className="z-pill">{svc.sub_category}</span>}
-            {svc.available_at_home && <span className="z-pill z-pill--ok">At-home</span>}
-          </div>
-        </div>
-      </div>
-
-      {/* Metrics strip */}
-      <div className="z-svc-mets">
-        <div className="z-svc-met">
-          <div className="k">Bookings 30D</div>
-          <div className="v">{metrics?.bookings_30d ?? 0}</div>
-        </div>
-        <div className="z-svc-met">
-          <div className="k">Revenue</div>
-          <div className="v">{fmtCompactINR(metrics?.revenue_30d || 0)}</div>
-        </div>
-        <div className="z-svc-met">
-          <div className="k">Trend</div>
-          <div className="v" style={{ fontFamily: 'inherit', fontSize: 12 }}>
-            <TrendPill pct={metrics?.trend_pct} />
-          </div>
-        </div>
-      </div>
-
-      <div className="z-svc-actions">
-        <button className={`z-link fav ${svc.is_favorite ? 'on' : ''}`} onClick={onToggleFav}>
-          <Icon name="star" /> {svc.is_favorite ? 'Favourited' : 'Favourite'}
-        </button>
-        <div className="sp" />
-        <button className="z-link" onClick={onEdit}><Icon name="edit" /> Edit</button>
-        <button className="z-link danger" onClick={onDelete}><Icon name="trash" /> Remove</button>
-      </div>
+      <ClassificationDrawer open={classOpen} onClose={() => setClassOpen(false)} salonId={salonId} H={H} cls={cls} setCls={setCls} />
+      <UploadDrawer open={uploadOpen} onClose={() => setUploadOpen(false)} />
+      <OnlinePriceDrawer open={onlineOpen} onClose={() => setOnlineOpen(false)} salonId={salonId} H={H} ops={ops} setOps={setOps} />
     </div>
   );
 }
 
-function ServiceDrawer({ initial, salonId, getAuthHeaders, subs, allServices, onSubCategoryCreate, onClose, onSaved }) {
-  // IMPORTANT: keep drawer's sub_category coherent with its category.
-  // - If parent passes `initial.sub_category` that doesn't belong to the current
-  //   category's subs list, allow the "New sub-category" flow to add it.
-  const [form, setForm] = useState(initial);
-  const [subsForCat, setSubsForCat] = useState(subs);
-  const fileRef = useRef(null);
+/* ============================ SERVICE EDITOR ============================ */
+function ServiceEditor({ initial, salonId, H, cls, onDone }) {
+  const [s, setS] = useState(initial);
+  useEffect(() => { setS(initial); }, [initial]);
   const [saving, setSaving] = useState(false);
-  const isEdit = !!initial?.id;
-  const isPackage = (form.category || 'Services') === 'Packages';
+  const set = (k, v) => setS((p) => ({ ...p, [k]: v }));
+  const axes = s.axes || [];
+  const useTier = axes.includes('tier');
+  const useLen = axes.includes('length');
+  const catOptions = useMemo(() => {
+    const names = (cls.categories || []).map((c) => c.name);
+    if (s.category && !names.includes(s.category)) names.push(s.category);
+    if (!names.length) names.push('General');
+    return names;
+  }, [cls.categories, s.category]);
 
-  // ---- Package composition state ----
-  const [linkedIds, setLinkedIds] = useState(Array.isArray(initial?.linked_service_ids) ? initial.linked_service_ids : []);
-  const [pkgSearch, setPkgSearch] = useState('');
-  const [pricingMode, setPricingMode] = useState(
-    initial?.discount_percentage && Number(initial.discount_percentage) > 0 ? 'discount' : 'manual'
-  );
-  const [discountPct, setDiscountPct] = useState(Number(initial?.discount_percentage || 0));
-  const [manualFinal, setManualFinal] = useState(Number(initial?.base_price || 0));
-
-  useEffect(() => { setSubsForCat(subs); }, [subs]);
-
-  // Auto-compute subtotal + final for packages
-  const eligibleServices = useMemo(() => (allServices || []).filter((s) => (s.category || 'Services') !== 'Packages'), [allServices]);
-  const linkedSet = useMemo(() => new Set(linkedIds), [linkedIds]);
-  const subtotal = useMemo(() => {
-    return eligibleServices.reduce((acc, s) => linkedSet.has(s.id) ? acc + Number(s.base_price || 0) : acc, 0);
-  }, [eligibleServices, linkedSet]);
-  const computedFinal = useMemo(() => {
-    if (!isPackage) return Number(form.base_price || 0);
-    if (pricingMode === 'discount') {
-      const pct = Math.max(0, Math.min(100, Number(discountPct || 0)));
-      return Math.round(subtotal * (1 - pct / 100));
-    }
-    return Number(manualFinal || 0);
-  }, [isPackage, pricingMode, discountPct, subtotal, manualFinal, form.base_price]);
-  const impliedDiscountPct = subtotal > 0 ? Math.max(0, ((subtotal - computedFinal) / subtotal) * 100) : 0;
-
-  const toggleLinked = (svcId) => {
-    setLinkedIds((prev) => prev.includes(svcId) ? prev.filter((x) => x !== svcId) : [...prev, svcId]);
+  const toggleAxis = (axis) => {
+    setS((p) => {
+      const cur = p.axes || [];
+      const next = cur.includes(axis) ? cur.filter((a) => a !== axis) : [...cur, axis];
+      return { ...p, axes: next };
+    });
+  };
+  const mget = (t, l) => {
+    const key = matKey(t, l, axes);
+    const v = (s.price_matrix || {})[key];
+    return v == null ? '' : v;
+  };
+  const mset = (t, l, val) => {
+    const key = matKey(t, l, axes);
+    setS((p) => ({ ...p, price_matrix: { ...(p.price_matrix || {}), [key]: val === '' ? 0 : Number(val) } }));
   };
 
-  const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-
-  const onPickImage = () => fileRef.current?.click();
-  const onFileSelected = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > 3 * 1024 * 1024) { toast.error('Image must be under 3 MB'); return; }
-    const reader = new FileReader();
-    reader.onload = () => upd('thumbnail_url', reader.result);
-    reader.readAsDataURL(file);
-  };
-
-  const handleAddSub = async () => {
-    const name = window.prompt('Sub-category name:');
-    if (!name) return;
-    const trimmed = name.trim();
-    const added = await onSubCategoryCreate(trimmed);
-    if (added) {
-      // Keep drawer's local subs list in sync so the just-added option shows up.
-      setSubsForCat((arr) => Array.from(new Set([...(arr || []), trimmed])).sort());
-      upd('sub_category', trimmed);
-    }
+  const onFile = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    try { set('thumbnail_url', await fileToDataUrl(f)); } catch { toast.error('Could not read image'); }
   };
 
   const save = async () => {
-    if (!form.service_name.trim()) return toast.error(isPackage ? 'Package name required' : 'Service name required');
-    if (isPackage && linkedIds.length === 0) {
-      return toast.error('Add at least one service to the package');
+    if (!(s.service_name || '').trim()) { toast.error('Name is required'); return; }
+    setSaving(true);
+    // Derive a representative base_price for lists (min of matrix or flat).
+    let base = Number(s.base_price || 0);
+    if (axes.length) {
+      const vals = Object.values(s.price_matrix || {}).map(Number).filter((n) => n > 0);
+      base = vals.length ? Math.min(...vals) : 0;
     }
+    const payload = {
+      service_name: s.service_name.trim(),
+      description: s.description || '',
+      category: s.category || 'General',
+      sub_category: s.sub_category || '',
+      gender_tag: s.gender_tag || 'Unisex',
+      default_duration: Number(s.default_duration || 30),
+      base_price: base,
+      price_type: s.price_type || 'fixed',
+      is_favorite: !!s.is_favorite,
+      available_at_home: !!s.available_at_home,
+      thumbnail_url: s.thumbnail_url || '',
+      axes,
+      price_matrix: s.price_matrix || {},
+      gst_rate: s.gst_rate === '' ? null : (s.gst_rate ?? null),
+      hsn_code: s.hsn_code || '',
+    };
+    try {
+      if (s.__new) {
+        const res = await axios.post(`${API}/services`, payload, H());
+        const saved = res.data;
+        if (saved?.id && s.is_enabled !== false) {
+          await axios.put(`${API}/salons/${salonId}/services/${saved.id}/toggle?is_enabled=true`, null, H()).catch(() => {});
+        }
+        toast.success('Service created');
+      } else {
+        await axios.put(`${API}/services/${s.id}`, payload, H());
+        toast.success('Saved');
+      }
+      onDone();
+    } catch (e2) {
+      toast.error(e2?.response?.data?.detail || 'Save failed');
+    } finally { setSaving(false); }
+  };
+  const del = async () => {
+    if (s.__new) { onDone(); return; }
+    if (!window.confirm('Delete this service?')) return;
+    try { await axios.delete(`${API}/services/${s.id}`, H()); toast.success('Deleted'); onDone(); }
+    catch { toast.error('Delete failed'); }
+  };
+
+  return (
+    <>
+      <div className="ehead">
+        <input className="title" value={s.service_name} onChange={(e) => set('service_name', e.target.value)} data-testid="svc-ed-name" />
+        <span className="badge">Service</span>
+        <button className={`fav ${s.is_favorite ? 'on' : ''}`} title="Favourite" onClick={() => set('is_favorite', !s.is_favorite)}>{I.star(s.is_favorite)}</button>
+        <span className="en"><label className="sw"><input type="checkbox" checked={s.is_enabled !== false} onChange={(e) => set('is_enabled', e.target.checked)} /><span className="sl" /></label>Enabled</span>
+      </div>
+
+      <div className="fcard">
+        <div className="cl">{I.list}Basics</div>
+        <div className="grid2">
+          <div className="f"><label>Category</label>
+            <select value={s.category} onChange={(e) => set('category', e.target.value)} data-testid="svc-ed-cat">
+              {catOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div className="f"><label>Duration (min)</label><input className="num" type="number" value={s.default_duration || ''} onChange={(e) => set('default_duration', e.target.value)} /></div>
+        </div>
+        <div className="grid2" style={{ marginTop: 10 }}>
+          <div className="f"><label>Gender</label>
+            <div className="segtog">
+              {['Men', 'Women', 'Unisex'].map((g) => <button key={g} className={s.gender_tag === g ? 'on' : ''} onClick={() => set('gender_tag', g)}>{g === 'Unisex' ? 'Both' : g}</button>)}
+            </div>
+          </div>
+          <div className="f"><label>At home</label>
+            <div className="segtog pink">
+              <button className={s.available_at_home ? 'on' : ''} onClick={() => set('available_at_home', true)}>Yes</button>
+              <button className={!s.available_at_home ? 'on' : ''} onClick={() => set('available_at_home', false)}>No</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="fcard">
+        <div className="cl">{I.list}Description</div>
+        <div className="f"><textarea placeholder="What this service includes…" value={s.description || ''} onChange={(e) => set('description', e.target.value)} /></div>
+      </div>
+
+      <div className="fcard">
+        <div className="cl">{I.grid}Pricing</div>
+        <div className="grid2" style={{ marginBottom: 10 }}>
+          <div className="f"><label>Price type</label>
+            <div className="segtog">
+              <button className={s.price_type === 'fixed' ? 'on' : ''} onClick={() => set('price_type', 'fixed')}>Fixed</button>
+              <button className={s.price_type === 'onwards' ? 'on' : ''} onClick={() => set('price_type', 'onwards')}>Onwards</button>
+            </div>
+          </div>
+          <div />
+        </div>
+        <div className="axisbar">
+          <div className="axistog"><label className="sw"><input type="checkbox" checked={useTier} onChange={() => toggleAxis('tier')} data-testid="svc-ed-tier" /><span className="sl" /></label><span className="t">Price by tier</span></div>
+          <div className="axistog"><label className="sw"><input type="checkbox" checked={useLen} onChange={() => toggleAxis('length')} data-testid="svc-ed-length" /><span className="sl" /></label><span className="t">Price by hair length</span></div>
+        </div>
+        {!useTier && !useLen && (
+          <div className="flatprice"><span className="cur">₹</span><input className="num" type="number" value={s.base_price || ''} onChange={(e) => set('base_price', Number(e.target.value) || 0)} data-testid="svc-ed-price" /></div>
+        )}
+        {(useTier || useLen) && (
+          <table className="mx">
+            {useTier && useLen && (
+              <tbody>
+                <tr><th className="rowh" />{cls.lengths.map((l) => <th key={l}>{l}</th>)}</tr>
+                {cls.tiers.map((t) => (
+                  <tr key={t}><th className="rowh">{t}</th>{cls.lengths.map((l) => <td key={l}><input className="num" type="number" value={mget(t, l)} onChange={(e) => mset(t, l, e.target.value)} /></td>)}</tr>
+                ))}
+              </tbody>
+            )}
+            {useTier && !useLen && (
+              <tbody>
+                <tr>{cls.tiers.map((t) => <th key={t}>{t}</th>)}</tr>
+                <tr>{cls.tiers.map((t) => <td key={t}><input className="num" type="number" value={mget(t, null)} onChange={(e) => mset(t, null, e.target.value)} /></td>)}</tr>
+              </tbody>
+            )}
+            {!useTier && useLen && (
+              <tbody>
+                <tr>{cls.lengths.map((l) => <th key={l}>{l}</th>)}</tr>
+                <tr>{cls.lengths.map((l) => <td key={l}><input className="num" type="number" value={mget(null, l)} onChange={(e) => mset(null, l, e.target.value)} /></td>)}</tr>
+              </tbody>
+            )}
+          </table>
+        )}
+      </div>
+
+      <ThumbCard value={s.thumbnail_url} onUrl={(v) => set('thumbnail_url', v)} onFile={onFile} />
+
+      <details className="adv">
+        <summary>{I.chev}Tax</summary>
+        <div className="in"><div className="grid2">
+          <div className="f"><label>GST %</label><input className="num" type="number" placeholder="18" value={s.gst_rate ?? ''} onChange={(e) => set('gst_rate', e.target.value === '' ? null : Number(e.target.value))} /></div>
+          <div className="f"><label>HSN / SAC</label><input placeholder="999721" value={s.hsn_code || ''} onChange={(e) => set('hsn_code', e.target.value)} /></div>
+        </div></div>
+      </details>
+
+      <div className="savebar">
+        <button className="btn btn--danger" onClick={del}>{I.trash}Delete</button>
+        <button className="btn btn--ghost" onClick={onDone}>Cancel</button>
+        <button className="btn btn--pri" onClick={save} disabled={saving} data-testid="svc-ed-save">{I.save}{saving ? 'Saving…' : 'Save'}</button>
+      </div>
+    </>
+  );
+}
+
+/* ============================ PACKAGE EDITOR ============================ */
+function PackageEditor({ initial, services, salonId, H, cls, onDone }) {
+  const [p, setP] = useState(initial);
+  useEffect(() => { setP(initial); }, [initial]);
+  const [saving, setSaving] = useState(false);
+  const set = (k, v) => setP((x) => ({ ...x, [k]: v }));
+  const avail = useMemo(() => services.filter((x) => (x.category || '') !== 'Packages' && x.is_active !== false), [services]);
+  const items = p.package_items || [];
+  const itemsSum = items.reduce((a, i) => a + (Number(i.price) || 0), 0);
+  const catOptions = useMemo(() => {
+    const names = [...(cls.package_categories || [])];
+    if (p.sub_category && !names.includes(p.sub_category)) names.push(p.sub_category);
+    if (!names.length) names.push('General');
+    return names;
+  }, [cls.package_categories, p.sub_category]);
+
+  const setItem = (i, k, v) => setP((x) => { const arr = [...(x.package_items || [])]; arr[i] = { ...arr[i], [k]: v }; return { ...x, package_items: arr }; });
+  const addItem = () => setP((x) => ({ ...x, package_items: [...(x.package_items || []), { service_id: avail[0]?.id || '', day_offset: 0, price: avail[0]?.base_price || 0 }] }));
+  const rmItem = (i) => setP((x) => { const arr = [...(x.package_items || [])]; arr.splice(i, 1); return { ...x, package_items: arr }; });
+
+  const onFile = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    try { set('thumbnail_url', await fileToDataUrl(f)); } catch { toast.error('Could not read image'); }
+  };
+
+  const save = async () => {
+    if (!(p.service_name || '').trim()) { toast.error('Name is required'); return; }
+    setSaving(true);
+    const price = Number(p.package_price || itemsSum);
+    const payload = {
+      service_name: p.service_name.trim(),
+      description: p.description || '',
+      category: 'Packages',
+      sub_category: p.sub_category || 'General',
+      gender_tag: p.gender_tag || 'Unisex',
+      default_duration: 0,
+      base_price: price,
+      price_type: p.price_type || 'onwards',
+      is_favorite: !!p.is_favorite,
+      available_at_home: !!p.available_at_home,
+      thumbnail_url: p.thumbnail_url || '',
+      package_items: items.map((i) => ({ service_id: i.service_id, day_offset: Number(i.day_offset || 0), price: Number(i.price || 0) })),
+      package_price: price,
+      linked_service_ids: items.map((i) => i.service_id),
+      services_subtotal: itemsSum,
+    };
+    try {
+      if (p.__new) {
+        const res = await axios.post(`${API}/services`, payload, H());
+        const saved = res.data;
+        if (saved?.id && p.is_enabled !== false) await axios.put(`${API}/salons/${salonId}/services/${saved.id}/toggle?is_enabled=true`, null, H()).catch(() => {});
+        toast.success('Package created');
+      } else {
+        await axios.put(`${API}/services/${p.id}`, payload, H());
+        toast.success('Saved');
+      }
+      onDone();
+    } catch (e2) { toast.error(e2?.response?.data?.detail || 'Save failed'); }
+    finally { setSaving(false); }
+  };
+  const del = async () => {
+    if (p.__new) { onDone(); return; }
+    if (!window.confirm('Delete this package?')) return;
+    try { await axios.delete(`${API}/services/${p.id}`, H()); toast.success('Deleted'); onDone(); }
+    catch { toast.error('Delete failed'); }
+  };
+
+  return (
+    <>
+      <div className="ehead">
+        <input className="title" value={p.service_name} onChange={(e) => set('service_name', e.target.value)} data-testid="pkg-ed-name" />
+        <span className="badge pkg">Package</span>
+        <button className={`fav ${p.is_favorite ? 'on' : ''}`} onClick={() => set('is_favorite', !p.is_favorite)}>{I.star(p.is_favorite)}</button>
+        <span className="en"><label className="sw"><input type="checkbox" checked={p.is_enabled !== false} onChange={(e) => set('is_enabled', e.target.checked)} /><span className="sl" /></label>Enabled</span>
+      </div>
+
+      <div className="fcard">
+        <div className="cl">{I.list}Basics</div>
+        <div className="grid2">
+          <div className="f"><label>Category</label>
+            <select value={p.sub_category} onChange={(e) => set('sub_category', e.target.value)}>
+              {catOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div className="f"><label>Gender</label>
+            <div className="segtog">{['Men', 'Women', 'Unisex'].map((g) => <button key={g} className={p.gender_tag === g ? 'on' : ''} onClick={() => set('gender_tag', g)}>{g === 'Unisex' ? 'Both' : g}</button>)}</div>
+          </div>
+        </div>
+        <div className="f" style={{ marginTop: 10 }}><label>Description</label><textarea placeholder="What the package covers…" value={p.description || ''} onChange={(e) => set('description', e.target.value)} /></div>
+      </div>
+
+      <div className="fcard">
+        <div className="cl">{I.box}Services in this package &amp; schedule</div>
+        {items.map((it, i) => (
+          <div className="pkgitem" key={i}>
+            <span className="seq">{i + 1}</span>
+            <div className="pn">
+              <select value={it.service_id} onChange={(e) => setItem(i, 'service_id', e.target.value)} data-testid={`pkg-item-svc-${i}`}>
+                {avail.map((a) => <option key={a.id} value={a.id}>{a.service_name}</option>)}
+              </select>
+            </div>
+            <span className="day">Day <input className="num" type="number" min="0" value={it.day_offset} onChange={(e) => setItem(i, 'day_offset', Number(e.target.value) || 0)} /></span>
+            <span className="price"><input className="num" type="number" value={it.price} onChange={(e) => setItem(i, 'price', Number(e.target.value) || 0)} /></span>
+            <button className="x" onClick={() => rmItem(i)}>{I.x}</button>
+          </div>
+        ))}
+        <button className="addsvc" onClick={addItem} data-testid="pkg-add-item">{I.plus}Add service</button>
+        <div className="pkgsum">
+          <span>Package price</span>
+          <span><span className="strike num">{rupee(itemsSum)}</span><input className="num" type="number" value={p.package_price ?? itemsSum} onChange={(e) => set('package_price', Number(e.target.value) || 0)} data-testid="pkg-price" /></span>
+        </div>
+      </div>
+
+      <div className="fcard">
+        <div className="cl">{I.info}Booking &amp; notifications</div>
+        <div className="clsnote" style={{ margin: 0 }}>{I.info}On purchase every service is auto-scheduled on Day 0 + its offset; if a sitting lands on a salon holiday it moves to the next open day. The package shows in the customer&rsquo;s profile and reminders fire before each sitting.</div>
+      </div>
+
+      <ThumbCard value={p.thumbnail_url} onUrl={(v) => set('thumbnail_url', v)} onFile={onFile} />
+
+      <div className="savebar">
+        <button className="btn btn--danger" onClick={del}>{I.trash}Delete</button>
+        <button className="btn btn--ghost" onClick={onDone}>Cancel</button>
+        <button className="btn btn--pri" onClick={save} disabled={saving} data-testid="pkg-ed-save">{I.save}{saving ? 'Saving…' : 'Save package'}</button>
+      </div>
+    </>
+  );
+}
+
+function ThumbCard({ value, onUrl, onFile }) {
+  return (
+    <div className="fcard">
+      <div className="cl">{I.img}Thumbnail <span style={{ fontWeight: 600, textTransform: 'none', letterSpacing: 0, color: 'var(--mut)' }}>· shown to customers</span></div>
+      <div className="thumbrow">
+        <label className="thumbbox">{value ? <img src={value} alt="" /> : I.upload}<input type="file" accept="image/*" hidden onChange={onFile} /></label>
+        <div className="thumbside">
+          <div className="f"><label>Upload image file</label><input type="file" accept="image/*" onChange={onFile} /></div>
+          <div className="orsplit">or paste URL</div>
+          <div className="f"><input placeholder="https://…" value={value && !String(value).startsWith('data:') ? value : ''} onChange={(e) => onUrl(e.target.value)} /></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================ DRAWERS ============================ */
+function ClassificationDrawer({ open, onClose, salonId, H, cls, setCls }) {
+  const [tab, setTab] = useState('category');
+  const [local, setLocal] = useState(cls);
+  useEffect(() => { if (open) setLocal(cls); }, [open, cls]);
+  const [saving, setSaving] = useState(false);
+
+  const listFor = () => tab === 'category' ? (local.categories || []).map((c) => c.name) : tab === 'tier' ? (local.tiers || []) : (local.lengths || []);
+  const setListFor = (arr, catThumbs) => {
+    setLocal((l) => {
+      if (tab === 'category') return { ...l, categories: arr.map((name, i) => ({ name, thumbnail_url: (catThumbs || (l.categories || []).map((c) => c.thumbnail_url))[i] || '' })) };
+      if (tab === 'tier') return { ...l, tiers: arr };
+      return { ...l, lengths: arr };
+    });
+  };
+  const rename = (i, v) => { const a = listFor(); a[i] = v; setListFor([...a]); };
+  const add = () => { const a = listFor(); a.push(tab === 'category' ? 'New category' : 'New'); setListFor([...a]); };
+  const rm = (i) => { const a = listFor(); a.splice(i, 1); setListFor([...a]); };
+  const setCatThumb = async (i, e) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    const url = await fileToDataUrl(f);
+    setLocal((l) => { const cats = [...(l.categories || [])]; cats[i] = { ...cats[i], thumbnail_url: url }; return { ...l, categories: cats }; });
+  };
+
+  const save = async () => {
     setSaving(true);
     try {
-      const cleanSub = (form.sub_category || '').trim();
-      // For packages: base_price = final computed (discount OR manual)
-      // Duration = sum of linked service durations (approx).
-      let effectivePrice = parseFloat(form.base_price || 0);
-      let effectiveDuration = parseInt(form.default_duration || 30, 10);
-      if (isPackage) {
-        effectivePrice = Math.max(0, Number(computedFinal || 0));
-        const totalMins = eligibleServices.reduce((acc, s) => linkedSet.has(s.id) ? acc + Number(s.default_duration || 30) : acc, 0);
-        effectiveDuration = totalMins || effectiveDuration;
-      }
-      const payload = {
-        service_name: form.service_name.trim(),
-        description: form.description || '',
-        category: form.category,
-        sub_category: cleanSub || null,
-        gender_tag: form.gender_tag,
-        default_duration: effectiveDuration,
-        base_price: effectivePrice,
-        price_type: form.price_type || 'fixed',
-        is_favorite: !!form.is_favorite,
-        available_at_home: !!form.available_at_home,
-        home_price: form.available_at_home ? parseFloat(form.home_price || 0) : null,
-        thumbnail_url: form.thumbnail_url || null,
-        images: form.images || [],
-        gst_rate: (form.gst_rate === '' || form.gst_rate === null || form.gst_rate === undefined) ? null : parseFloat(form.gst_rate),
-        hsn_code: (form.hsn_code || '').trim() || null,
-      };
-      if (isPackage) {
-        payload.linked_service_ids = linkedIds;
-        payload.services_subtotal = Math.round(subtotal * 100) / 100;
-        payload.discount_percentage = pricingMode === 'discount'
-          ? Math.max(0, Math.min(100, Number(discountPct || 0)))
-          : Math.round(impliedDiscountPct * 100) / 100;
-      }
-      let saved;
-      if (isEdit) {
-        const res = await axios.put(`${API}/services/${form.id}`, payload, { headers: getAuthHeaders() });
-        saved = res.data;
-      } else {
-        const res = await axios.post(`${API}/services`, payload, { headers: getAuthHeaders() });
-        saved = res.data;
-        // Also enable for salon (idempotent).
-        try {
-          await axios.put(
-            `${API}/salons/${salonId}/services/${saved.id}/toggle?is_enabled=true`,
-            null,
-            { headers: getAuthHeaders() }
-          );
-        } catch (_) { /* non-fatal */ }
-      }
-      // Merge back sub_category from our payload so the parent's `saved` shows
-      // the sub-category immediately even if the backend response omitted it
-      // (defensive; the backend does persist + return it).
-      saved = { ...saved, sub_category: payload.sub_category, linked_service_ids: payload.linked_service_ids, discount_percentage: payload.discount_percentage };
-      onSaved(saved, !isEdit);
-    } catch (e) {
-      console.error(e);
-      toast.error(e?.response?.data?.detail || 'Failed to save');
-    } finally {
-      setSaving(false);
-    }
+      const res = await axios.put(`${API}/salons/${salonId}/classification`, {
+        tiers: local.tiers, lengths: local.lengths, categories: local.categories, package_categories: local.package_categories,
+      }, H());
+      setCls((c) => ({ ...c, ...res.data }));
+      toast.success('Classification saved');
+      onClose();
+    } catch { toast.error('Save failed'); }
+    finally { setSaving(false); }
   };
 
+  const note = tab === 'category' ? 'Each category carries a thumbnail shown to customers.' : tab === 'tier' ? 'Tier options used across the price matrix.' : 'Hair-length options used in the price matrix.';
+  const arr = listFor();
   return (
     <>
-      <div className="z-overlay" onClick={onClose} />
-      <aside className="z-drawer">
-        <div className="z-drawer-h">
-          <div className="dico"><Icon name={form.category === 'Packages' ? 'gift' : 'scissors'} size={20} /></div>
-          <div>
-            <div className="eyebrow">{isEdit ? 'Edit' : 'New'}</div>
-            <h3>{isEdit ? (isPackage ? 'Edit Package' : 'Edit Service') : (isPackage ? 'Add Package' : 'Add Service')}</h3>
-            <p>{isPackage ? 'Bundle multiple services, apply a discount and set the final price.' : 'Configure name, price, duration and availability.'}</p>
+      <div className={`svc2-scrim ${open ? 'show' : ''}`} onClick={onClose} />
+      <div className={`svc2-dr ${open ? 'open' : ''}`}>
+        <div className="drh"><h3>Manage classification</h3><button className="close" onClick={onClose}>{I.x}</button></div>
+        <div className="drbody">
+          <div className="clstabs">
+            {[['category', 'Category'], ['tier', 'Tier'], ['length', 'Hair length']].map(([k, lbl]) => (
+              <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{lbl}</button>
+            ))}
           </div>
-          <button className="z-drawer-close" onClick={onClose}><Icon name="x" /></button>
+          <div className="clsnote">{I.info}{note}</div>
+          {arr.map((v, i) => (
+            <div className="clsrow" key={i}>
+              {tab === 'category' && (
+                <label className="th">{(local.categories || [])[i]?.thumbnail_url ? <img src={local.categories[i].thumbnail_url} alt="" /> : I.img}<input type="file" accept="image/*" hidden onChange={(e) => setCatThumb(i, e)} /></label>
+              )}
+              <input className="cinput" value={v} onChange={(e) => rename(i, e.target.value)} />
+              <button className="x" onClick={() => rm(i)}>{I.x}</button>
+            </div>
+          ))}
+          <button className="addcls" onClick={add}>{I.plus}Add {tab === 'length' ? 'length' : tab}</button>
+          <div className="savebar" style={{ marginTop: 16 }}>
+            <button className="btn btn--pri" onClick={save} disabled={saving}>{I.save}{saving ? 'Saving…' : 'Save'}</button>
+          </div>
         </div>
-
-        <div className="z-drawer-body">
-          {/* Photo */}
-          <div className="z-field">
-            <label>Photo</label>
-            {form.thumbnail_url ? (
-              <div className="z-photo-preview">
-                <div className="pv"><img src={form.thumbnail_url} alt="" /></div>
-                <div style={{ flex: 1, fontSize: 12, color: 'var(--z-muted)' }}>
-                  Photo attached
-                </div>
-                <button className="z-btn z-btn--ghost z-btn--sm" onClick={() => upd('thumbnail_url', '')}>Remove</button>
-                <button className="z-btn z-btn--soft z-btn--sm" onClick={onPickImage}>Change</button>
-              </div>
-            ) : (
-              <div className="z-photo-up" onClick={onPickImage}>
-                <Icon name="camera" size={24} /><div style={{ fontWeight: 700, marginTop: 4 }}>Upload a photo</div>
-                <div style={{ fontSize: 11.5, color: 'var(--z-muted-2)', marginTop: 2 }}>PNG or JPG, up to 3&nbsp;MB</div>
-              </div>
-            )}
-            <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={onFileSelected} />
-          </div>
-
-          <div className="z-field">
-            <label>{isPackage ? 'Package name' : 'Service name'}</label>
-            <input value={form.service_name} onChange={(e) => upd('service_name', e.target.value)} placeholder={isPackage ? "e.g., Bridal Prep Bundle" : "e.g., Men's Haircut"} />
-          </div>
-
-          <div className="z-field">
-            <label>Description</label>
-            <textarea value={form.description} onChange={(e) => upd('description', e.target.value)} placeholder="Short description..." />
-          </div>
-
-          <div className="z-grid2">
-            <div className="z-field">
-              <label>Category</label>
-              <select
-                value={form.category}
-                onChange={(e) => {
-                  // BUG FIX: when the category is switched, clear the stale
-                  // sub_category so the sub-category dropdown reflects the new
-                  // category's list and doesn't silently drop a mismatched
-                  // sub-category on the save call.
-                  const nextCat = e.target.value;
-                  upd('category', nextCat);
-                  upd('sub_category', '');
-                }}
-              >
-                {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
-            <div className="z-field">
-              <label>Sub-category</label>
-              <select
-                value={form.sub_category || ''}
-                onChange={(e) => {
-                  if (e.target.value === '__new__') handleAddSub();
-                  else upd('sub_category', e.target.value);
-                }}
-              >
-                <option value="">— none —</option>
-                {(subsForCat || []).map((s) => <option key={s} value={s}>{s}</option>)}
-                {/* If the pre-filled sub_category isn't in subs (e.g., legacy or newly
-                    added), still render it so it's kept + editable. */}
-                {form.sub_category && !((subsForCat || []).includes(form.sub_category)) && (
-                  <option value={form.sub_category}>{form.sub_category}</option>
-                )}
-                <option value="__new__">+ New sub-category…</option>
-              </select>
-            </div>
-          </div>
-
-          {/* --- Package composition (only for Packages category) --- */}
-          {isPackage && (
-            <div className="z-field" style={{ background: 'var(--z-primary-050, #FDF4FF)', border: '1px solid var(--z-primary, #C6389E)', borderRadius: 12, padding: 14, marginTop: 4 }}>
-              <label style={{ fontWeight: 700, color: 'var(--z-primary, #C6389E)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Icon name="gift" /> Services included in this package
-              </label>
-              <div style={{ fontSize: 11.5, color: 'var(--z-muted-2)', margin: '4px 0 10px' }}>
-                Tick every service that will be delivered as part of this package. The subtotal below auto-sums their prices.
-              </div>
-              <input
-                type="text"
-                placeholder="Search services…"
-                value={pkgSearch}
-                onChange={(e) => setPkgSearch(e.target.value)}
-                style={{ marginBottom: 8, width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--z-line, #E5DDE7)' }}
-                data-testid="pkg-svc-search"
-              />
-              <div style={{ maxHeight: 180, overflowY: 'auto', border: '1px solid var(--z-line, #E5DDE7)', borderRadius: 8, background: '#fff' }} data-testid="pkg-svc-list">
-                {eligibleServices.length === 0 && (
-                  <div style={{ padding: 12, fontSize: 12, color: 'var(--z-muted-2)' }}>No services yet. Create services first.</div>
-                )}
-                {eligibleServices
-                  .filter((s) => !pkgSearch || (s.service_name || '').toLowerCase().includes(pkgSearch.toLowerCase()))
-                  .map((s) => {
-                    const on = linkedSet.has(s.id);
-                    return (
-                      <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px', borderBottom: '1px solid #F4EEF6', cursor: 'pointer' }}>
-                        <input type="checkbox" checked={on} onChange={() => toggleLinked(s.id)} data-testid={`pkg-svc-check-${s.id}`} />
-                        <div style={{ flex: 1, fontSize: 12.5 }}>
-                          <b>{s.service_name || s.name}</b>
-                          <span style={{ color: 'var(--z-muted-2)', marginLeft: 8, fontSize: 11 }}>
-                            {s.default_duration || 30} min · {s.category || 'Services'}
-                            {s.sub_category ? ` · ${s.sub_category}` : ''}
-                          </span>
-                        </div>
-                        <div style={{ fontWeight: 700, fontSize: 12.5 }}>{rupee(Number(s.base_price || 0))}</div>
-                      </label>
-                    );
-                  })}
-              </div>
-
-              {/* Subtotal + discount + final */}
-              <div style={{ marginTop: 12, padding: 10, background: '#fff', borderRadius: 8, border: '1px solid var(--z-line, #E5DDE7)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 13 }}>
-                  <span style={{ color: 'var(--z-muted, #6B5E71)' }}>Sum of services ({linkedIds.length})</span>
-                  <span style={{ fontWeight: 700 }} data-testid="pkg-subtotal">{rupee(subtotal)}</span>
-                </div>
-
-                <div style={{ display: 'flex', gap: 12, alignItems: 'center', margin: '8px 0' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
-                    <input type="radio" name="pkg-mode" checked={pricingMode === 'discount'} onChange={() => setPricingMode('discount')} data-testid="pkg-mode-discount" />
-                    Apply discount %
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
-                    <input type="radio" name="pkg-mode" checked={pricingMode === 'manual'} onChange={() => setPricingMode('manual')} data-testid="pkg-mode-manual" />
-                    Set final amount
-                  </label>
-                </div>
-
-                {pricingMode === 'discount' && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 13, alignItems: 'center' }}>
-                    <span style={{ color: 'var(--z-muted, #6B5E71)' }}>Discount</span>
-                    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                      <input
-                        type="number"
-                        min="0" max="100" step="0.1"
-                        value={discountPct}
-                        onChange={(e) => setDiscountPct(parseFloat(e.target.value) || 0)}
-                        style={{ width: 80, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--z-line, #E5DDE7)', textAlign: 'right' }}
-                        data-testid="pkg-discount-pct"
-                      />
-                      <span style={{ fontWeight: 700 }}>%</span>
-                    </div>
-                  </div>
-                )}
-
-                {pricingMode === 'manual' && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 13, alignItems: 'center' }}>
-                    <span style={{ color: 'var(--z-muted, #6B5E71)' }}>Final price (₹)</span>
-                    <input
-                      type="number"
-                      min="0"
-                      value={manualFinal}
-                      onChange={(e) => setManualFinal(parseFloat(e.target.value) || 0)}
-                      style={{ width: 120, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--z-line, #E5DDE7)', textAlign: 'right', fontWeight: 700 }}
-                      data-testid="pkg-manual-final"
-                    />
-                  </div>
-                )}
-
-                {subtotal > 0 && computedFinal < subtotal && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 12, color: 'var(--z-green, #12A594)' }}>
-                    <span>You save</span>
-                    <span style={{ fontWeight: 700 }}>{rupee(subtotal - computedFinal)} ({impliedDiscountPct.toFixed(1)}%)</span>
-                  </div>
-                )}
-
-                <hr style={{ margin: '8px 0', border: 'none', borderTop: '1px dashed var(--z-line, #E5DDE7)' }} />
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 15, alignItems: 'center' }}>
-                  <span style={{ fontWeight: 700 }}>Package price</span>
-                  <span style={{ fontSize: 20, fontWeight: 800, color: 'var(--z-primary, #C6389E)' }} data-testid="pkg-final">{rupee(computedFinal)}</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="z-grid2">
-            <div className="z-field">
-              <label>Gender</label>
-              <select value={form.gender_tag} onChange={(e) => upd('gender_tag', e.target.value)}>
-                {GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}
-              </select>
-            </div>
-            <div className="z-field">
-              <label>{isPackage ? 'Duration (auto)' : 'Duration (mins)'}</label>
-              <input type="number" min="0" value={isPackage ? (eligibleServices.reduce((a, s) => linkedSet.has(s.id) ? a + Number(s.default_duration || 30) : a, 0) || form.default_duration) : form.default_duration} onChange={(e) => upd('default_duration', e.target.value)} disabled={isPackage} />
-            </div>
-          </div>
-
-          {!isPackage && (
-          <div className="z-grid2">
-            <div className="z-field">
-              <label>Base price (₹)</label>
-              <input type="number" min="0" value={form.base_price} onChange={(e) => upd('base_price', e.target.value)} />
-            </div>
-            <div className="z-field">
-              <label>Price type</label>
-              <select value={form.price_type} onChange={(e) => upd('price_type', e.target.value)}>
-                <option value="fixed">Fixed</option>
-                <option value="onwards">Onwards</option>
-              </select>
-            </div>
-          </div>
-          )}
-
-          {/* Tax fields — only relevant when the salon is GST registered.
-              Kept optional; empty => the salon-default rate is applied. */}
-          <div className="z-grid2">
-            <div className="z-field">
-              <label>GST rate (%) <span style={{ fontWeight: 400, color: 'var(--z-muted-2)' }}>optional · overrides salon default</span></label>
-              <input
-                type="number" min="0" max="100" step="0.1"
-                value={form.gst_rate ?? ''}
-                onChange={(e) => upd('gst_rate', e.target.value === '' ? null : parseFloat(e.target.value))}
-                placeholder="e.g., 9 (each half of CGST/SGST)"
-                data-testid="svc-gst-rate"
-              />
-            </div>
-            <div className="z-field">
-              <label>HSN / SAC code <span style={{ fontWeight: 400, color: 'var(--z-muted-2)' }}>optional</span></label>
-              <input value={form.hsn_code || ''} onChange={(e) => upd('hsn_code', e.target.value)} placeholder="e.g., 999721" data-testid="svc-hsn-code" />
-            </div>
-          </div>
-
-          <div className="z-field">
-            <div className="z-togrow" onClick={() => upd('is_favorite', !form.is_favorite)}>
-              <button className={`z-toggle ${form.is_favorite ? 'on' : ''}`} />
-              <span>Mark as favourite</span>
-            </div>
-            <div className="z-togrow" onClick={() => upd('available_at_home', !form.available_at_home)}>
-              <button className={`z-toggle ${form.available_at_home ? 'on' : ''}`} />
-              <span>Available at home</span>
-            </div>
-          </div>
-
-          {form.available_at_home && (
-            <div className="z-field">
-              <label>Home price (₹)</label>
-              <input type="number" min="0" value={form.home_price} onChange={(e) => upd('home_price', e.target.value)} />
-            </div>
-          )}
-        </div>
-
-        <div className="z-drawer-foot" style={{ display: 'flex', gap: 10 }}>
-          <button className="z-btn z-btn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
-          <button className="z-btn z-btn--pri" style={{ flex: 2 }} onClick={save} disabled={saving}>
-            <Icon name="save" /> {saving ? 'Saving…' : (isEdit ? 'Save changes' : (isPackage ? 'Create package' : 'Create service'))}
-          </button>
-        </div>
-      </aside>
+      </div>
     </>
   );
 }
 
-// -----------------------------------------------------------------------------
-// UploadServicesDrawer — dropzone + sample template + upload history + rollback
-// -----------------------------------------------------------------------------
-function UploadServicesDrawer({ open, onClose, uploading, onFilePicked, templateHref, batches, loading, onRollback }) {
-  const fileRef = useRef(null);
-  const [dragOver, setDragOver] = useState(false);
-
-  if (!open) return null;
-
-  const pickFile = () => fileRef.current?.click();
-  const onFile = (e) => {
-    const file = e.target?.files?.[0];
-    e.target.value = '';
-    if (file) onFilePicked(file);
-  };
-  const onDrop = (e) => {
-    e.preventDefault();
-    setDragOver(false);
-    const file = e.dataTransfer?.files?.[0];
-    if (file) onFilePicked(file);
-  };
-
+function UploadDrawer({ open, onClose }) {
+  const href = `${API}/services/upload-template.csv`;
   return (
     <>
-      <div className="z-overlay" onClick={onClose} />
-      <aside className="z-drawer wide" data-testid="upload-services-drawer">
-        <div className="z-drawer-h">
-          <div className="dico"><Icon name="upload" size={20} /></div>
-          <div>
-            <div className="eyebrow">Bulk add</div>
-            <h3>Upload Services</h3>
-            <p>Fill our CSV template so it works first-try — no column guessing.</p>
-          </div>
-          <button className="z-drawer-close" onClick={onClose}><Icon name="x" /></button>
+      <div className={`svc2-scrim ${open ? 'show' : ''}`} onClick={onClose} />
+      <div className={`svc2-dr ${open ? 'open' : ''}`}>
+        <div className="drh"><h3>Bulk upload</h3><button className="close" onClick={onClose}>{I.x}</button></div>
+        <div className="drbody">
+          <div className="drop">{I.upload}<div><b>Drop a filled CSV</b> or click to browse</div></div>
+          <a className="btnfull" href={href} target="_blank" rel="noreferrer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 3v12M8 11l4 4 4-4M4 21h16" /></svg>Download template (.csv)</a>
+          <ol className="steps">
+            <li>Includes <span className="codepill">service_code</span> + all fields.</li>
+            <li>Blank <span className="codepill">service_code</span> → <b>create</b>.</li>
+            <li>Existing <span className="codepill">service_code</span> → <b>update</b> in place.</li>
+          </ol>
         </div>
-
-        <div className="z-drawer-body">
-          {/* Template + rules */}
-          <div className="z-up-card">
-            <h4>1. Download the sample template</h4>
-            <p>Only <code>service_name</code> is required. Duplicates (by name) are skipped automatically — existing services are never overwritten.</p>
-            <a href={templateHref} download="services-upload-template.csv" className="z-btn z-btn--ghost" data-testid="download-services-template-btn">
-              <Icon name="download" /> Download CSV template
-            </a>
-          </div>
-
-          {/* Dropzone */}
-          <div className="z-up-card">
-            <h4>2. Upload your file</h4>
-            <p>Supported: .csv, .xlsx, .xls · up to 5 MB. Every row is <b>added</b> — nothing is replaced.</p>
-            <div
-              className="z-drop"
-              onClick={pickFile}
-              onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={onDrop}
-              style={dragOver ? { background: 'var(--z-primary-050)', borderColor: 'var(--z-primary)' } : undefined}
-              data-testid="upload-dropzone"
-            >
-              <Icon name="upload" size={26} />
-              <div style={{ marginTop: 6 }}>{uploading ? 'Uploading…' : (<span>Drag & drop, or <b>browse</b> to select a file</span>)}</div>
-              <div style={{ fontSize: 11, marginTop: 4, color: 'var(--z-muted-2)' }}>Columns: service_name, description, category, sub_category, gender_tag, default_duration, base_price, price_type, is_favorite, available_at_home, thumbnail_url, images</div>
-            </div>
-            <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls,text/csv" style={{ display: 'none' }} onChange={onFile} />
-          </div>
-
-          {/* History w/ rollback */}
-          <div className="z-up-card">
-            <h4>Recent uploads</h4>
-            <p>Made a mistake? Roll back any batch to remove the services it created (existing services are untouched).</p>
-            {loading ? (
-              <div style={{ fontSize: 12, color: 'var(--z-muted)' }}>Loading history…</div>
-            ) : (batches || []).length === 0 ? (
-              <div style={{ fontSize: 12, color: 'var(--z-muted)' }}>No uploads yet.</div>
-            ) : (
-              <div>
-                {batches.map((b) => {
-                  const rolled = b.status === 'rolled_back';
-                  const when = b.uploaded_at ? new Date(b.uploaded_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
-                  return (
-                    <div key={b.id} className="z-hist-row" data-testid={`upload-batch-${b.id}`}>
-                      <div>
-                        <div className="nm">
-                          {b.filename || 'services.csv'}
-                          <span className={`badge ${rolled ? 'rb' : ''}`}>{rolled ? 'Rolled back' : `+${b.created_count || 0} added`}</span>
-                        </div>
-                        <div className="sub">{when} · by {b.uploaded_by || 'salon_admin'}{b.skipped_count ? ` · ${b.skipped_count} skipped` : ''}{b.error_count ? ` · ${b.error_count} errors` : ''}</div>
-                      </div>
-                      <button
-                        className="z-btn z-btn--ghost z-btn--sm"
-                        onClick={() => onRollback(b.id)}
-                        disabled={rolled || (b.created_count || 0) === 0}
-                        title={rolled ? 'Already rolled back' : 'Undo this upload'}
-                        data-testid={`upload-rollback-${b.id}`}
-                      >
-                        <Icon name="undo" /> Rollback
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="z-drawer-foot" style={{ display: 'flex', gap: 10 }}>
-          <button className="z-btn z-btn--ghost" style={{ flex: 1 }} onClick={onClose}>Close</button>
-        </div>
-      </aside>
+      </div>
     </>
   );
 }
 
-// -----------------------------------------------------------------------------
-// ServiceMetricsDrawer — deep metrics view for a clicked service
-// -----------------------------------------------------------------------------
-function ServiceMetricsDrawer({ salonId, getAuthHeaders, svc, summaryMetrics, onEdit, onClose }) {
-  const [data, setData] = useState(null);
-  const [err, setErr] = useState(null);
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const res = await axios.get(
-          `${API}/salons/${salonId}/services/${svc.id}/metrics`,
-          { headers: getAuthHeaders() },
-        );
-        if (alive) setData(res.data);
-      } catch (e) {
-        if (alive) setErr(e?.response?.data?.detail || 'Failed to load metrics');
-      }
-    })();
-    return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [svc?.id, salonId]);
-
-  const s = data?.service || svc;
-  const m = data?.metrics || {
-    bookings_30d: summaryMetrics?.bookings_30d || 0,
-    revenue_30d: summaryMetrics?.revenue_30d || 0,
-    bookings_90d: 0, revenue_90d: 0, avg_ticket_30d: 0,
-    rating: summaryMetrics?.rating || 0, total_reviews: 0,
+function OnlinePriceDrawer({ open, onClose, salonId, H, ops, setOps }) {
+  const [on, setOn] = useState(ops.show_online_prices !== false);
+  useEffect(() => { if (open) setOn(ops.show_online_prices !== false); }, [open, ops]);
+  const save = async (next) => {
+    setOn(next);
+    try { const res = await axios.put(`${API}/salons/${salonId}/ops-settings`, { show_online_prices: next }, H()); setOps((o) => ({ ...o, ...res.data })); }
+    catch { toast.error('Could not update'); }
   };
-  const timeline = data?.timeline_30d || [];
-  const topBarbers = data?.top_barbers || [];
-  const maxDay = timeline.reduce((mx, d) => Math.max(mx, Number(d.revenue || 0)), 0) || 1;
-
   return (
     <>
-      <div className="z-overlay" onClick={onClose} />
-      <aside className="z-drawer wide" data-testid="service-metrics-drawer">
-        <div className="z-drawer-h">
-          <div className="dico"><Icon name={s.category === 'Packages' ? 'gift' : 'scissors'} size={20} /></div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="eyebrow">Service metrics</div>
-            <h3 style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.service_name}</h3>
-            <p>
-              {(s.sub_category || '—')} · {s.gender_tag || 'Unisex'} · {s.default_duration || 30} min · {rupee(s.base_price)}
-              {s.price_type === 'onwards' && ' onwards'}
-            </p>
+      <div className={`svc2-scrim ${open ? 'show' : ''}`} onClick={onClose} />
+      <div className={`svc2-dr ${open ? 'open' : ''}`}>
+        <div className="drh"><h3>Online price visibility</h3><button className="close" onClick={onClose}>{I.x}</button></div>
+        <div className="drbody">
+          <div className="setrow">
+            <div className="info"><div className="st">Show prices to online customers</div><div className="sd">When off, customers can still book online — they just won&rsquo;t see prices, and no pre-payment is taken.</div></div>
+            <label className="sw"><input type="checkbox" checked={on} onChange={(e) => save(e.target.checked)} /><span className="sl" /></label>
           </div>
-          <button className="z-drawer-close" onClick={onClose}><Icon name="x" /></button>
+          {!on && <div className="msgprev">{I.info}Customer sees: &ldquo;Please check the price with the salon.&rdquo; Booking proceeds without payment.</div>}
         </div>
-
-        <div className="z-drawer-body">
-          {err && <div className="z-empty" style={{ color: 'var(--z-bad)' }}>{err}</div>}
-
-          <div className="z-metgrid">
-            <div className="z-metbox">
-              <div className="k">Bookings · 30D</div>
-              <div className="v">{m.bookings_30d} <small>bookings</small></div>
-            </div>
-            <div className="z-metbox">
-              <div className="k">Revenue · 30D</div>
-              <div className="v">{fmtCompactINR(m.revenue_30d)}</div>
-            </div>
-            <div className="z-metbox">
-              <div className="k">Bookings · 90D</div>
-              <div className="v">{m.bookings_90d} <small>total</small></div>
-            </div>
-            <div className="z-metbox">
-              <div className="k">Revenue · 90D</div>
-              <div className="v">{fmtCompactINR(m.revenue_90d)}</div>
-            </div>
-            <div className="z-metbox">
-              <div className="k">Avg Ticket (30D)</div>
-              <div className="v">{fmtCompactINR(m.avg_ticket_30d)}</div>
-            </div>
-          </div>
-
-          {/* Timeline mini-bars */}
-          <div style={{ marginTop: 18 }}>
-            <div className="z-dsec">Revenue trend · last 30 days</div>
-            <div className="z-metbox">
-              <div className="z-spark" title="Daily revenue (last 30 days)">
-                {timeline.map((d, i) => (
-                  <div
-                    key={i}
-                    className="b"
-                    style={{ height: `${Math.max(2, Math.round((Number(d.revenue) / maxDay) * 100))}%` }}
-                    title={`${d.date}: ${fmtCompactINR(d.revenue)} · ${d.bookings} bookings`}
-                  />
-                ))}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: 'var(--z-muted-2)', marginTop: 2 }}>
-                <span>{timeline[0]?.date || ''}</span>
-                <span>{timeline[timeline.length - 1]?.date || ''}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Top barbers */}
-          <div style={{ marginTop: 18 }}>
-            <div className="z-dsec">Top stylists · last 30 days</div>
-            {topBarbers.length === 0 ? (
-              <div style={{ fontSize: 12.5, color: 'var(--z-muted)' }}>No bookings yet for this service.</div>
-            ) : (
-              <div>
-                {topBarbers.map((b) => (
-                  <div key={b.barber_id} className="z-cline">
-                    <div className="ci"><Icon name="user" /></div>
-                    <div className="cn">
-                      <div className="t">{b.barber_name}</div>
-                      <div className="s">{b.bookings} booking{b.bookings === 1 ? '' : 's'}</div>
-                    </div>
-                    <div className="cp">{fmtCompactINR(b.revenue)}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Facts */}
-          <div style={{ marginTop: 18 }}>
-            <div className="z-dsec">At a glance</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {s.is_favorite && <span className="z-pill z-pill--warn"><Icon name="star" size={11} /> Favourite</span>}
-              {s.available_at_home && <span className="z-pill z-pill--ok"><Icon name="home" size={11} /> At-home {s.home_price ? `· ${rupee(s.home_price)}` : ''}</span>}
-              <span className="z-pill z-pill--blue">{s.category || 'Services'}</span>
-              {s.sub_category && <span className="z-pill">{s.sub_category}</span>}
-              <span className="z-pill">{s.gender_tag || 'Unisex'}</span>
-              <span className="z-pill"><Icon name="clock" size={11} /> {s.default_duration || 30} min</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="z-drawer-foot" style={{ display: 'flex', gap: 10 }}>
-          <button className="z-btn z-btn--ghost" style={{ flex: 1 }} onClick={onClose}>Close</button>
-          <button className="z-btn z-btn--pri" style={{ flex: 1 }} onClick={onEdit} data-testid="drawer-edit-service-btn">
-            <Icon name="edit" /> Edit service
-          </button>
-        </div>
-      </aside>
+      </div>
     </>
   );
 }

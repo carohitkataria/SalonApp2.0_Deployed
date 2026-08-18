@@ -2,7 +2,7 @@
 Focused verification script for iteration 27 shop empty-state bug.
 
 Manual/browser execution was performed with Playwright MCP against:
-https://release-candidate-16.preview.emergentagent.com
+https://appt-filter-redesign.preview.emergentagent.com
 
 Checks covered:
 1. Salon store products API returns total=0/products=[] when no supplier-created products exist.

@@ -251,4 +251,44 @@ export const V2_PAGES_CSS = `
   .shv2 .ch-pick{grid-template-columns:1fr}
   .shv2 td.hide,.shv2 th.hide{display:none}
 }
+
+/* ===== Guests toolbar redesign (Aug 2026) ===== */
+.shv2 .cust-toolbar{flex-wrap:nowrap;gap:8px}
+/* Filter chips: compact + horizontally scrollable when they overflow */
+.shv2 .cust-filter-scroll{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;min-width:0;flex:1;padding-bottom:2px;scrollbar-width:thin}
+.shv2 .cust-filter-scroll::-webkit-scrollbar{height:5px}
+.shv2 .cust-filter-scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:20px}
+.shv2 .cust-filter-scroll .fchip{padding:6px 10px;font-size:12px;flex:none;white-space:nowrap}
+/* Search box now lives beside the action buttons (before "+") */
+.shv2 .cust-search{width:240px;flex:none;padding:7px 12px}
+.shv2 .cust-search svg{width:16px;height:16px}
+.shv2 .cust-search input{font-size:12.5px}
+/* Icon-only toolbar buttons */
+.shv2 .btn-icononly{padding:0;width:38px;height:38px;justify-content:center;gap:0;flex:none;border-radius:11px}
+.shv2 .btn-icononly svg{width:17px;height:17px}
+
+/* Custom (owner-added) tags + inline pencil */
+.shv2 .pill.custom{background:var(--primary-050,#EFEBFE);color:var(--primary,#6C4FE0)}
+.shv2 .pill.custom.removable{display:inline-flex;align-items:center;gap:4px;padding-right:5px}
+.shv2 .pill.custom .pill-x{border:none;background:rgba(108,79,224,.18);color:inherit;width:15px;height:15px;border-radius:50%;font-size:12px;line-height:1;cursor:pointer;display:grid;place-items:center;font-family:inherit;padding:0}
+.shv2 .pill.custom .pill-x:hover{background:rgba(108,79,224,.35)}
+.shv2 .tag-edit-btn{border:1px dashed var(--line);background:var(--surface);color:var(--muted);width:22px;height:22px;border-radius:6px;display:inline-grid;place-items:center;cursor:pointer;flex:none;transition:.14s;padding:0}
+.shv2 .tag-edit-btn:hover{border-color:var(--primary,#6C4FE0);color:var(--primary,#6C4FE0);border-style:solid}
+.shv2 .tag-edit-btn svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2}
+
+/* Tag editor modal */
+.shv2 .tagmodal-ov{position:fixed;inset:0;background:rgba(20,16,40,.42);display:grid;place-items:center;z-index:1200;padding:16px}
+.shv2 .tagmodal{background:var(--surface,#fff);border-radius:16px;width:min(440px,96vw);padding:18px 18px 16px;box-shadow:0 24px 60px rgba(20,16,40,.28)}
+.shv2 .tagmodal-h{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
+.shv2 .tagmodal .tm-title{font-size:16px;font-weight:800;color:var(--ink)}
+.shv2 .tagmodal .tm-sub{font-size:12px;color:var(--muted);margin-top:2px}
+.shv2 .tagmodal .tm-sec{font-size:10.5px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);margin:12px 0 7px}
+.shv2 .tagmodal .tm-hint{font-size:11px;color:var(--muted-2);margin-top:6px}
+.shv2 .tagmodal .tm-addrow{display:flex;gap:8px}
+.shv2 .tagmodal .tm-addrow input{flex:1;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px;font-family:inherit;outline:none;color:var(--ink);background:var(--surface)}
+.shv2 .tagmodal .tm-addrow input:focus{border-color:var(--primary,#6C4FE0)}
+.shv2 .tagmodal .tm-quick{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.shv2 .tagmodal .tm-quickchip{font-size:11.5px;font-weight:700;color:var(--muted);border:1px solid var(--line);background:var(--surface);padding:5px 10px;border-radius:16px;cursor:pointer;font-family:inherit;transition:.14s}
+.shv2 .tagmodal .tm-quickchip:hover{border-color:var(--primary,#6C4FE0);color:var(--primary,#6C4FE0)}
+.shv2 .tagmodal-f{display:flex;justify-content:flex-end;gap:9px;margin-top:18px}
 `;

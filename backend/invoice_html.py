@@ -220,6 +220,12 @@ tbody td{padding:12px 8px;border-bottom:1px solid #f2f0f8;font-size:13px;vertica
 .idx{color:#b7b0cf;font-weight:700;margin-right:8px}
 .svc-name{font-weight:700;color:#1b1240}
 .svc-desc{font-size:11.5px;color:#9a93b5;margin-top:2px}
+.stylist{font-size:12.5px;color:#4b4468;font-weight:600}
+.disc-cell{color:#12a05c;font-weight:700}
+.disc-pct{font-size:10.5px;color:#12a05c;font-weight:700}
+.muted-dash{color:#c4bedb;font-weight:600}
+.made-by{margin-top:14px;text-align:center;font-size:11px;color:#a49dbf;line-height:1.6}
+.made-by a{color:#6C4FE0;font-weight:700;text-decoration:none}
 .sac{color:#8b84a8;font-weight:600}
 .foot-grid{display:grid;grid-template-columns:1fr 300px;gap:28px;margin-top:22px}
 .in-words{font-size:12px;color:#7a749a;line-height:1.6}
@@ -314,7 +320,6 @@ def render_invoice_html(inv: Dict[str, Any]) -> str:
         f'<div class="p-name">{_e(cust.get("name") or "Walk-in")}</div>'
         + (f'<div class="p-row">{_e(cust.get("phone"))}</div>' if cust.get("phone") else "")
         + (f'<div class="p-row">Guest ID \u00b7 {_e(cust.get("guest_id"))}</div>' if cust.get("guest_id") else "")
-        + (f'<span class="tier">{_e(tier)}</span>' if tier else "")
         + "</div>"
     )
     party_served = (
@@ -332,20 +337,31 @@ def render_invoice_html(inv: Dict[str, Any]) -> str:
     parties_html = f'<div class="parties">{party_cust}{party_served}{party_salon}</div>'
 
     # ---- line items ----
-    head_cells = ["<th>Service</th>"]
+    head_cells = ["<th>Service</th>", "<th>Stylist</th>"]
     if show_sac:
         head_cells.append("<th>SAC</th>")
-    head_cells += ["<th class='num'>Qty</th>", "<th class='num'>Rate</th>", "<th class='num'>Amount</th>"]
+    head_cells += ["<th class='num'>Qty</th>", "<th class='num'>Price</th>",
+                   "<th class='num'>Discount</th>", "<th class='num'>Amount</th>"]
     rows_html = ""
     for i, it in enumerate(inv.get("items") or [], 1):
         desc = f'<div class="svc-desc">{_e(it.get("desc"))}</div>' if it.get("desc") else ""
+        stylist_td = f'<td class="stylist">{_e(it.get("stylist") or "—")}</td>'
         sac_td = f'<td class="sac num">{_e(it.get("sac") or settings.get("sac_code"))}</td>' if show_sac else ""
+        _disc = float(it.get("discount") or 0)
+        if _disc > 0:
+            _pct = it.get("discount_pct")
+            _pct_lbl = f' <span class="disc-pct">({_e(int(_pct))}%)</span>' if _pct else ""
+            disc_cell = f'\u2212 {_rupee(_disc)}{_pct_lbl}'
+        else:
+            disc_cell = '<span class="muted-dash">\u2014</span>'
         rows_html += (
             "<tr>"
             f'<td><span class="idx">{i}.</span><span class="svc-name">{_e(it.get("name"))}</span>{desc}</td>'
+            f"{stylist_td}"
             f"{sac_td}"
             f'<td class="num">{int(it.get("qty") or 1)}</td>'
             f'<td class="num">{_rupee(it.get("rate"))}</td>'
+            f'<td class="num disc-cell">{disc_cell}</td>'
             f'<td class="num">{_rupee(it.get("amount"))}</td>'
             "</tr>"
         )
@@ -388,11 +404,6 @@ def render_invoice_html(inv: Dict[str, Any]) -> str:
         words = inv.get("amount_in_words") or number_to_words_inr(inv.get("grand_total"))
         left_bits += f'<div class="in-words">Amount in words: <b>{_e(words)}</b></div>'
     chips = ""
-    if settings.get("show_payment_mode"):
-        chips += (
-            '<div class="chip"><span class="c-l"><svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> Payment mode</span>'
-            f'<span class="c-v">{_e(paid_mode)}</span></div>'
-        )
     if settings.get("show_points") and (inv.get("loyalty_points") is not None):
         chips += (
             '<div class="chip gold"><span class="c-l"><svg viewBox="0 0 24 24"><polygon points="12 2 15 9 22 9 16 14 18 21 12 17 6 21 8 14 2 9 9 9"/></svg> Loyalty points earned</span>'
@@ -447,7 +458,9 @@ def render_invoice_html(inv: Dict[str, Any]) -> str:
         f'<div class="sig">{sig_inner}</div>'
         "</div>"
     )
-    foot_html = f'<div class="sheet-foot"><div class="foot-inner">{qr_html}{thanks_html}</div></div>'
+    foot_html = f'<div class="sheet-foot"><div class="foot-inner">{qr_html}{thanks_html}</div>' \
+                '<div class="made-by">Created with <a href="https://salonhub.in" target="_blank" rel="noopener">SalonHub</a> \u00b7 ' \
+                'Book &amp; manage your salon at <a href="https://salonhub.in" target="_blank" rel="noopener">salonhub.in</a></div></div>'
 
     brand_sub = _e(salon.get("sub") or "")
     return f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">

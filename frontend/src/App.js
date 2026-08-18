@@ -17,6 +17,7 @@ import LandingPage from '@/pages/LandingPage';
 
 // User Pages
 import UserLoginPage from '@/pages/UserLoginPage';
+import PrivacyPolicyPage from '@/pages/PrivacyPolicyPage';
 import AuthCallback from '@/pages/AuthCallback';
 import SalonSelectionPage from '@/pages/SalonSelectionPage';
 import SalonMainPage from '@/pages/SalonMainPage';
@@ -86,6 +87,9 @@ function App() {
                   
                   {/* User Routes */}
                   <Route path="/login" element={<UserLoginPage />} />
+                  <Route path="/privacy" element={<PrivacyPolicyPage />} />
+                  <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
+                  <Route path="/data-deletion" element={<PrivacyPolicyPage />} />
                   <Route path="/user/login" element={<Navigate to="/login" replace />} />
                   <Route path="/auth/callback" element={<AuthCallback />} />
                   

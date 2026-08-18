@@ -506,3 +506,27 @@ svg:not([width]):not([height]) { width: 1em; height: 1em; }
   animation: marquee-x 40s linear infinite;
 }
 .marquee-track:hover { animation-play-state: paused; }
+
+/* ============================================================
+   Aug 2026 — Remove redundant section page-headings across the
+   salon dashboard tabs (Queue "Live Queue", Services, Staff,
+   Guests, Marketing, Reports, Settings). The active tab is already
+   shown in the nav, so the heading text is dropped and the freed
+   space is given to the working content. Any action buttons that
+   lived in the header are kept and pinned to the top-right.
+   ============================================================ */
+/* Queue / shared TabHeaderV3 */
+.tabhdrv3 .th-left { display: none !important; }
+.tabhdrv3 { margin: 0 0 6px !important; }
+.tabhdrv3:not(:has(.th-right)) { display: none !important; }
+
+/* Module ".phead" headers — hide title (h2) + subtitle, keep buttons */
+.phead > h2,
+.phead p,
+.phead .psub { display: none !important; }
+/* The title is often wrapped in a left <div> holding the h2 — hide that wrapper */
+.phead > div:first-child:has(h2) { display: none !important; }
+/* Collapse the header row; right-align whatever controls remain */
+.phead { justify-content: flex-end !important; align-items: center !important; margin-bottom: 10px !important; min-height: 0 !important; padding-top: 0 !important; padding-bottom: 0 !important; }
+/* If a header ends up with no controls at all, remove it entirely */
+.phead:not(:has(button)):not(:has(input)):not(:has(select)):not(:has(a)) { display: none !important; }

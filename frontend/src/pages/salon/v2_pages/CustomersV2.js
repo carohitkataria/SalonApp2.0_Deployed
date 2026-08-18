@@ -43,6 +43,7 @@ const Ico = {
   trend:() => <svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>,
   rupee:() => <svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>,
   save: () => <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>,
+  edit: () => <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
 };
 
 const rupee = (n) => '₹' + Number(n || 0).toLocaleString('en-IN');
@@ -102,6 +103,47 @@ export default function CustomersV2({ salonId, getAuthHeaders, salon }) {
   const [addOpen, setAddOpen] = useState(false);
   const importInputRef = useRef(null);
   const [importing, setImporting] = useState(false);
+  // Tag editor (pencil on the Tags column)
+  const [tagEdit, setTagEdit] = useState(null); // customer object being edited
+  const [tagDraft, setTagDraft] = useState([]);
+  const [tagInput, setTagInput] = useState('');
+  const [savingTags, setSavingTags] = useState(false);
+
+  const openTagEditor = useCallback((c) => {
+    setTagEdit(c);
+    setTagDraft(Array.isArray(c.custom_tags) ? [...c.custom_tags] : []);
+    setTagInput('');
+  }, []);
+
+  const addDraftTag = useCallback((raw) => {
+    const s = String(raw || '').trim().slice(0, 24);
+    if (!s) return;
+    const reserved = ['vip', 'new', 'lapsed', 'mem', 'member', 'reg', 'regular'];
+    setTagDraft((prev) => {
+      if (reserved.includes(s.toLowerCase())) { toast.info('That is an automatic tag.'); return prev; }
+      if (prev.some((t) => t.toLowerCase() === s.toLowerCase())) return prev;
+      if (prev.length >= 12) { toast.info('Up to 12 tags.'); return prev; }
+      return [...prev, s];
+    });
+    setTagInput('');
+  }, []);
+
+  const saveCustomTags = useCallback(async () => {
+    if (!tagEdit) return;
+    setSavingTags(true);
+    try {
+      await axios.put(
+        `${API}/salons/${salonId}/customers/${encodeURIComponent(tagEdit.phone)}/tags`,
+        { custom_tags: tagDraft },
+        { headers: authHeaders() }
+      );
+      setCustomers((prev) => prev.map((c) => c.phone === tagEdit.phone ? { ...c, custom_tags: tagDraft } : c));
+      toast.success('Tags updated');
+      setTagEdit(null);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Failed to update tags');
+    } finally { setSavingTags(false); }
+  }, [tagEdit, tagDraft, salonId, authHeaders]);
 
   // Silent refetch — no `setLoading(true)` so table doesn't jump.
   const fetchAll = useCallback(async (opts = { silent: false }) => {
@@ -139,7 +181,7 @@ export default function CustomersV2({ salonId, getAuthHeaders, salon }) {
       const totalSpend = c.total_spend || 0;
       const walletBalance = Number(c.wallet_balance || 0);
       const hasMembership = !!(c.membership_name);
-      const isNew = days !== null ? (days <= 30 && visitCount <= 2) : (visitCount <= 2);
+      const isNew = visitCount < 2; // "New" auto-drops after the 2nd visit
       const isLapsed = days !== null && days >= 60;
       const isVip = totalSpend >= 5000 || visitCount >= 20;
       const isBdayThisMonth = (() => {
@@ -155,7 +197,8 @@ export default function CustomersV2({ salonId, getAuthHeaders, salon }) {
       if (isLapsed) tags.push('lapsed');
       if (hasMembership) tags.push('mem');
       if (!isVip && !isNew && !isLapsed && visitCount >= 3) tags.push('reg');
-      return { ...c, _first: first, _last: last, _days: days, _tags: tags, _isBdayThisMonth: isBdayThisMonth, _totalSpend: totalSpend, _walletBalance: walletBalance, _visitCount: visitCount };
+      const customTags = Array.isArray(c.custom_tags) ? c.custom_tags : [];
+      return { ...c, _first: first, _last: last, _days: days, _tags: tags, _customTags: customTags, _isBdayThisMonth: isBdayThisMonth, _totalSpend: totalSpend, _walletBalance: walletBalance, _visitCount: visitCount };
     });
   }, [customers]);
 
@@ -260,18 +303,11 @@ export default function CustomersV2({ salonId, getAuthHeaders, salon }) {
 
   return (
     <div>
-      {/* HEADER */}
+      {/* HEADER (title hidden globally; controls moved into the toolbar) */}
       <div className="phead">
         <div>
           <h2><span className="hic"><Ico.users /></span>Guests</h2>
           <p>{filtered.length} guest{filtered.length !== 1 ? 's' : ''} shown · India-first CRM with WhatsApp, UPI wallet &amp; GST invoices</p>
-        </div>
-        <div style={{display:'flex', gap:10, alignItems:'center'}}>
-          <div className="v2-searchbox">
-            <Ico.search />
-            <input placeholder="Search name or mobile…" value={search} onChange={(e) => setSearch(e.target.value)} />
-          </div>
-          <button className="btn-primary" onClick={() => setAddOpen(true)}><Ico.plus /> Add guest</button>
         </div>
       </div>
 
@@ -286,31 +322,36 @@ export default function CustomersV2({ salonId, getAuthHeaders, salon }) {
       </div>
 
       {/* TOOLBAR */}
-      <div className="toolbar">
-        <div className="filter">
+      <div className="toolbar cust-toolbar">
+        <div className="filter cust-filter-scroll">
           {[
             {k:'all', label:'All', c: kpis.total},
             {k:'vip', label:'VIP', c: enriched.filter(x => x._tags.includes('vip')).length},
             {k:'new', label:'New', c: enriched.filter(x => x._tags.includes('new')).length},
             {k:'lapsed', label:'Lapsed', c: enriched.filter(x => x._tags.includes('lapsed')).length},
             {k:'mem', label:'Members', c: enriched.filter(x => x._tags.includes('mem')).length},
-            {k:'bday', label:'Birthday this month', c: enriched.filter(x => x._isBdayThisMonth).length},
+            {k:'bday', label:'Birthday', c: enriched.filter(x => x._isBdayThisMonth).length},
           ].map(f => (
             <button key={f.k} className={`fchip ${filter === f.k ? 'on' : ''}`} onClick={() => setFilter(f.k)}>
               {f.label} <b>{f.c}</b>
             </button>
           ))}
         </div>
-        <div style={{flex:1}} />
-        <button className="btn-ghost" onClick={exportCSV} title="Export CSV"><Ico.down /> Export</button>
+        <div className="v2-searchbox cust-search">
+          <Ico.search />
+          <input placeholder="Search name or mobile…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <button className="btn-primary btn-icononly" onClick={() => setAddOpen(true)} title="Add guest" aria-label="Add guest" data-testid="cust-add-guest"><Ico.plus /></button>
+        <button className="btn-ghost btn-icononly" onClick={exportCSV} title="Export CSV" aria-label="Export CSV" data-testid="cust-export"><Ico.down /></button>
         <button
-          className="btn-ghost"
+          className="btn-ghost btn-icononly"
           onClick={() => importInputRef.current?.click()}
           disabled={importing}
-          title="Import guests from CSV / Excel"
-          style={{marginLeft:6}}
+          title={importing ? 'Importing…' : 'Import guests from CSV / Excel'}
+          aria-label="Import guests"
+          data-testid="cust-import"
         >
-          <Ico.up /> {importing ? 'Importing…' : 'Import'}
+          <Ico.up />
         </button>
         <input
           ref={importInputRef}
@@ -355,14 +396,26 @@ export default function CustomersV2({ salonId, getAuthHeaders, salon }) {
                   </div>
                 </td>
                 <td>{c.phone || <span style={{color:'var(--muted-2)'}}>—</span>}</td>
-                <td>
+                <td onClick={(e) => e.stopPropagation()}>
                   <div className="g-tags">
-                    {c._tags.length === 0 && <span style={{color:'var(--muted-2)', fontSize:11}}>—</span>}
+                    {c._tags.length === 0 && c._customTags.length === 0 && <span style={{color:'var(--muted-2)', fontSize:11}}>—</span>}
                     {c._tags.map(t => (
                       <span key={t} className={`pill ${t}`}>
                         {t === 'vip' ? 'VIP' : t === 'reg' ? 'Regular' : t === 'lapsed' ? 'Lapsed' : t === 'mem' ? 'Member' : 'New'}
                       </span>
                     ))}
+                    {c._customTags.map(t => (
+                      <span key={`ct-${t}`} className="pill custom">{t}</span>
+                    ))}
+                    <button
+                      className="tag-edit-btn"
+                      title="Edit tags"
+                      aria-label="Edit tags"
+                      data-testid={`cust-edit-tags-${c.phone || c.id}`}
+                      onClick={() => openTagEditor(c)}
+                    >
+                      <Ico.edit />
+                    </button>
                   </div>
                 </td>
                 <td className="hide">{c.last_visit ? new Date(c.last_visit).toLocaleDateString('en-IN', {day:'numeric', month:'short'}) : <span style={{color:'var(--muted-2)'}}>—</span>}</td>
@@ -396,6 +449,66 @@ export default function CustomersV2({ salonId, getAuthHeaders, salon }) {
         onSaved={() => { setAddOpen(false); fetchAll({ silent: true }); toast.success('Guest saved'); }}
         source="owner"
       />
+
+      {/* TAG EDITOR */}
+      {tagEdit && (
+        <div className="tagmodal-ov" onClick={() => setTagEdit(null)} data-testid="cust-tag-modal">
+          <div className="tagmodal" onClick={(e) => e.stopPropagation()}>
+            <div className="tagmodal-h">
+              <div>
+                <div className="tm-title">Edit tags</div>
+                <div className="tm-sub">{tagEdit._first} {tagEdit._last} · {tagEdit.phone}</div>
+              </div>
+              <button className="tag-edit-btn" onClick={() => setTagEdit(null)} aria-label="Close"><Ico.close /></button>
+            </div>
+
+            <div className="tm-sec">Automatic tags</div>
+            <div className="g-tags" style={{marginBottom:4}}>
+              {tagEdit._tags.length === 0 && <span style={{color:'var(--muted-2)', fontSize:11}}>None yet</span>}
+              {tagEdit._tags.map(t => (
+                <span key={t} className={`pill ${t}`}>
+                  {t === 'vip' ? 'VIP' : t === 'reg' ? 'Regular' : t === 'lapsed' ? 'Lapsed' : t === 'mem' ? 'Member' : 'New'}
+                </span>
+              ))}
+            </div>
+            <div className="tm-hint">Auto-managed from visits & spend. &ldquo;New&rdquo; clears automatically after the 2nd visit.</div>
+
+            <div className="tm-sec">Custom tags</div>
+            <div className="g-tags" style={{marginBottom:8}}>
+              {tagDraft.length === 0 && <span style={{color:'var(--muted-2)', fontSize:11}}>No custom tags — add one below.</span>}
+              {tagDraft.map(t => (
+                <span key={t} className="pill custom removable">
+                  {t}
+                  <button className="pill-x" onClick={() => setTagDraft(prev => prev.filter(x => x !== t))} aria-label={`Remove ${t}`}>×</button>
+                </span>
+              ))}
+            </div>
+            <div className="tm-addrow">
+              <input
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addDraftTag(tagInput); } }}
+                placeholder="Type a tag and press Enter…"
+                maxLength={24}
+                data-testid="cust-tag-input"
+              />
+              <button className="btn-ghost" onClick={() => addDraftTag(tagInput)}>Add</button>
+            </div>
+            <div className="tm-quick">
+              {['Regular', 'Walk-in', 'Referral', 'Complaint', 'Loyal', 'Student'].filter(q => !tagDraft.some(t => t.toLowerCase() === q.toLowerCase())).map(q => (
+                <button key={q} className="tm-quickchip" onClick={() => addDraftTag(q)}>+ {q}</button>
+              ))}
+            </div>
+
+            <div className="tagmodal-f">
+              <button className="btn-ghost" onClick={() => setTagEdit(null)}>Cancel</button>
+              <button className="btn-primary" onClick={saveCustomTags} disabled={savingTags} data-testid="cust-tag-save">
+                {savingTags ? 'Saving…' : 'Save tags'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -162,7 +162,6 @@ const SECTIONS = [
   { key: 'profile', label: 'Profile', ico: <><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></> },
   { key: 'attendance', label: 'Attendance', ico: <><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></> },
   { key: 'services', label: 'Services & pricing', ico: <><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/></> },
-  { key: 'documents', label: 'Documents', ico: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></> },
   { key: 'access', label: 'Access', ico: <><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></> },
 ];
 
@@ -242,14 +241,8 @@ export default function SalonStaffV3({ salonId, getAuthHeaders }) {
   const fileInputRef = React.useRef(null);
   const [pendingDocType, setPendingDocType] = useState(null);
 
-  // ---------- PHASE 2: date-range filter for metrics, live stats ----------
-  const [statsRange, setStatsRange] = useState(() => {
-    const today = new Date();
-    const first = today.toISOString().slice(0, 8) + '01';
-    return { from: first, to: today.toISOString().slice(0, 10), preset: 'this_month' };
-  });
-  const [statsLive, setStatsLive] = useState(null); // {revenue, incentives, customers_served, bookings, avg_ticket}
-  const [statsLoading, setStatsLoading] = useState(false);
+  // ---------- Staff metrics/stats removed (Aug 2026) — profile shows details only ----------
+  const [docsSecOpen, setDocsSecOpen] = useState(false); // collapsible Documents under profile
 
   // ---------- PHASE 2: branch switch ----------
   const [transferOpen, setTransferOpen] = useState(false);
@@ -519,58 +512,7 @@ export default function SalonStaffV3({ salonId, getAuthHeaders }) {
     }
   };
 
-  // ---------- PHASE 2: Live stats with date filter ----------
-  const applyStatsPreset = (preset) => {
-    const today = new Date();
-    let from, to = today.toISOString().slice(0, 10);
-    if (preset === 'today') { from = to; }
-    else if (preset === 'this_week') {
-      const d = new Date(today);
-      const day = d.getDay() || 7;
-      d.setDate(d.getDate() - (day - 1));
-      from = d.toISOString().slice(0, 10);
-    } else if (preset === 'this_month') {
-      from = today.toISOString().slice(0, 8) + '01';
-    } else if (preset === 'last_month') {
-      const d = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-      const end = new Date(today.getFullYear(), today.getMonth(), 0);
-      from = d.toISOString().slice(0, 10);
-      to = end.toISOString().slice(0, 10);
-    } else if (preset === 'last_30') {
-      const d = new Date(today); d.setDate(d.getDate() - 29);
-      from = d.toISOString().slice(0, 10);
-    } else { from = today.toISOString().slice(0, 8) + '01'; preset = 'this_month'; }
-    setStatsRange({ from, to, preset });
-  };
-
-  useEffect(() => {
-    (async () => {
-      if (!selectedId || !salonId) return;
-      setStatsLoading(true);
-      try {
-        const res = await axios.get(
-          `${API}/analytics/detailed-report?salon_id=${salonId}&start_date=${statsRange.from}&end_date=${statsRange.to}&barber_id=${selectedId}`,
-          { headers: getAuthHeaders?.() || {} },
-        ).catch(() => null);
-        if (res?.data) {
-          const d = res.data || {};
-          setStatsLive({
-            revenue: Number(d.total_revenue || d.revenue || 0),
-            incentives: Number(d.total_incentive || d.incentives || 0),
-            customers_served: Number(d.customers_served || d.total_customers || 0),
-            bookings: Number(d.total_bookings || d.bookings || 0),
-            avg_ticket: Number(d.avg_ticket || 0),
-          });
-        } else {
-          setStatsLive(null);
-        }
-      } catch (_) {
-        setStatsLive(null);
-      } finally {
-        setStatsLoading(false);
-      }
-    })();
-  }, [selectedId, salonId, statsRange.from, statsRange.to, getAuthHeaders]);
+  // ---------- Staff metrics stats fetch removed (Aug 2026) ----------
 
   // ---------- PHASE 2: Branch transfer ----------
   const openTransferDrawer = () => {
@@ -1217,6 +1159,32 @@ export default function SalonStaffV3({ salonId, getAuthHeaders }) {
         <div className="lt">
           <b><span className="dotg" />Active Staff</b>
           <span className="ct">{staff.length}</span>
+          <div className="lt-actions">
+            {canAccess && (
+              <button
+                type="button"
+                className={`sq-btn ${viewMode === 'roles' ? 'on' : ''}`}
+                title="Roles & Access"
+                aria-label="Roles & Access"
+                onClick={() => setViewMode((v) => (v === 'roles' ? 'staff' : 'roles'))}
+                data-testid="toggle-roles-access"
+              >
+                <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              </button>
+            )}
+            {canCreate && (
+              <button
+                type="button"
+                className="sq-btn sq-btn--pri"
+                title="Add staff"
+                aria-label="Add staff"
+                onClick={() => setAddOpen(true)}
+                data-testid="staff-add-btn"
+              >
+                <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              </button>
+            )}
+          </div>
         </div>
         <div className="searchbox" style={{ width: '100%' }}>
           <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -1259,73 +1227,9 @@ export default function SalonStaffV3({ salonId, getAuthHeaders }) {
   const renderProfileBody = () => {
     const s = selected;
     const att = attendanceSummary[s.id] || { P: 0, A: 0, H: 0, HO: 0, L: 0 };
-    // Prefer live-stats from date filter; fall back to per-staff MTD fields.
-    const rev = statsLive ? statsLive.revenue : Number(s.month_revenue || 0);
-    const inc = statsLive ? statsLive.incentives : Number(s.month_incentives || 0);
-    const cust = statsLive ? statsLive.customers_served : Number(s.customers_served || 0);
-    const rating = Number(s.average_rating || 0);
-    const base = Number(s.compensation || 0);
     const currentBranchName = (branchesList.find((b) => (b.id || b.branch_id) === s.branch_id) || {}).name || s.branch_name || '';
     return (
       <>
-        {/* Date range chip row */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', letterSpacing: 0.4, textTransform: 'uppercase' }}>Metrics for</span>
-          {[
-            { k: 'today', l: 'Today' },
-            { k: 'this_week', l: 'This week' },
-            { k: 'this_month', l: 'This month' },
-            { k: 'last_month', l: 'Last month' },
-            { k: 'last_30', l: 'Last 30d' },
-          ].map((p) => (
-            <button key={p.k} type="button"
-              className={`btn-ghost ${statsRange.preset === p.k ? 'on' : ''}`}
-              style={{
-                padding: '5px 11px', fontSize: 11,
-                background: statsRange.preset === p.k ? 'var(--primary-050)' : undefined,
-                color: statsRange.preset === p.k ? 'var(--primary)' : undefined,
-                borderColor: statsRange.preset === p.k ? 'var(--primary)' : undefined,
-              }}
-              onClick={() => applyStatsPreset(p.k)}
-              data-testid={`stats-preset-${p.k}`}>
-              {p.l}
-            </button>
-          ))}
-          <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--muted)' }}>
-            {statsRange.from} → {statsRange.to}{statsLoading ? ' · loading…' : ''}
-          </span>
-          <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
-            <input type="date" value={statsRange.from} max={statsRange.to}
-              onChange={(e) => setStatsRange({ ...statsRange, from: e.target.value, preset: 'custom' })}
-              style={{ fontSize: 11, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--line)' }}
-              data-testid="stats-from" />
-            <input type="date" value={statsRange.to} min={statsRange.from} max={new Date().toISOString().slice(0, 10)}
-              onChange={(e) => setStatsRange({ ...statsRange, to: e.target.value, preset: 'custom' })}
-              style={{ fontSize: 11, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--line)' }}
-              data-testid="stats-to" />
-          </div>
-        </div>
-
-        <div className="metrics">
-          <div className="metric"><div className="mi" style={{ background: 'var(--green-bg)', color: 'var(--green)' }}>
-            <svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-          </div><b>{rupee(rev)}</b><span>Revenue</span></div>
-          <div className="metric"><div className="mi" style={{ background: 'var(--amber-bg)', color: 'var(--amber)' }}>
-            <svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-          </div><b>{rupee(inc)}</b><span>Incentives</span></div>
-          <div className="metric"><div className="mi" style={{ background: 'var(--sky-bg)', color: 'var(--sky)' }}>
-            <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
-          </div><b>{cust}</b><span>Customers served</span></div>
-          <div className="metric"><div className="mi" style={{ background: 'var(--primary-050)', color: 'var(--primary)' }}>
-            <svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-          </div><b>{rating || '—'}</b><span>Avg rating</span></div>
-        </div>
-        {canSalaryView && (
-          <div className="payline">
-            <div className="pl"><b>{rupee(base + inc)}</b><span>Base {rupee(base)} + incentives {rupee(inc)}</span></div>
-            <span style={{ fontSize: 11, color: 'var(--muted)' }}>Payments are recorded under <b>Attendance</b>.</span>
-          </div>
-        )}
         <div className="secttl">
           Personal information
           {isAdmin && branchesList.length > 1 && (
@@ -1371,7 +1275,7 @@ export default function SalonStaffV3({ salonId, getAuthHeaders }) {
           <div className="field"><label>Full name <span className="req">*</span></label>
             <input value={editingProfile ? profileDraft.name : (s.name || '')} disabled={!editingProfile}
               onChange={(e) => setProfileDraft({ ...profileDraft, name: e.target.value })} /></div>
-          <div className="field"><label>Mobile number <span className="req">*</span> (login ID)</label>
+          <div className="field"><label>Mobile number</label>
             {(s.phone || s.mobile) ? (
               <a
                 href={`tel:${(s.phone || s.mobile).replace(/\s+/g, '')}`}
@@ -1384,7 +1288,7 @@ export default function SalonStaffV3({ salonId, getAuthHeaders }) {
             ) : (
               <input value="—" disabled />
             )}
-            <span className="idnote"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>Mobile number is the login ID · mandatory &amp; unique</span></div>
+            </div>
           <div className="field"><label>Date of birth</label>
             <input
               type="date"
@@ -1438,6 +1342,25 @@ export default function SalonStaffV3({ salonId, getAuthHeaders }) {
               <option>Yes</option><option>No</option>
             </select></div>
         </div>
+
+        {/* Documents — collapsible, shown right under the profile details */}
+        {canDocuments && (
+          <div className={`doc-collapse ${docsSecOpen ? 'open' : ''}`} data-testid="profile-docs-collapse">
+            <button type="button" className="doc-collapse-h" onClick={() => setDocsSecOpen((v) => !v)} data-testid="profile-docs-toggle">
+              <span className="dch-l">
+                <svg viewBox="0 0 24 24" className="dch-ic"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+                Documents
+                <span className="dch-ct">{(docs[selectedId] || []).length}</span>
+              </span>
+              <svg viewBox="0 0 24 24" className="dch-chev"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            {docsSecOpen && (
+              <div className="doc-collapse-b">
+                {renderDocumentsBody()}
+              </div>
+            )}
+          </div>
+        )}
       </>
     );
   };
@@ -1840,31 +1763,20 @@ export default function SalonStaffV3({ salonId, getAuthHeaders }) {
           </span>
           Staff Management
         </h2>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginLeft: 'auto' }}>
-          {canAccess && (
-            <button
-              className={viewMode === 'roles' ? 'btn-primary' : 'btn-ghost'}
-              onClick={() => setViewMode((v) => (v === 'roles' ? 'staff' : 'roles'))}
-              data-testid="toggle-roles-access"
-            >
-              <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-              {viewMode === 'roles' ? 'Back to staff' : 'Roles & Access'}
-            </button>
-          )}
-          {canCreate && viewMode === 'staff' && (
-            <button className="btn-primary" onClick={() => setAddOpen(true)}>
-              <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Staff
-            </button>
-          )}
-        </div>
       </div>
 
       <div className={`workspace ${viewMode === 'roles' ? 'workspace--full' : ''}`}>
         {viewMode === 'roles' ? (
-          <RolesAndAccessView
-            salonId={salonId}
-            onOpenStaff={(sid) => { setViewMode('staff'); setSelectedId(sid); setSection('access'); }}
-          />
+          <div style={{ width: '100%' }}>
+            <button className="btn-ghost" style={{ padding: '7px 12px', marginBottom: 12 }} onClick={() => setViewMode('staff')} data-testid="roles-back">
+              <svg viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+              Back to staff
+            </button>
+            <RolesAndAccessView
+              salonId={salonId}
+              onOpenStaff={(sid) => { setViewMode('staff'); setSelectedId(sid); setSection('access'); }}
+            />
+          </div>
         ) : (
           <>
             {renderStaffList()}

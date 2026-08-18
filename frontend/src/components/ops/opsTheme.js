@@ -45,6 +45,14 @@ export const ZEN_CSS = `
 .zen .z-metric.g-mint{background:linear-gradient(135deg,#E7F6ED,#fff)}
 .zen .z-metric.g-amber{background:linear-gradient(135deg,#FDF3E4,#fff)}
 .zen .z-metric.g-rose{background:linear-gradient(135deg,#FCEAF1,#fff)}
+/* Compact, clickable metrics + inline Shop action (Aug 2026 edit) */
+.zen .z-metrics--compact{display:flex;flex-wrap:wrap;align-items:stretch;gap:10px;grid-template-columns:none}
+.zen .z-metrics--compact .z-metric{flex:0 1 190px;min-width:160px}
+.zen .z-metric.is-clickable{cursor:pointer;transition:.15s}
+.zen .z-metric.is-clickable:hover{border-color:var(--z-primary-200);box-shadow:0 6px 18px rgba(60,40,140,.10);transform:translateY(-1px)}
+.zen .z-metric.is-clickable.on{border-color:var(--z-primary);box-shadow:0 0 0 2px var(--z-primary-050)}
+.zen .z-metrics-shop{display:flex;align-items:center;margin-left:auto}
+.zen .z-metrics-shop .z-btn{height:100%}
 .zen .z-trend{font-size:11.5px;font-weight:800;padding:2px 7px;border-radius:20px;display:inline-block}
 .zen .z-trend.up{background:var(--z-ok-bg);color:var(--z-ok)} .zen .z-trend.dn{background:var(--z-bad-bg);color:var(--z-bad)}
 .zen .z-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11.5px;font-weight:700;background:var(--z-line-2);color:var(--z-ink-soft)}

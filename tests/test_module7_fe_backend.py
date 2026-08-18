@@ -2,7 +2,7 @@
 Backend backward-compat regression test.
 """
 import os, requests, json
-BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://release-candidate-16.preview.emergentagent.com").rstrip("/")
+BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://appt-filter-redesign.preview.emergentagent.com").rstrip("/")
 TOKEN_ID = "34b806ab-49fe-43b7-9baf-5e28e5cae247"
 
 r = requests.post(f"{BASE}/api/salon/users/login", json={"identifier": "admin", "password": "salon123"})

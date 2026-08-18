@@ -84,7 +84,7 @@ const SelectChip = ({ selected, onClick, children, icon: Icon, disabled = false 
 
 // Service Card Component
 const ServiceCard = ({ service, selected, onToggle, price }) => {
-  const isOnwards = service.price_type === 'onwards';
+  const isOnwards = service.price_type === 'onwards' || (Array.isArray(service.axes) && service.axes.length > 0);
   return (
   <motion.div
     whileHover={{ scale: 1.01 }}

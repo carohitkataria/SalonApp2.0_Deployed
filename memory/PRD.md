@@ -559,3 +559,13 @@ Testing agent iteration_26 report: **17/17 backend targeted tests PASS**, 6/7 fr
 - Marketing → Settings → **WhatsApp Sender** card (`MarketingSettingsPanel.js`): plain-language sender + status pill, salon request form, owner-only connect/activate/test.
 
 **Env note:** `.env` files were missing on restore and recreated (MONGO_URL=mongodb://localhost:27017, DB_NAME=salonapp). Twilio live credentials set. Admin login: `POST /api/salon/users/login` identifier=`admin` password=`salon123`, salon_id=release-candidate-16.
+
+---
+## Changelog — Appointment redesign + invoice + privacy (this session)
+- **Appointment page (AppointmentDrawer)**: 2-row filter — Row1 offering tabs (Services/Packages/Member/Product), Row2 sub_category chips. Narrower stylist (barber) panel. Direct-invoice date & Schedule date+session (M/N/E icons) moved into the top header panel. Removed the separate Products collapsible (Product is now a filter tab).
+- **Ops setting**: `direct_invoice_default` (bool) — Walk-in stays default; when checked the drawer lands on Direct invoice.
+- **Backend**: per-service discount now applied in BOTH `direct-invoice` and `salon-booking` (stores net `service_price` + `list_price` + `discount_percent`); `attribute_token_revenue_to_barbers` splits each line across `barber_allocations` by pct. Back-dated direct invoices honoured when the setting is on. (per-service discount backend-tested: 3/3 pass.)
+- **Invoice (invoice_html.py + generate_and_send_invoice)**: removed per-service time; shows tier/length + gender tag under the service name; new columns Stylist / Price / Discount / Amount (multi-barber shown as "A 60% + B 40%"); removed the duplicate payment-mode chip (kept "Paid via …"); removed customer Member tier tag; added marketing footer "Created with SalonHub · salonhub.in".
+- **Services page**: added a page header (title + subtitle) mirroring the Staff page so the ribbon→content top margin matches.
+- **Privacy**: new public page at `/privacy` (+ `/privacy-policy`); login page now has a required consent checkbox + Privacy Policy link gating login actions.
+- **Env note**: `backend/.env` and `frontend/.env` were missing on arrival and were recreated (local Mongo `test_database`, external URL). Demo data seeded via `seed_demo_dataset.py`. Test login: admin / salon123, salon_id 9d2c95b0-3931-4e0c-b7e8-70aba857bd0a.

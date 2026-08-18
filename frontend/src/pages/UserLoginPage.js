@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -39,6 +39,7 @@ export default function UserLoginPage() {
   // Password login
   const [password, setPassword] = useState('');
   const [showPwd, setShowPwd] = useState(false);
+  const [agreed, setAgreed] = useState(false);
 
   // Set / reset password flow
   const [resetPurpose, setResetPurpose] = useState('set_password');
@@ -269,8 +270,26 @@ export default function UserLoginPage() {
           transition={{ delay: 0.1, duration: 0.5 }}
           className="lux-card rounded-2xl p-7 sm:p-8 bg-card"
         >
+          {/* Privacy consent (compliance) */}
+          <label className="flex items-start gap-2.5 mb-5 cursor-pointer select-none" data-testid="login-consent">
+            <input
+              type="checkbox"
+              checked={agreed}
+              onChange={(e) => setAgreed(e.target.checked)}
+              data-testid="login-consent-checkbox"
+              className="mt-0.5 h-4 w-4 accent-brass shrink-0"
+            />
+            <span className="text-xs leading-relaxed text-muted-foreground">
+              I agree to the{' '}
+              <Link to="/privacy" target="_blank" className="text-brass font-medium hover:underline" data-testid="login-privacy-link">
+                Privacy Policy
+              </Link>{' '}
+              and consent to my data being processed as described.
+            </span>
+          </label>
+
           {/* Google sign-in (Item 9) */}
-          <div className="mb-5">
+          <div className={`mb-5 ${agreed ? '' : 'opacity-50 pointer-events-none'}`} aria-disabled={!agreed}>
             <GoogleLoginButton audience="customer" />
             <div className="flex items-center gap-3 my-4">
               <div className="flex-1 h-px bg-border" />
@@ -305,7 +324,7 @@ export default function UserLoginPage() {
                     {!otpSent ? (
                       <Button
                         onClick={handleSendLoginOtp}
-                        disabled={loading || !phoneValid}
+                        disabled={loading || !phoneValid || !agreed}
                         data-testid="send-otp-btn"
                         className="w-full h-12 bg-brass text-espresso hover:bg-brass-hover font-semibold rounded-xl shadow-brass"
                       >
@@ -388,7 +407,7 @@ export default function UserLoginPage() {
                       </div>
                       <Button
                         type="submit"
-                        disabled={loading || !phoneValid || !password}
+                        disabled={loading || !phoneValid || !password || !agreed}
                         data-testid="password-login-btn"
                         className="w-full h-12 bg-brass text-espresso hover:bg-brass-hover font-semibold rounded-xl shadow-brass"
                       >

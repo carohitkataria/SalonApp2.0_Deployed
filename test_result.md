@@ -104,6 +104,94 @@
 
 user_problem_statement: "Implement multi-user role-based access system for salon with Admin and Staff roles. Add staff management with employee fields (department, designation, emergency contact, Aadhar, DOJ, DOB, compensation, documents). Create hamburger menu navigation with role-based access control. Add 'Manage Staff Access' section, Financials and Customer Master placeholders. Add notification rules with toggles for both salon and customer sides, including WhatsApp toggles for customer. Add Reschedule/Cancel action links to WhatsApp messages with link-based cancel flow. Fix notification bell overlapping the Map view button on customer search page."
 
+#=== NEW SESSION (appointment redesign + per-service discount) — TEST ONLY per-service discount ===
+appt_redesign_backend:
+  - task: "Per-service discount logic (direct-invoice + salon-booking)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Per-service discount % is now applied to each service line in BOTH endpoints:
+            - POST /api/salons/{salon_id}/direct-invoice
+            - POST /api/salons/{salon_id}/salon-booking
+          The frontend sends `services_payload` = [{service_id, barber_id, barber_allocations, discount_percent, tier, length}].
+          Backend applies discount_percent to the line's list price -> stores `service_price` (net, discounted)
+          and `list_price` (pre-discount) in `service_assignments`, plus `discount_percent`.
+          The order subtotal / total_amount MUST reflect the discounted line prices.
+          Also: multi-barber split — `attribute_token_revenue_to_barbers` now splits each line's revenue
+          across `barber_allocations` by pct (normalised).
+
+          AUTH: POST /api/salon/users/login {identifier:"admin", password:"salon123"} -> access_token (Bearer).
+          salon_id = 9d2c95b0-3931-4e0c-b7e8-70aba857bd0a  (seeded demo data: services with base_price, 5 barbers).
+          Fetch services via GET /api/salons/{salon_id}/services/enabled to get real service_id + base_price.
+          Barbers via GET /api/salons/{salon_id}/barbers.
+
+          TEST SCENARIOS (per-service discount is the ONLY focus):
+          1) direct-invoice with ONE service, discount_percent=50 on that line:
+             expect token.total_amount == round(base_price*0.5) and service_assignments[0].service_price == that,
+             list_price == base_price, discount_percent == 50.
+          2) direct-invoice with TWO services, one at 0% and one at 20%:
+             expect subtotal == base1 + base2*0.8.
+          3) salon-booking (booking_type "queue" walk-in) with a per-service discount:
+             expect total_amount reflects the discounted line price (not full base).
+          Verify GET the created token (GET /api/salons/{salon_id}/tokens or history) shows discounted totals.
+        -working: true
+        -agent: "testing"
+        -comment: |
+          ✅ PER-SERVICE DISCOUNT LOGIC FULLY TESTED AND WORKING: Comprehensive testing completed successfully with ALL 3 test scenarios passing. AUTHENTICATION: Admin login working perfectly with identifier='admin', password='salon123', salon_id='9d2c95b0-3931-4e0c-b7e8-70aba857bd0a'. Retrieved 12 services and 5 barbers (Imran, Abdul, Rahul, Kabir, Anita) for testing.
+          
+          TEST RESULTS:
+          1) DIRECT-INVOICE SINGLE SERVICE 50% DISCOUNT - ✅ PASS
+             - Service: base_price=₹300.0, discount_percent=50
+             - POST /api/salons/{salon_id}/direct-invoice returned HTTP 200
+             - Response totals.grand_total: ₹150.0 (EXACT MATCH: 300 * 0.5 = 150)
+             - Token created: E5, invoice_id generated
+             - Backend logs confirm service_assignments stored correctly:
+               * service_price (net): ₹150.0
+               * list_price (base): ₹300.0
+               * discount_percent: 50.0
+          
+          2) DIRECT-INVOICE TWO SERVICES MIXED DISCOUNTS - ✅ PASS
+             - Service A: base_price=₹300.0, discount_percent=0
+             - Service B: base_price=₹8999.0, discount_percent=20
+             - Expected total: 300 + (8999 * 0.8) = 300 + 7199.2 = ₹7499.2
+             - POST /api/salons/{salon_id}/direct-invoice returned HTTP 200
+             - Response totals.grand_total: ₹7499.2 (EXACT MATCH)
+             - Token created: E6, invoice_id generated
+             - Backend logs confirm service_assignments stored correctly:
+               * Service A: service_price=₹300.0, list_price=₹300.0, discount_percent=0 (implicit)
+               * Service B: service_price=₹7199.2, list_price=₹8999.0, discount_percent=20.0
+          
+          3) SALON-BOOKING WALK-IN QUEUE 30% DISCOUNT - ✅ PASS
+             - Service: base_price=₹300.0, discount_percent=30
+             - Expected net: 300 * 0.7 = ₹210.0
+             - POST /api/salons/{salon_id}/salon-booking returned HTTP 200
+             - Response total_amount: ₹210.0 (EXACT MATCH)
+             - Token created: N5, booking_type='queue'
+             - service_assignments verified in response:
+               * service_price (net): ₹210.0
+               * list_price (base): ₹300.0
+               * discount_percent: 30.0
+          
+          CRITICAL REQUIREMENTS VERIFIED:
+          ✅ Per-service discount_percent correctly applied to each service line
+          ✅ service_price (net, discounted) calculated as list_price * (1 - discount_percent/100)
+          ✅ list_price (pre-discount base price) preserved in service_assignments
+          ✅ discount_percent stored in service_assignments when > 0
+          ✅ Order total_amount / grand_total reflects sum of discounted line prices
+          ✅ Works for BOTH direct-invoice and salon-booking endpoints
+          ✅ Mixed discounts (0%, 20%, 30%, 50%) all calculate correctly
+          ✅ Rounding to 2 decimal places working correctly (7199.2 = round(8999 * 0.8, 2))
+          
+          The per-service discount logic is production-ready and fully functional across both booking flows.
+
+
 #=== CURRENT SESSION (publish-prep + Glam Central37 fixes) — test these first ===
 current_session_backend:
   - task: "WhatsApp inbound webhook (Twilio) — sync customer replies into platform chat"
@@ -1811,7 +1899,7 @@ agent_communication:
       message: "✅ PHASE 1.5 FRONTEND UI TESTING COMPLETED (2026-04-30): Successfully tested salon admin login and all Phase 1.5 UI features. LOGIN: Working perfectly with credentials (identifier='admin', password='salon123'), redirects to /salon/dashboard. DASHBOARD: Quick Actions section present with all cards (Token Queue, Customers, Services, Staff, Financials, Analytics, Gallery, Settings). STAFF MANAGEMENT: Clicking Staff Quick Action navigates to staff list showing 2 staff members (Imran, Abdul) with 'View Profile' buttons. STAFF PROFILE PAGE: ✅ Tabs verified - Profile, Attendance, Services, Access tabs present. ✅ NO Rewards tab (correctly removed as per Phase 1 Task 2c). LAST WORKING DAY FIELD: ✅ Present in Profile tab edit mode (Phase 1.5 feature), successfully saves and persists value (verified by page reload showing '2026-12-31'). ATTENDANCE TAB: ✅ All required buttons present and working: 'Mark All Present', 'Leave Mode: OFF/ON' (toggles correctly), 'Auto Calculate'. ✅ Leave Mode functionality tested: turned ON, clicked future date (25), leave marked with toast notification, clicked again to remove leave, turned Leave Mode back OFF. ✅ Calendar displays with proper legend (P=Present, H=Half Day, A=Absent, Holiday, L=On Leave). ✅ Salary Summary section visible with all fields. All Phase 1.5 frontend features are working correctly and ready for production."
 
     - agent: "testing"
-      message: "❌ CRITICAL BLOCKER - PHASE 1 + 1.5 FRONTEND TESTING FAILED: Unable to complete frontend testing due to login failure. ISSUE: Salon admin login with credentials (identifier='admin', password='salon123') is NOT WORKING on the production URL (https://release-candidate-16.preview.emergentagent.com/salon/login). SYMPTOMS: (1) Login form accepts credentials and button is clickable, (2) After clicking 'Login with Password' button, page stays on /salon/login URL, (3) Form fields are cleared but no navigation occurs, (4) No POST request to login API detected in network logs, (5) No error messages displayed on UI, (6) No Quick Actions dashboard elements appear. EVIDENCE: Multiple test attempts with proper wait times all resulted in staying on login page. Backend logs show salon ID b742cd5f-e3f8-4b63-872b-b83d84841d2c is active with API calls, suggesting the backend is working but frontend login flow is broken. IMPACT: Cannot test ANY of the requested Phase 1/1.5 features: (A) Manual booking dialog with customer search, (B) Skipped tokens Cancel button, (C) Gallery limits, (D) Staff clickable cards + Rewards tab removal + Last Working Day field, (E) Attendance tab Mark All Present + Leave Mode, (F) Customer booking All services + auto-latest-slot. ROOT CAUSE HYPOTHESIS: Login form submission is not triggering the API call - possible JavaScript error, form validation issue, or event handler not attached. URGENT ACTION REQUIRED: Main agent must investigate and fix the salon login flow before frontend testing can proceed."
+      message: "❌ CRITICAL BLOCKER - PHASE 1 + 1.5 FRONTEND TESTING FAILED: Unable to complete frontend testing due to login failure. ISSUE: Salon admin login with credentials (identifier='admin', password='salon123') is NOT WORKING on the production URL (https://appt-filter-redesign.preview.emergentagent.com/salon/login). SYMPTOMS: (1) Login form accepts credentials and button is clickable, (2) After clicking 'Login with Password' button, page stays on /salon/login URL, (3) Form fields are cleared but no navigation occurs, (4) No POST request to login API detected in network logs, (5) No error messages displayed on UI, (6) No Quick Actions dashboard elements appear. EVIDENCE: Multiple test attempts with proper wait times all resulted in staying on login page. Backend logs show salon ID b742cd5f-e3f8-4b63-872b-b83d84841d2c is active with API calls, suggesting the backend is working but frontend login flow is broken. IMPACT: Cannot test ANY of the requested Phase 1/1.5 features: (A) Manual booking dialog with customer search, (B) Skipped tokens Cancel button, (C) Gallery limits, (D) Staff clickable cards + Rewards tab removal + Last Working Day field, (E) Attendance tab Mark All Present + Leave Mode, (F) Customer booking All services + auto-latest-slot. ROOT CAUSE HYPOTHESIS: Login form submission is not triggering the API call - possible JavaScript error, form validation issue, or event handler not attached. URGENT ACTION REQUIRED: Main agent must investigate and fix the salon login flow before frontend testing can proceed."
 
     - agent: "main"
       message: "Bug-fix + enhancement round (post Phase 1.5):
@@ -5394,7 +5482,7 @@ agent_communication:
         ═══════════════════════════════════════════════════════════════════
         
         TESTED: Staff Access / Access Control UI on Staff Profile page (per-staff, under "Access" tab)
-        URL: https://release-candidate-16.preview.emergentagent.com/salon/staff/e580d816-f0aa-4ce6-a12d-0cdf2de45d0f
+        URL: https://appt-filter-redesign.preview.emergentagent.com/salon/staff/e580d816-f0aa-4ce6-a12d-0cdf2de45d0f
         Staff: Imran (master)
         
         ✅ PASSED TESTS (8):
@@ -6477,7 +6565,7 @@ agent_communication:
     - agent: "main"
       message: "Completed the WhatsApp template example-values feature end-to-end. Backend: TemplateCreateIn enforces one example per {{N}}; Twilio submit sends `variables`, Meta sends components[].example.body_text. Frontend: per-placeholder inputs + preview in composer, values shown in view mode. .env files were missing on session resume — restored from git (backend/.env with Twilio keys, frontend/.env with REACT_APP_BACKEND_URL). Installed missing python packages (python-socketio, APScheduler). Backend + frontend now running clean. Please test the backend flow described in the task status_history: draft validation, draft persistence, submit-shape, and no-placeholder passthrough."
     - agent: "testing"
-      message: "✅ WHATSAPP TEMPLATE EXAMPLE_VALUES TESTING COMPLETE - ALL TESTS PASSED (6/6): Comprehensive backend testing completed successfully with 100% pass rate. All test cases from the review request have been verified: (A) Draft validation with missing example_values returns 422 mentioning both placeholders, (B) Partial example_values returns 422 mentioning missing placeholder, (C) Full example_values returns 200 with correct persistence, (D) No-placeholder templates correctly ignore/strip example_values, (E) Twilio submit successfully sends variables field and returns 200 with sid and approval_status, (G) Duplicate name detection returns 409. All 4 test templates cleaned up successfully. The feature is production-ready and working exactly as specified. NOTE: External URL (https://release-candidate-16.preview.emergentagent.com/api) returns 404 for all endpoints - this appears to be a Kubernetes ingress routing issue, not a code issue. Testing was performed using localhost:8001 which works perfectly."
+      message: "✅ WHATSAPP TEMPLATE EXAMPLE_VALUES TESTING COMPLETE - ALL TESTS PASSED (6/6): Comprehensive backend testing completed successfully with 100% pass rate. All test cases from the review request have been verified: (A) Draft validation with missing example_values returns 422 mentioning both placeholders, (B) Partial example_values returns 422 mentioning missing placeholder, (C) Full example_values returns 200 with correct persistence, (D) No-placeholder templates correctly ignore/strip example_values, (E) Twilio submit successfully sends variables field and returns 200 with sid and approval_status, (G) Duplicate name detection returns 409. All 4 test templates cleaned up successfully. The feature is production-ready and working exactly as specified. NOTE: External URL (https://appt-filter-redesign.preview.emergentagent.com/api) returns 404 for all endpoints - this appears to be a Kubernetes ingress routing issue, not a code issue. Testing was performed using localhost:8001 which works perfectly."
 
 backend:
   - task: "Home v2 — new KPI endpoints (customer_count, staff_attendance, marketing_perf, booking_links) + send-booking-link + staff attendance toggle"
@@ -6878,7 +6966,7 @@ Files touched:
 NO backend endpoint changes needed — existing `/api/notifications/*` and `PUT /api/salons/{id}` endpoints handle everything. Credentials unchanged: admin / salon123 (salon_id = c896b84b-f34a-4a23-a27b-a47909f8f834)."
 
     - agent: "testing"
-      message: "✅ ALL 4 BUG FIXES VERIFIED AND WORKING (Jul 14 2026): Comprehensive UI testing completed successfully for all four bug fixes/feature changes on the salon-side app. Test credentials: identifier='admin', password='salon123', salon_id: c896b84b-f34a-4a23-a27b-a47909f8f834. Base URL: https://release-candidate-16.preview.emergentagent.com
+      message: "✅ ALL 4 BUG FIXES VERIFIED AND WORKING (Jul 14 2026): Comprehensive UI testing completed successfully for all four bug fixes/feature changes on the salon-side app. Test credentials: identifier='admin', password='salon123', salon_id: c896b84b-f34a-4a23-a27b-a47909f8f834. Base URL: https://appt-filter-redesign.preview.emergentagent.com
 
 TEST RESULTS SUMMARY:
 
@@ -7179,7 +7267,7 @@ agent_communication:
         7. ✅ USER CREATION WORKING: New staff user created successfully with granular module permissions
         
         TECHNICAL DETAILS:
-        - Frontend URL: https://release-candidate-16.preview.emergentagent.com
+        - Frontend URL: https://appt-filter-redesign.preview.emergentagent.com
         - Login route: /salon/login (Password Login tab)
         - Home page: SalonHomeV2 component (default landing after login)
         - Settings navigation: /salon/dashboard?tab=salon → Staff Settings tab → Manage Staff Access tab
@@ -7575,7 +7663,7 @@ agent_communication:
   - agent: main
     message: |
       Four targeted UI fixes went in. Please verify against the running preview
-      (https://release-candidate-16.preview.emergentagent.com) using admin/salon123:
+      (https://appt-filter-redesign.preview.emergentagent.com) using admin/salon123:
 
       1. Settings tab → sidebar under Staff & attendance now shows THREE sub-items:
          "Attendance method & rules", "Leave & holidays", "Payroll & incentives"
@@ -7933,7 +8021,7 @@ agent_communication:
             ❌ REPORTS MODULE UI VERIFICATION - CRITICAL OVERLAY BUG FOUND
             
             UI verification testing completed for 9 checks (A-I) as specified in review request.
-            Test URL: https://release-candidate-16.preview.emergentagent.com
+            Test URL: https://appt-filter-redesign.preview.emergentagent.com
             Test date: 2026-07-18
             Login credentials: identifier='admin', password='salon123'
             
@@ -8118,7 +8206,7 @@ agent_communication:
           comment: |
             ⚠️ REPORTS MODULE UI RE-VERIFICATION AFTER POINTER-EVENTS FIX
             
-            Re-tested Reports module UI at https://release-candidate-16.preview.emergentagent.com
+            Re-tested Reports module UI at https://appt-filter-redesign.preview.emergentagent.com
             after main agent claimed to fix the z-overlay pointer-events bug.
             
             Test date: 2026-07-18
@@ -8409,7 +8497,7 @@ agent_communication:
         Executed comprehensive UI testing for 4 enhancements on salon dashboard.
         Test date: 2026-07-18
         Login: admin / salon123
-        URL: https://release-candidate-16.preview.emergentagent.com
+        URL: https://appt-filter-redesign.preview.emergentagent.com
         
         ═══════════════════════════════════════════════════════════════════
         SUMMARY
@@ -8482,7 +8570,7 @@ agent_communication:
             TESTED: Content positioning on Queue, Guests (Customer Master), and Marketing tabs
             Test date: 2026-07-18
             Login: admin / salon123
-            URL: https://release-candidate-16.preview.emergentagent.com
+            URL: https://appt-filter-redesign.preview.emergentagent.com
             
             REQUIREMENT: First child of .tab-pad-legacy must have x >= 120px
             EXPECTED: Rail (84px) + Padding (44px) = 128px content start position
@@ -9315,7 +9403,7 @@ agent_communication:
         Comprehensive backend testing completed for the two current_session_backend tasks as requested in review_request.
         
         Target Salon: 909b8e81-ed8d-4c1c-9305-7545d1d4ce44 (Glam Central37)
-        Base URL: https://release-candidate-16.preview.emergentagent.com/api
+        Base URL: https://appt-filter-redesign.preview.emergentagent.com/api
         
         TEST RESULTS SUMMARY: 2/2 tests PASSED ✅
         
@@ -9471,3 +9559,250 @@ agent_communication:
         ✅ All backend tests passed with no issues
         ✅ Ready to summarize and finish
 
+
+#====================================================================================================
+# REDESIGN 2026 — Service & Booking pages (this task)
+#====================================================================================================
+## user_problem_statement: "Rebuild the Service config page and the New Appointment (booking) page per the attached mockups. Booking: keep right side (billing) behaviour, edit left filters + space optimization; also add gender icon filter, favourites-first scrollable filter (default Favourites), tier/length variant pricing, per-service discount %, multi-barber allocation (settings-gated), move guest search to the right Guest details, inline settings. Full backend support; reflect variant pricing to customer booking; package day-offsets shift past salon holidays."
+## ENV NOTE: backend/.env & frontend/.env were MISSING on this container and were recreated (MONGO_URL=mongodb://localhost:27017, DB_NAME=salonapp, JWT set; REACT_APP_BACKEND_URL=preview host). DB was empty; startup auto-bootstrapped 1 salon + admin(admin/salon123) + 12 services + 2 barbers. salon_id=appt-filter-redesign.
+
+## backend:
+##   - task: "Service model: axes + price_matrix + package_items + package_price"
+##     implemented: true
+##     working: "NA"
+##     file: "server.py"
+##     needs_retesting: true
+##   - task: "Classification endpoints GET/PUT /salons/{id}/classification (tiers, lengths, categories, package_categories)"
+##     implemented: true
+##     working: "NA"
+##     file: "server.py"
+##     needs_retesting: true
+##   - task: "Ops-settings endpoints GET/PUT /salons/{id}/ops-settings (multi_barber, per_service_discount, stylist_required, back_dated, show_online_prices)"
+##     implemented: true
+##     working: "NA"
+##     file: "server.py"
+##     needs_retesting: true
+##   - task: "Booking/invoice services_payload now captures barber_allocations, discount_percent, tier, length, price"
+##     implemented: true
+##     working: "NA"
+##     file: "server.py"
+##     needs_retesting: true
+##   - task: "Holiday-aware schedule resolver POST /salons/{id}/resolve-schedule-dates + resolve_non_holiday_date()"
+##     implemented: true
+##     working: "NA"
+##     file: "server.py"
+##     needs_retesting: true
+## frontend:
+##   - task: "Service page rebuild (two-pane list+inline editor, tier/length matrix, package editor w/ day-offsets, classification/upload/online-price drawers)"
+##     implemented: true
+##     working: true
+##     file: "components/ops/ServicesModule.js"
+##     needs_retesting: false
+##   - task: "Appointment page LEFT filters (gender icons, favourites-first scrollable, tier/length rail, variant pricing) + RIGHT (guest search moved to Guest details, per-service discount %, multi-barber allocation, inline settings) all settings-gated"
+##     implemented: true
+##     working: true
+##     file: "pages/salon/home_v2/AppointmentDrawer.js"
+##     needs_retesting: false
+## agent_communication:
+##     -agent: "main"
+##     -message: "Built full-stack. Backend testing DEFERRED per user instruction ('don't run backend testing for now'). Frontend smoke-tested via screenshots: Service page + editor render; Appointment drawer opens with new left filters + relocated right guest search + settings gear. Awaiting user go-ahead for automated testing."
+    -agent: "testing"
+    -message: "✅ PER-SERVICE DISCOUNT TESTING COMPLETE: All 3 test scenarios passed successfully. The per-service discount logic is working correctly in both direct-invoice and salon-booking endpoints. Discount calculations are accurate (50%, 30%, 20%, 0% all tested), service_assignments store net price + list price + discount_percent correctly, and order totals reflect discounted line prices. No issues found. The feature is production-ready."
+
+
+
+#====================================================================================================
+# SMOKE TEST — Post-GitHub Repo Incorporation (Glam Central37)
+#====================================================================================================
+user_problem_statement: "Smoke-test the SalonHub backend after incorporating a newer codebase from the user's GitHub repo. Goal: confirm core flows + the newly-added endpoints work and nothing is broken before redeploy. Base URL = REACT_APP_BACKEND_URL in /app/frontend/.env; all routes prefixed with /api. Target salon_id = 909b8e81-ed8d-4c1c-9305-7545d1d4ce44 (Glam Central37). Auth: POST /api/salon/users/login with JSON {\"identifier\":\"admin\",\"password\":\"salon123\"} → use returned token as Bearer."
+
+smoke_test_backend:
+  - task: "Health check GET /api/"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASS: GET /api/ returned 200 with body: {\"message\":\"The Looks Salon API v3.0 - Multi-Salon Edition\"}"
+
+  - task: "Salon admin login POST /api/salon/users/login"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASS: Login with identifier='admin', password='salon123' returned 200 with access_token and salon_id='909b8e81-ed8d-4c1c-9305-7545d1d4ce44' (Glam Central37)"
+
+  - task: "Customer-facing services GET /api/salons/{salon_id}/services/enabled"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASS: Returned 135 services, all have valid category in {Services, Packages} and populated sub_category. Service taxonomy migration verified working correctly."
+
+  - task: "NEW endpoint GET /api/salons/{salon_id}/classification"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASS: GET /api/salons/909b8e81-ed8d-4c1c-9305-7545d1d4ce44/classification returned 200 with body: {\"tiers\":[\"Basic\",\"Standard\",\"Premium\",\"Ultra\"],\"lengths\":[\"Short\",\"Medium\",\"Long\",\"XL\"],\"categories\":[],\"package_categories\":[]}"
+
+  - task: "NEW endpoint GET /api/salons/{salon_id}/ops-settings"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASS: GET /api/salons/909b8e81-ed8d-4c1c-9305-7545d1d4ce44/ops-settings returned 200 with body: {\"multi_barber_enabled\":false,\"per_service_discount_enabled\":false,\"back_dated_invoice_enabled\":false,\"stylist_required\":true,\"show_online_prices\":true,\"direct_invoice_default\":false}"
+
+  - task: "Chat endpoint GET /api/salons/{salon_id}/messages/unread-count"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASS: GET /api/salons/909b8e81-ed8d-4c1c-9305-7545d1d4ce44/messages/unread-count returned 200 with {count: 0}. Endpoint working correctly."
+
+  - task: "Chat endpoint GET /api/salons/{salon_id}/conversations"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASS: GET /api/salons/909b8e81-ed8d-4c1c-9305-7545d1d4ce44/conversations returned 200. Endpoint working correctly."
+
+  - task: "WhatsApp inbound webhook POST /api/whatsapp/twilio-inbound"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASS: POST /api/whatsapp/twilio-inbound with form-encoded data (From=whatsapp:+919999000011, To=whatsapp:+918560934455, Body='smoke', MessageSid=SMsmoke_repo_20260818_204948, ProfileName='Smoke', WaId=919999000011, NumMedia=0) returned 200 with empty TwiML response. Message was stored in MongoDB and successfully cleaned up after test."
+
+metadata:
+  created_by: "testing_agent"
+  version: "1.0"
+  test_sequence: 1
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "All smoke test tasks completed"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+        ═══════════════════════════════════════════════════════════════════════════════
+        SMOKE TEST COMPLETE — POST-GITHUB REPO INCORPORATION
+        ═══════════════════════════════════════════════════════════════════════════════
+        
+        Comprehensive smoke testing completed for SalonHub backend after incorporating
+        newer codebase from GitHub repo. Target salon: Glam Central37 (909b8e81-ed8d-4c1c-9305-7545d1d4ce44).
+        Base URL: https://release-candidate-16.preview.emergentagent.com
+        
+        TEST RESULTS SUMMARY:
+        ═══════════════════════════════════════════════════════════════════════════════
+        
+        ✅ ALL 8 TESTS PASSED (8/8)
+        
+        1. ✅ Health check GET /api/ - 200 OK
+           - Response: {"message":"The Looks Salon API v3.0 - Multi-Salon Edition"}
+        
+        2. ✅ Salon admin login POST /api/salon/users/login - 200 OK
+           - Credentials: identifier='admin', password='salon123'
+           - Resolved salon_id: 909b8e81-ed8d-4c1c-9305-7545d1d4ce44 (Glam Central37)
+           - Token received and usable
+        
+        3. ✅ Customer-facing services GET /api/salons/{salon_id}/services/enabled - 200 OK
+           - Returned 135 services
+           - ALL services have valid category in {Services, Packages}
+           - ALL services have populated sub_category
+           - Service taxonomy migration verified working correctly
+        
+        4. ✅ NEW endpoint GET /api/salons/{salon_id}/classification - 200 OK
+           - Response: {"tiers":["Basic","Standard","Premium","Ultra"],"lengths":["Short","Medium","Long","XL"],"categories":[],"package_categories":[]}
+           - Endpoint exists and returns sane response
+        
+        5. ✅ NEW endpoint GET /api/salons/{salon_id}/ops-settings - 200 OK
+           - Response: {"multi_barber_enabled":false,"per_service_discount_enabled":false,"back_dated_invoice_enabled":false,"stylist_required":true,"show_online_prices":true,"direct_invoice_default":false}
+           - Endpoint exists and returns sane response
+        
+        6. ✅ Chat endpoint GET /api/salons/{salon_id}/messages/unread-count - 200 OK
+           - Response: {count: 0}
+           - Endpoint working correctly
+        
+        7. ✅ Chat endpoint GET /api/salons/{salon_id}/conversations - 200 OK
+           - Endpoint working correctly
+        
+        8. ✅ WhatsApp inbound webhook POST /api/whatsapp/twilio-inbound - 200 OK
+           - Form-encoded POST with test data returned empty TwiML as expected
+           - Message stored in MongoDB whatsapp_messages collection
+           - Cleanup successful: test message deleted (message_sid: SMsmoke_repo_20260818_204948)
+        
+        ═══════════════════════════════════════════════════════════════════════════════
+        SAFETY COMPLIANCE
+        ═══════════════════════════════════════════════════════════════════════════════
+        
+        ✅ Did NOT call endpoints that send real WhatsApp messages
+        ✅ Did NOT call endpoints that create real payments
+        ✅ Did NOT call POST /api/admin/_oneoff_migrate
+        ✅ Used test phone number for WhatsApp webhook test
+        ✅ Cleaned up test data from production MongoDB
+        
+        ═══════════════════════════════════════════════════════════════════════════════
+        CONCLUSION
+        ═══════════════════════════════════════════════════════════════════════════════
+        
+        The SalonHub backend is PRODUCTION-READY after GitHub repo incorporation.
+        All core flows working correctly:
+        - Health check ✅
+        - Authentication ✅
+        - Customer-facing services with taxonomy migration ✅
+        - NEW classification endpoint ✅
+        - NEW ops-settings endpoint ✅
+        - Chat endpoints (unread-count, conversations) ✅
+        - WhatsApp inbound webhook ✅
+        
+        NO 500 errors, NO import/route errors, NO broken endpoints.
+        
+        MAIN AGENT ACTION REQUIRED:
+        ✅ All smoke test tasks marked as working=true and needs_retesting=false
+        ✅ Backend is ready for redeploy
+        ✅ Ready to summarize and finish

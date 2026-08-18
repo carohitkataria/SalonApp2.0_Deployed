@@ -106,42 +106,32 @@ export default function InventoryModule({ salonId, salonProfile, getAuthHeaders 
   return (
     <div className="zen">
       <div className="z-wrap">
-        <div className="z-phead">
-          <div>
-            <div className="eyebrow">Operations</div>
-            <h1>Inventory</h1>
-          </div>
-          <div className="z-actions">
-            <button className="z-btn z-btn--ghost" onClick={openNewItem}>
-              <Icon name="plus" /> New item
-            </button>
-            <button className="z-btn z-btn--pri" onClick={goBuyInventory} data-testid="inv-shop-btn">
-              <Icon name="cart" /> Shop
-            </button>
-          </div>
-        </div>
-
-        {/* Metrics */}
-        <div className="z-metrics">
-          <div className="z-metric g-blue">
+        {/* Metrics — clickable status filters + Shop action at the end */}
+        <div className="z-metrics z-metrics--compact">
+          <div className={`z-metric g-blue is-clickable ${filterStatus === 'all' ? 'on' : ''}`} onClick={() => setFilterStatus('all')} role="button" tabIndex={0} data-testid="inv-metric-all">
             <div className="k"><Icon name="box" /> Products</div>
             <div className="v">{totals.total}</div>
             <div className="sub">Across all categories</div>
           </div>
-          <div className="z-metric g-mint">
+          <div className={`z-metric g-mint is-clickable ${filterStatus === 'ok' ? 'on' : ''}`} onClick={() => setFilterStatus('ok')} role="button" tabIndex={0} data-testid="inv-metric-ok">
             <div className="k"><Icon name="check" /> In stock</div>
             <div className="v">{totals.ok || 0}</div>
             <div className="sub">Above reorder level</div>
           </div>
-          <div className="z-metric g-amber">
+          <div className={`z-metric g-amber is-clickable ${filterStatus === 'low' ? 'on' : ''}`} onClick={() => setFilterStatus('low')} role="button" tabIndex={0} data-testid="inv-metric-low">
             <div className="k"><Icon name="alert" /> Low stock</div>
             <div className="v">{totals.low || 0}</div>
             <div className="sub">Below threshold — reorder soon</div>
           </div>
-          <div className="z-metric g-rose">
+          <div className={`z-metric g-rose is-clickable ${filterStatus === 'out' ? 'on' : ''}`} onClick={() => setFilterStatus('out')} role="button" tabIndex={0} data-testid="inv-metric-out">
             <div className="k"><Icon name="alert" /> Out</div>
             <div className="v">{totals.out || 0}</div>
             <div className="sub">Zero stock right now</div>
+          </div>
+          <div className="z-metrics-shop">
+            <button className="z-btn z-btn--pri" onClick={goBuyInventory} data-testid="inv-shop-btn">
+              <Icon name="cart" /> Shop
+            </button>
           </div>
         </div>
 
@@ -157,6 +147,9 @@ export default function InventoryModule({ salonId, salonProfile, getAuthHeaders 
               </button>
             ))}
           </div>
+          <button className="z-btn z-btn--ghost z-toolbar-newitem" onClick={openNewItem} data-testid="inv-new-item">
+            <Icon name="plus" /> New item
+          </button>
         </div>
 
         <div className="z-inv-table">

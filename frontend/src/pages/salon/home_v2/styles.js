@@ -620,7 +620,7 @@ export const HOME_V2_CSS = `
 }
 .shv2-drawer.newapt .drawer__h .tt .ic{background:var(--primary-050);color:var(--primary)}
 .shv2-drawer.newapt .drawer__close:hover{background:var(--rose-bg);color:var(--rose)}
-.shv2-drawer.newapt .book-split{display:grid;grid-template-columns:minmax(0,1.4fr) 90px minmax(322px,.92fr);flex:1;overflow:hidden;background:var(--bg)}
+.shv2-drawer.newapt .book-split{display:grid;grid-template-columns:minmax(0,1.4fr) 74px minmax(322px,.92fr);flex:1;overflow:hidden;background:var(--bg)}
 .shv2-drawer.newapt .book-left{overflow-y:auto;padding:16px 14px;background:#FFF;border-right:1px solid var(--line)}
 .shv2-drawer.newapt .book-mid{overflow:hidden;display:flex;flex-direction:column;background:var(--pink-bg);border-right:1px solid var(--pink-100)}
 .shv2-drawer.newapt .book-right{overflow-y:auto;padding:16px 18px;background:#FAFAFF}
@@ -752,12 +752,12 @@ export const HOME_V2_CSS = `
 .shv2-drawer.newapt .bmr__h .req{color:var(--rose)}
 .shv2-drawer.newapt .bmr__h .sub{font-size:9.5px;color:var(--pink-600);opacity:.7;font-weight:700;margin-top:2px;line-height:1.25}
 .shv2-drawer.newapt .bmr__list{flex:1;overflow-y:auto;padding:4px 0 14px;display:flex;flex-direction:column;align-items:center;gap:12px}
-.shv2-drawer.newapt .barber{width:64px;display:flex;flex-direction:column;align-items:center;gap:5px;background:none;border:none;cursor:pointer;font-family:inherit;padding:0}
-.shv2-drawer.newapt .barber__ph{width:60px;height:60px;border-radius:50%;background:var(--pink-050);color:var(--pink);display:grid;place-items:center;background-size:cover;background-position:center;border:2.5px solid transparent;transition:.15s;position:relative;font-family:'Plus Jakarta Sans','Inter',sans-serif;font-weight:800;font-size:14px;text-align:center;line-height:1.05;padding:4px}
+.shv2-drawer.newapt .barber{width:56px;display:flex;flex-direction:column;align-items:center;gap:5px;background:none;border:none;cursor:pointer;font-family:inherit;padding:0}
+.shv2-drawer.newapt .barber__ph{width:48px;height:48px;border-radius:50%;background:var(--pink-050);color:var(--pink);display:grid;place-items:center;background-size:cover;background-position:center;border:2.5px solid transparent;transition:.15s;position:relative;font-family:'Plus Jakarta Sans','Inter',sans-serif;font-weight:800;font-size:12.5px;text-align:center;line-height:1.05;padding:3px}
 .shv2-drawer.newapt .barber:hover .barber__ph{border-color:var(--pink-100)}
 .shv2-drawer.newapt .barber.on .barber__ph{border-color:var(--pink);box-shadow:0 0 0 3px var(--pink-050)}
 .shv2-drawer.newapt .barber.on .barber__ph::after{content:"";position:absolute;bottom:-2px;right:-2px;width:18px;height:18px;border-radius:50%;background:var(--pink);border:2px solid var(--pink-bg);background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5'><polyline points='20 6 9 17 4 12'/></svg>");background-size:11px;background-repeat:no-repeat;background-position:center}
-.shv2-drawer.newapt .barber__nm{font-size:10px;font-weight:700;color:var(--muted);text-align:center;line-height:1.15;max-width:64px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.shv2-drawer.newapt .barber__nm{font-size:9.5px;font-weight:700;color:var(--muted);text-align:center;line-height:1.15;max-width:56px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .shv2-drawer.newapt .barber.on .barber__nm{color:var(--pink-600)}
 
 /* right — guest details card */
@@ -878,4 +878,27 @@ export const HOME_V2_CSS = `
   .shv2-drawer.newapt .book-left,.shv2-drawer.newapt .book-mid{border-right:none;border-bottom:1px solid var(--line)}
   .shv2-drawer.newapt .bmr__list{flex-direction:row;overflow-x:auto;padding:10px 14px}
 }
+
+/* redesign 2026 — offering-type tabs (row 1) + inline top-panel fields */
+.shv2-drawer.newapt .apt-offtabs{display:flex;gap:7px;margin:2px 0 9px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;padding-bottom:2px}
+.shv2-drawer.newapt .apt-offtabs::-webkit-scrollbar{height:5px}
+.shv2-drawer.newapt .apt-offtabs::-webkit-scrollbar-thumb{background:var(--line);border-radius:20px}
+.shv2-drawer.newapt .apt-offtab{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:800;padding:8px 15px;border-radius:22px;border:1.5px solid var(--line);background:#FFF;color:var(--muted);transition:.15s;cursor:pointer;font-family:inherit;flex:none;white-space:nowrap}
+.shv2-drawer.newapt .apt-offtab svg{width:15px;height:15px;flex:none}
+.shv2-drawer.newapt .apt-offtab:hover{border-color:var(--primary-100);color:var(--ink-soft)}
+.shv2-drawer.newapt .apt-offtab.on{border-color:var(--primary);background:var(--primary);color:#fff;box-shadow:0 4px 12px var(--primary-050)}
+
+/* inline date/session fields in the header top panel */
+.shv2-drawer.newapt .apt-topfield{display:flex;align-items:center;gap:12px;margin-left:14px;flex:1;min-width:0;flex-wrap:wrap}
+.shv2-drawer.newapt .apt-topfield>label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;color:var(--primary)}
+.shv2-drawer.newapt .apt-topfield .tf{display:flex;align-items:center;gap:8px}
+.shv2-drawer.newapt .apt-topfield .tf>label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;color:var(--primary)}
+.shv2-drawer.newapt .apt-topfield input[type=date]{font-size:12.5px;font-weight:700;border:1.5px solid var(--primary-100);border-radius:9px;padding:7px 10px;background:#FFF;color:var(--ink);font-family:inherit;outline:none}
+.shv2-drawer.newapt .apt-topfield input[type=date]:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-050)}
+.shv2-drawer.newapt .apt-session{display:flex;gap:6px}
+.shv2-drawer.newapt .apt-session button{width:34px;height:34px;border-radius:9px;border:1.5px solid var(--primary-100);background:#FFF;color:var(--muted);font-size:13px;font-weight:900;cursor:pointer;transition:.15s;font-family:inherit;display:grid;place-items:center}
+.shv2-drawer.newapt .apt-session button:hover{border-color:var(--primary);color:var(--primary)}
+.shv2-drawer.newapt .apt-session button.on{border-color:var(--primary);background:var(--primary);color:#fff}
+.shv2-drawer.newapt .apt-topfield .msg.show{flex-basis:100%}
 `;
+

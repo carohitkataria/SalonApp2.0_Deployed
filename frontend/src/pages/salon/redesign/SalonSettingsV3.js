@@ -583,6 +583,28 @@ export default function SalonSettingsV3({ salonId, salon, setSalon, getAuthHeade
           </div>
         </div>
         <SaveRow onClick={() => save()} disabled={saving || !dirty} testid="setg-details-save" />
+        <div className="block" style={{ marginTop: 18, borderColor: '#F3C9C9', background: '#FEF6F6' }} data-testid="settings-delete-account">
+          <h4 style={{ color: '#B42318' }}>Delete account</h4>
+          <p className="bs">Permanently removes your account, business profile, staff, customer records and connected WhatsApp configuration held by SalonHub. This cannot be undone.</p>
+          <p className="bs">See our <a href="/data-deletion" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--p, #6C4FE0)', fontWeight: 700 }}>Data Deletion policy</a>. Requests are actioned within 30 days.</p>
+          <div style={{ marginTop: 10 }}>
+            <button
+              className="btn-ghost"
+              data-testid="setg-delete-account-btn"
+              style={{ color: '#B42318', borderColor: '#F3C9C9' }}
+              onClick={() => {
+                if (!window.confirm('Request permanent deletion of this salon account and all its data? Our team will verify and action this within 30 days.')) return;
+                const sname = encodeURIComponent(form.name || 'my salon');
+                const body = encodeURIComponent(`I request permanent deletion of my SalonHub account and all associated data.\n\nSalon: ${form.name || ''}\nSalon ID: ${salonId}\nRegistered phone: ${form.phone || ''}\nRegistered email: ${form.email || ''}`);
+                window.location.href = `mailto:rohit@salonhub.in?subject=Data%20deletion%20request%20-%20${sname}&body=${body}`;
+                toast.success('Opening your email to send the deletion request…');
+              }}
+            >
+              <svg viewBox="0 0 24 24" style={{ width: 15, height: 15, fill: 'none', stroke: 'currentColor', strokeWidth: 2 }}><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+              Delete account
+            </button>
+          </div>
+        </div>
       </>
     ),
 
