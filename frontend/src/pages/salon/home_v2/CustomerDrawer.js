@@ -156,7 +156,15 @@ export default function CustomerDrawer({
             name: payload.name,
             phone: fullPhone,
             gender: payload.gender,
+            email: payload.email,
             date_of_birth: payload.dob,
+            anniversary: payload.anniversary,
+            notes: payload.notes,
+            photo_url: payload.photo_url,
+            preferred_barber_id: payload.preferred_barber_id,
+            instagram_id: payload.instagram_id,
+            facebook_id: payload.facebook_id,
+            tags: payload.tags,
           }, { headers: authRef.current() });
           cust = res.data?.customer || res.data || {};
         } catch (putErr) {

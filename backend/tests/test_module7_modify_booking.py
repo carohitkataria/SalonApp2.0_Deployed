@@ -23,7 +23,7 @@ import requests
 # Add backend to path for direct helper import
 sys.path.insert(0, "/app/backend")
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://appt-filter-redesign.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://service-catalog-sync.preview.emergentagent.com").rstrip("/")
 
 SALON_ID = "62609c3d-a90a-481b-9cd4-4208f741e121"
 BRANCH_ID = "b829d20e-f923-4db8-a69c-9daf38fcd5a9"

@@ -101,6 +101,7 @@ export default function CustomersV2({ salonId, getAuthHeaders, salon }) {
   const [filter, setFilter] = useState('all');
   const [selectedPhone, setSelectedPhone] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [editGuest, setEditGuest] = useState(null); // opens CustomerDrawer in edit mode
   const importInputRef = useRef(null);
   const [importing, setImporting] = useState(false);
   // Tag editor (pencil on the Tags column)
@@ -438,6 +439,18 @@ export default function CustomersV2({ salonId, getAuthHeaders, salon }) {
         authHeaders={authHeaders}
         onClose={() => setSelectedPhone(null)}
         onChanged={() => fetchAll({ silent: true })}
+        onEdit={(g) => setEditGuest(g)}
+      />
+
+      {/* EDIT GUEST — shared CustomerDrawer in edit mode (all fields editable) */}
+      <CustomerDrawer
+        open={!!editGuest}
+        initial={editGuest}
+        salonId={salonId}
+        getAuthHeaders={authHeaders}
+        onClose={() => setEditGuest(null)}
+        onSaved={() => { setEditGuest(null); fetchAll({ silent: true }); toast.success('Guest updated'); }}
+        source="owner"
       />
 
       {/* ADD GUEST — shared CustomerDrawer (same form as ribbon → Add Guest) */}
@@ -533,18 +546,32 @@ function KpiTile({ chip, icon, val, label }) {
   );
 }
 
+const FAMILY_RELATIONS = ['Spouse', 'Son', 'Daughter', 'Father', 'Mother', 'Brother', 'Sister', 'Friend', 'Other'];
+
 // -------------------- Guest profile drawer (React portal) --------------------
-function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged }) {
+function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged, onEdit }) {
   const [tab, setTab] = useState('overview');
   const [bookings, setBookings] = useState([]);
   const [membership, setMembership] = useState(null);
   const [notes, setNotes] = useState('');
   const [savingNotes, setSavingNotes] = useState(false);
+  // Item 1 — family members, wallet history & online-booking block
+  const [family, setFamily] = useState([]);
+  const [famName, setFamName] = useState('');
+  const [famPhone, setFamPhone] = useState('');
+  const [famRelation, setFamRelation] = useState('Spouse');
+  const [famCustom, setFamCustom] = useState('');
+  const [famBusy, setFamBusy] = useState(false);
+  const [walletTx, setWalletTx] = useState([]);
+  const [onlineBlocked, setOnlineBlocked] = useState(false);
+  const [togglingBlock, setTogglingBlock] = useState(false);
 
   useEffect(() => {
     if (!guest) return;
     setTab('overview');
     setNotes(guest.notes || '');
+    setOnlineBlocked(!!guest.online_booking_blocked);
+    setFamName(''); setFamPhone(''); setFamRelation('Spouse'); setFamCustom('');
     (async () => {
       try {
         const r1 = await axios.get(`${API}/salons/${salonId}/customers/${encodeURIComponent(guest.phone)}/bookings`, { headers: authHeaders() });
@@ -554,8 +581,51 @@ function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged })
         const r2 = await axios.get(`${API}/salons/${salonId}/customers/${encodeURIComponent(guest.phone)}/membership`, { headers: authHeaders() });
         setMembership(r2.data || null);
       } catch { setMembership(null); }
+      try {
+        const r3 = await axios.get(`${API}/salons/${salonId}/customers/${encodeURIComponent(guest.phone)}/family`, { headers: authHeaders() });
+        setFamily(r3.data?.members || []);
+      } catch { setFamily([]); }
+      try {
+        const r4 = await axios.get(`${API}/salons/${salonId}/wallet-transactions/${encodeURIComponent(guest.phone)}`, { headers: authHeaders() });
+        setWalletTx(r4.data?.transactions || []);
+      } catch { setWalletTx([]); }
     })();
   }, [guest, salonId, authHeaders]);
+
+  const addFamilyMember = async () => {
+    const rel = famRelation === 'Other' ? (famCustom.trim() || 'Other') : famRelation;
+    const ph = famPhone.replace(/\D/g, '').slice(-10);
+    if (!famName.trim()) { toast.error('Enter a name'); return; }
+    if (ph.length !== 10) { toast.error('Enter a valid 10-digit mobile'); return; }
+    setFamBusy(true);
+    try {
+      await axios.post(`${API}/salons/${salonId}/customers/${encodeURIComponent(guest.phone)}/family`,
+        { name: famName.trim(), phone: ph, relation: rel }, { headers: authHeaders() });
+      const r = await axios.get(`${API}/salons/${salonId}/customers/${encodeURIComponent(guest.phone)}/family`, { headers: authHeaders() });
+      setFamily(r.data?.members || []);
+      setFamName(''); setFamPhone(''); setFamRelation('Spouse'); setFamCustom('');
+      toast.success('Family member added');
+    } catch (e) { toast.error(e.response?.data?.detail || 'Could not add member'); }
+    finally { setFamBusy(false); }
+  };
+
+  const removeFamilyMember = async (mphone) => {
+    try {
+      await axios.delete(`${API}/salons/${salonId}/customers/${encodeURIComponent(guest.phone)}/family/${encodeURIComponent(mphone)}`, { headers: authHeaders() });
+      setFamily((prev) => prev.filter((m) => m.phone !== mphone));
+    } catch { toast.error('Could not remove'); }
+  };
+
+  const toggleOnlineBlock = async () => {
+    const next = !onlineBlocked;
+    setTogglingBlock(true);
+    setOnlineBlocked(next);
+    try {
+      await axios.put(`${API}/salons/${salonId}/customers/${encodeURIComponent(guest.phone)}/online-booking?blocked=${next}`, {}, { headers: authHeaders() });
+      onChanged?.();
+    } catch (e) { setOnlineBlocked(!next); toast.error('Could not update'); }
+    finally { setTogglingBlock(false); }
+  };
 
   const drawerContent = !guest ? (
     <>
@@ -635,6 +705,7 @@ function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged })
                 window.dispatchEvent(new CustomEvent('salon:open-new-appointment', { detail: { guest: g } }));
                 onClose?.();
               }}><Ico.cal /> Book</button>
+              <button className="btn-ghost" data-testid="guest-edit-btn" onClick={() => onEdit?.(guest)}><Ico.edit /> Edit</button>
               <button className="btn-ghost" onClick={() => toast.info('Wallet top-up via UPI — coming soon')}><Ico.wallet /> Wallet</button>
             </div>
             <div className="gp-stats">
@@ -649,6 +720,8 @@ function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged })
             {[
               {k:'overview', label:'Overview'},
               {k:'visits', label:'Visits & invoices'},
+              {k:'family', label:'Family'},
+              {k:'wallet', label:'Wallet & Membership'},
               {k:'comms', label:'Messages'},
               {k:'notes', label:'Notes'},
             ].map(t => (
@@ -684,6 +757,15 @@ function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged })
                 <div className="row-line"><span className="k">Preferred staff</span><span className="v">{guest.preferred_barber_name || guest.preferred_barber_id || '—'}</span></div>
                 <div className="row-line"><span className="k">Source</span><span className="v">{guest.source || '—'}</span></div>
                 <div className="row-line"><span className="k">Consent (WhatsApp)</span><span className="v" style={{color:'var(--green)'}}>Opted in ✓</span></div>
+                <div className="row-line" data-testid="guest-online-block-row">
+                  <span className="k">Block online booking</span>
+                  <span className="v">
+                    <label className="sw" style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={onlineBlocked} disabled={togglingBlock} onChange={toggleOnlineBlock} data-testid="guest-online-block-toggle" style={{ marginRight: 8 }} />
+                      <span style={{ fontSize: 12, color: onlineBlocked ? 'var(--rose)' : 'var(--muted)' }}>{onlineBlocked ? 'Blocked — salon-only bookings' : 'Allowed'}</span>
+                    </label>
+                  </span>
+                </div>
 
                 {/* Full guest history */}
                 <div style={{marginTop:22}}>
@@ -723,6 +805,93 @@ function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged })
                         <b>{rupee(bd.amount)}</b>
                         {gstInvoiceLink(b)}
                       </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {tab === 'family' && (
+              <div data-testid="guest-family-tab">
+                <div style={{fontSize:12, fontWeight:800, textTransform:'uppercase', letterSpacing:'.4px', color:'var(--muted)', marginBottom:10}}>
+                  Family members {family.length > 0 ? `(${family.length})` : ''}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>
+                  Add family members to sell a family membership that covers the whole household.
+                </div>
+                {family.length === 0 && (
+                  <div style={{color:'var(--muted)', textAlign:'center', padding:'12px 0', fontSize:13}}>No family members yet.</div>
+                )}
+                {family.map((m) => (
+                  <div key={m.phone} className="row-line" data-testid={`guest-family-${m.phone}`}>
+                    <span className="k">{m.name} · <span style={{color:'var(--muted)'}}>{m.relation}</span></span>
+                    <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      {m.phone}
+                      <button className="tag-edit-btn" title="Remove" aria-label="Remove" onClick={() => removeFamilyMember(m.phone)}><Ico.close /></button>
+                    </span>
+                  </div>
+                ))}
+                <div style={{ marginTop: 14, padding: 12, borderRadius: 12, border: '1px solid var(--line, #ECECF3)', background: 'var(--surface-2, #FAFAFE)' }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 8 }}>Add a family member</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                    <input placeholder="Name" value={famName} onChange={(e) => setFamName(e.target.value)} data-testid="guest-family-name"
+                           style={{ padding: '8px 10px', border: '1px solid #ECECF3', borderRadius: 8, fontSize: 13 }} />
+                    <input placeholder="10-digit mobile" inputMode="numeric" value={famPhone} onChange={(e) => setFamPhone(e.target.value)} data-testid="guest-family-phone"
+                           style={{ padding: '8px 10px', border: '1px solid #ECECF3', borderRadius: 8, fontSize: 13 }} />
+                    <select value={famRelation} onChange={(e) => setFamRelation(e.target.value)} data-testid="guest-family-relation"
+                            style={{ padding: '8px 10px', border: '1px solid #ECECF3', borderRadius: 8, fontSize: 13 }}>
+                      {FAMILY_RELATIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                    {famRelation === 'Other' ? (
+                      <input placeholder="Custom relation" value={famCustom} onChange={(e) => setFamCustom(e.target.value)} data-testid="guest-family-custom"
+                             style={{ padding: '8px 10px', border: '1px solid #ECECF3', borderRadius: 8, fontSize: 13 }} />
+                    ) : <div />}
+                  </div>
+                  <button className="btn-primary" disabled={famBusy} onClick={addFamilyMember} data-testid="guest-family-add">
+                    {famBusy ? 'Adding…' : '+ Add member'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {tab === 'wallet' && (
+              <div data-testid="guest-wallet-tab">
+                <div className="gp-stats" style={{ marginBottom: 16 }}>
+                  <div className="gp-stat"><b>{rupee(wallet)}</b><span>Wallet balance</span></div>
+                  <div className="gp-stat"><b>{membership?.membership_name ? '1' : '0'}</b><span>Active membership</span></div>
+                </div>
+
+                <div style={{fontSize:12, fontWeight:800, textTransform:'uppercase', letterSpacing:'.4px', color:'var(--muted)', marginBottom:10}}>Active membership</div>
+                {membership?.membership_name ? (
+                  <div style={{ marginBottom: 18, padding: '10px 12px', borderRadius: 12, border: `1px solid ${(membership.color || '#a855f7')}44`, background: `linear-gradient(160deg, ${(membership.color || '#a855f7')}12, ${(membership.color || '#a855f7')}04)` }}>
+                    <div style={{ fontSize: 13, fontWeight: 800 }}>{membership.membership_name}</div>
+                    <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 3 }}>
+                      {membership.plan_type === 'discount'
+                        ? `${membership.discount_percent || 0}% off every booking`
+                        : `Wallet ₹${Number(membership.wallet_balance || 0).toLocaleString('en-IN')}`}
+                      {membership.expiry_date ? ` · valid till ${new Date(membership.expiry_date).toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' })}` : ''}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{color:'var(--muted)', textAlign:'center', padding:'12px 0', fontSize:13, marginBottom: 8}}>No active membership.</div>
+                )}
+
+                <div style={{fontSize:12, fontWeight:800, textTransform:'uppercase', letterSpacing:'.4px', color:'var(--muted)', marginBottom:10}}>
+                  Wallet history {walletTx.length > 0 ? `(${walletTx.length})` : ''}
+                </div>
+                {walletTx.length === 0 && (
+                  <div style={{color:'var(--muted)', textAlign:'center', padding:'12px 0', fontSize:13}}>No wallet transactions yet.</div>
+                )}
+                {walletTx.map((t, i) => {
+                  const amt = Number(t.amount || 0);
+                  const credit = (t.type || '').toLowerCase().includes('credit') || (t.transaction_type || '').toLowerCase().includes('credit') || amt > 0 && !(t.type || '').toLowerCase().includes('debit');
+                  return (
+                    <div key={t.id || i} className="row-line" data-testid={`guest-wallet-tx-${i}`}>
+                      <span className="k">
+                        {t.description || t.reason || t.type || t.transaction_type || 'Transaction'}
+                        <span style={{ display: 'block', fontSize: 11, color: 'var(--muted-2)' }}>{t.created_at ? new Date(t.created_at).toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' }) : ''}</span>
+                      </span>
+                      <span className="v" style={{ color: credit ? 'var(--green)' : 'var(--rose)', fontWeight: 800 }}>{credit ? '+' : '−'}{rupee(Math.abs(amt))}</span>
                     </div>
                   );
                 })}

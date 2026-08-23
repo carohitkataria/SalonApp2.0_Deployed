@@ -13,6 +13,8 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { useQuery } from '@tanstack/react-query';
+import { useClassification, useOpsSettings, useInvalidateSalonData, qk } from '@/lib/salonQueries';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -263,34 +265,49 @@ export default function ServicesModule({ salonId, getAuthHeaders }) {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [onlineOpen, setOnlineOpen] = useState(false);
 
-  const load = useCallback(async () => {
-    if (!salonId) return;
-    try {
-      const [svc, clr, opr] = await Promise.all([
-        axios.get(`${API}/salons/${salonId}/services/all`, H()),
-        axios.get(`${API}/salons/${salonId}/classification`).catch(() => ({ data: {} })),
-        axios.get(`${API}/salons/${salonId}/ops-settings`).catch(() => ({ data: {} })),
-      ]);
-      const raw = svc.data;
-      const list = Array.isArray(raw) ? raw : (raw?.services || raw?.data || []);
-      setServices(list.filter((s) => s.is_active !== false));
-      if (clr.data && (clr.data.tiers || clr.data.lengths)) setCls((c) => ({ ...c, ...clr.data }));
-      if (opr.data) setOps((o) => ({ ...o, ...opr.data }));
-    } catch (e) {
-      console.error('load services', e);
-      toast.error('Failed to load services');
-    }
-  }, [salonId, H]);
+  // Perf (item 1a): React Query cache. classification & ops-settings share keys
+  // with AppointmentDrawer so they download ONCE per screen instead of 3-4x.
+  const _svcHeaders = (typeof getAuthHeaders === 'function') ? getAuthHeaders() : {};
+  const svcQuery = useQuery({
+    queryKey: ['servicesAll', salonId],
+    queryFn: () => axios.get(`${API}/salons/${salonId}/services/all`, H()).then((r) => r.data),
+    enabled: !!salonId,
+  });
+  const clsQuery = useClassification(salonId, { headers: _svcHeaders });
+  const opsQuery = useOpsSettings(salonId, { headers: _svcHeaders });
+  const invalidateSalonData = useInvalidateSalonData();
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const raw = svcQuery.data;
+    if (raw == null) return;
+    const list = Array.isArray(raw) ? raw : (raw?.services || raw?.data || []);
+    setServices(list.filter((s) => s.is_active !== false));
+  }, [svcQuery.data]);
+  useEffect(() => {
+    if (clsQuery.data && (clsQuery.data.tiers || clsQuery.data.lengths)) setCls((c) => ({ ...c, ...clsQuery.data }));
+  }, [clsQuery.data]);
+  useEffect(() => {
+    if (opsQuery.data) setOps((o) => ({ ...o, ...opsQuery.data }));
+  }, [opsQuery.data]);
+  useEffect(() => {
+    if (svcQuery.isError) toast.error('Failed to load services');
+  }, [svcQuery.isError]);
+
+  // Refresh (after a change) = invalidate the cached queries so they refetch once.
+  const load = useCallback(() => {
+    invalidateSalonData([['servicesAll', salonId], qk.classification(salonId), qk.opsSettings(salonId)]);
+  }, [invalidateSalonData, salonId]);
 
   const items = useMemo(
     () => services.filter((s) => (curType === 'Package' ? isPkg(s) : !isPkg(s))),
     [services, curType],
   );
+  // L1 type = `category` ('Services'|'Packages'); L2 category = `sub_category`
+  // (Haircut, Hair Spa, Facial…). Group BOTH services & packages by the L2
+  // category so the Service page matches the appointment/customer/report views.
   const groupKey = useCallback(
-    (s) => (curType === 'Package' ? (s.sub_category || 'General') : (s.category || 'General')),
-    [curType],
+    (s) => (s.sub_category || 'General'),
+    [],
   );
 
   const filtered = useMemo(() => {
@@ -353,8 +370,8 @@ export default function ServicesModule({ salonId, getAuthHeaders }) {
     if (curType === 'Package') {
       setSel({ __new: true, category: 'Packages', service_name: 'New package', sub_category: (cls.package_categories || [])[0] || 'General', gender_tag: 'Unisex', available_at_home: true, is_favorite: false, is_enabled: true, price_type: 'onwards', description: '', package_items: [], package_price: 0, thumbnail_url: '' });
     } else {
-      const firstCat = (cls.categories || [])[0]?.name || [...new Set(items.map((s) => s.category))][0] || 'General';
-      setSel({ __new: true, category: firstCat, service_name: 'New service', gender_tag: 'Unisex', default_duration: 30, base_price: 0, price_type: 'fixed', axes: [], price_matrix: {}, is_favorite: false, is_enabled: true, available_at_home: false, description: '', thumbnail_url: '', gst_rate: null, hsn_code: '' });
+      const firstCat = (cls.categories || [])[0]?.name || [...new Set(items.map((s) => s.sub_category))].filter(Boolean)[0] || 'General';
+      setSel({ __new: true, category: 'Services', sub_category: firstCat, service_name: 'New service', gender_tag: 'Unisex', default_duration: 30, base_price: 0, price_type: 'fixed', axes: [], price_matrix: {}, is_favorite: false, is_enabled: true, available_at_home: false, description: '', thumbnail_url: '', gst_rate: null, hsn_code: '' });
     }
   };
 
@@ -451,7 +468,7 @@ export default function ServicesModule({ salonId, getAuthHeaders }) {
       </div>
 
       <ClassificationDrawer open={classOpen} onClose={() => setClassOpen(false)} salonId={salonId} H={H} cls={cls} setCls={setCls} />
-      <UploadDrawer open={uploadOpen} onClose={() => setUploadOpen(false)} />
+      <UploadDrawer open={uploadOpen} onClose={() => setUploadOpen(false)} salonId={salonId} H={H} reload={load} />
       <OnlinePriceDrawer open={onlineOpen} onClose={() => setOnlineOpen(false)} salonId={salonId} H={H} ops={ops} setOps={setOps} />
     </div>
   );
@@ -468,10 +485,10 @@ function ServiceEditor({ initial, salonId, H, cls, onDone }) {
   const useLen = axes.includes('length');
   const catOptions = useMemo(() => {
     const names = (cls.categories || []).map((c) => c.name);
-    if (s.category && !names.includes(s.category)) names.push(s.category);
+    if (s.sub_category && !names.includes(s.sub_category)) names.push(s.sub_category);
     if (!names.length) names.push('General');
     return names;
-  }, [cls.categories, s.category]);
+  }, [cls.categories, s.sub_category]);
 
   const toggleAxis = (axis) => {
     setS((p) => {
@@ -508,7 +525,7 @@ function ServiceEditor({ initial, salonId, H, cls, onDone }) {
     const payload = {
       service_name: s.service_name.trim(),
       description: s.description || '',
-      category: s.category || 'General',
+      category: 'Services',
       sub_category: s.sub_category || '',
       gender_tag: s.gender_tag || 'Unisex',
       default_duration: Number(s.default_duration || 30),
@@ -559,7 +576,7 @@ function ServiceEditor({ initial, salonId, H, cls, onDone }) {
         <div className="cl">{I.list}Basics</div>
         <div className="grid2">
           <div className="f"><label>Category</label>
-            <select value={s.category} onChange={(e) => set('category', e.target.value)} data-testid="svc-ed-cat">
+            <select value={s.sub_category || ''} onChange={(e) => set('sub_category', e.target.value)} data-testid="svc-ed-cat">
               {catOptions.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
@@ -864,20 +881,66 @@ function ClassificationDrawer({ open, onClose, salonId, H, cls, setCls }) {
   );
 }
 
-function UploadDrawer({ open, onClose }) {
+function UploadDrawer({ open, onClose, salonId, H, reload }) {
   const href = `${API}/services/upload-template.csv`;
+  const fileRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  const doUpload = async (file) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await axios.post(`${API}/salons/${salonId}/services/upload-csv`, fd, {
+        headers: { ...(H()?.headers || {}), 'Content-Type': 'multipart/form-data' },
+      });
+      toast.success(res.data?.message || 'Upload complete');
+      reload?.();
+      onClose?.();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Upload failed');
+    } finally { setBusy(false); if (fileRef.current) fileRef.current.value = ''; }
+  };
+
+  const downloadExisting = async () => {
+    setDownloading(true);
+    try {
+      const res = await axios.get(`${API}/salons/${salonId}/services/export.csv`, {
+        ...H(), responseType: 'blob',
+      });
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'services-export.csv';
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error('Could not download services');
+    } finally { setDownloading(false); }
+  };
+
   return (
     <>
       <div className={`svc2-scrim ${open ? 'show' : ''}`} onClick={onClose} />
       <div className={`svc2-dr ${open ? 'open' : ''}`}>
         <div className="drh"><h3>Bulk upload</h3><button className="close" onClick={onClose}>{I.x}</button></div>
         <div className="drbody">
-          <div className="drop">{I.upload}<div><b>Drop a filled CSV</b> or click to browse</div></div>
-          <a className="btnfull" href={href} target="_blank" rel="noreferrer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 3v12M8 11l4 4 4-4M4 21h16" /></svg>Download template (.csv)</a>
+          <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" hidden
+                 onChange={(e) => doUpload(e.target.files?.[0])} data-testid="svc-upload-input" />
+          <div className="drop" onClick={() => !busy && fileRef.current?.click()} style={{ cursor: 'pointer', opacity: busy ? 0.6 : 1 }} data-testid="svc-upload-drop">
+            {I.upload}<div>{busy ? <b>Uploading…</b> : <><b>Drop a filled CSV</b> or click to browse</>}</div>
+          </div>
+          <button className="btnfull" onClick={downloadExisting} disabled={downloading} data-testid="svc-download-existing"
+                  style={{ marginBottom: 8 }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 3v12M8 11l4 4 4-4M4 21h16" /></svg>
+            {downloading ? 'Preparing…' : 'Download existing services'}
+          </button>
+          <a className="btnfull" href={href} target="_blank" rel="noreferrer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 3v12M8 11l4 4 4-4M4 21h16" /></svg>Download blank template (.csv)</a>
           <ol className="steps">
-            <li>Includes <span className="codepill">service_code</span> + all fields.</li>
-            <li>Blank <span className="codepill">service_code</span> → <b>create</b>.</li>
-            <li>Existing <span className="codepill">service_code</span> → <b>update</b> in place.</li>
+            <li>The export &amp; template share the same columns, keyed by <span className="codepill">service_key</span>.</li>
+            <li>Blank <span className="codepill">service_key</span> → <b>creates</b> a new service (key auto-generated).</li>
+            <li>Existing <span className="codepill">service_key</span> → <b>updates</b> that service in place.</li>
           </ol>
         </div>
       </div>

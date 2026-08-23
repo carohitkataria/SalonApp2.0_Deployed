@@ -71,7 +71,16 @@ load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
+client = AsyncIOMotorClient(
+    mongo_url,
+    maxPoolSize=50,
+    minPoolSize=5,
+    serverSelectionTimeoutMS=5000,   # fail fast instead of hanging ~30s
+    connectTimeoutMS=5000,
+    socketTimeoutMS=20000,
+    retryWrites=True,
+    compressors="zstd,zlib",  # smaller payloads over the wire
+)
 db = client[os.environ['DB_NAME']]
 
 # JWT Configuration — fail fast if not configured (no insecure fallback).
@@ -429,6 +438,7 @@ class BarberUpdate(BaseModel):
     leave_dates: Optional[List[str]] = None
     compensation: Optional[float] = None
     documents: Optional[List[str]] = None
+    is_active: Optional[bool] = None  # activate / deactivate staff without deleting
 
 class Barber(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -628,6 +638,8 @@ class TokenModel(BaseModel):
     service_assignments: Optional[List[Dict[str, Any]]] = None
     order_discount_percent: Optional[float] = 0.0
     order_discount_amount: Optional[float] = 0.0
+    tip_amount: Optional[float] = 0.0
+    membership_discount_percent: Optional[float] = 0.0
     subtotal: Optional[float] = None  # Pre-discount sum of line prices
     # 75%-rule capacity tracking
     total_service_minutes: Optional[int] = None
@@ -2791,6 +2803,19 @@ async def _route_inbound_to_salon(last10: str):
     return best_salon
 
 
+async def _salon_has_own_sender(salon_id: str) -> bool:
+    """True only when the salon has registered & activated their OWN WhatsApp
+    sender. Salons on the shared platform sender cannot receive inbound replies."""
+    if not salon_id:
+        return False
+    try:
+        salon = await db.salons.find_one({"id": salon_id}, {"_id": 0, "whatsapp": 1})
+    except Exception:
+        return False
+    wa = (salon or {}).get("whatsapp") or {}
+    return wa.get("mode") == "own" and wa.get("status") == "active" and bool(wa.get("sender_number"))
+
+
 @api_router.post("/whatsapp/twilio-inbound")
 async def twilio_inbound_whatsapp(request: Request):
     """WS — Twilio inbound WhatsApp webhook. Twilio POSTs form-encoded data when
@@ -2887,6 +2912,14 @@ async def twilio_inbound_whatsapp(request: Request):
 
     salon_id = await _route_inbound_to_salon(cust_digits)
 
+    # Item 6 — drop inbound replies for salons that have NOT configured their own
+    # WhatsApp sender. Those salons only use the shared platform sender for
+    # outbound notifications and therefore cannot receive customer messages.
+    if not await _salon_has_own_sender(salon_id):
+        logger.info(f"[wa-inbound] dropped inbound from {e164}: salon={salon_id} has no own sender configured")
+        return Response(content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                        media_type="application/xml")
+
     now = datetime.now(timezone.utc).isoformat()
     doc = {
         "id": str(uuid.uuid4()),
@@ -2918,6 +2951,17 @@ async def twilio_inbound_whatsapp(request: Request):
 
 
 async def send_booking_notification(token_data: dict, notification_type: str):
+    """Schedule a WhatsApp booking notification WITHOUT blocking the request.
+
+    Section 0.1 Step C — the customer's booking action (create/complete/your-turn
+    /cancel/etc.) must not wait on the Twilio round-trip. We fire the real send on
+    the event loop as a detached task and return immediately. The underlying
+    implementation catches all its own exceptions, so the task never raises.
+    """
+    asyncio.create_task(_send_booking_notification_impl(token_data, notification_type))
+
+
+async def _send_booking_notification_impl(token_data: dict, notification_type: str):
     """Send WhatsApp notification for booking events"""
     try:
         phone = token_data.get('phone')
@@ -4485,6 +4529,41 @@ async def update_salon(salon_id: str, salon: SalonUpdate, current_user=Depends(g
     
     updated = await db.salons.find_one({"id": salon_id}, {"_id": 0})
     return Salon(**updated)
+
+
+# ============ Section 3 — Salary proration basis setting ============
+VALID_PRORATION_BASIS = {"calendar_days", "working_days"}
+
+
+class SalarySettingsIn(BaseModel):
+    salary_proration_basis: str  # 'calendar_days' | 'working_days'
+
+
+@api_router.get("/salons/{salon_id}/salary-settings")
+async def get_salary_settings(salon_id: str, current_user=Depends(get_current_salon_user)):
+    """Return the salon's salary proration basis (defaults to calendar_days)."""
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0, "salary_proration_basis": 1})
+    if salon is None:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    return {"salary_proration_basis": (salon or {}).get("salary_proration_basis") or "calendar_days"}
+
+
+@api_router.put("/salons/{salon_id}/salary-settings")
+async def set_salary_settings(salon_id: str, body: SalarySettingsIn,
+                              current_user=Depends(get_current_salon_admin)):
+    """Set how monthly salary is prorated.
+      calendar_days — base ÷ total days in month (weekly-offs & holidays paid).
+      working_days  — base ÷ (days − offs − holidays); each absent day costs more.
+    """
+    token_salon_id = current_user.get("salon_id") or current_user.get("sub")
+    if token_salon_id != salon_id:
+        raise HTTPException(status_code=403, detail="Not allowed for this salon")
+    basis = (body.salary_proration_basis or "").strip()
+    if basis not in VALID_PRORATION_BASIS:
+        raise HTTPException(status_code=400, detail="salary_proration_basis must be calendar_days or working_days")
+    await db.salons.update_one({"id": salon_id}, {"$set": {"salary_proration_basis": basis}})
+    return {"ok": True, "salary_proration_basis": basis}
+
 
 
 # ============ WS2 — Indian States/UTs + Salon delivery address book ============
@@ -6172,6 +6251,7 @@ async def get_salon_barbers(
     customer_view: bool = False,
     date: Optional[str] = None,
     branch_id: Optional[str] = None,
+    include_inactive: bool = False,
     current_user: Optional[dict] = Depends(get_current_salon_user_optional),
 ):
     """
@@ -6188,6 +6268,10 @@ async def get_salon_barbers(
         if not customer_view and current_user and is_branch_manager(current_user):
             branch_id = enforce_branch_for_manager(current_user, branch_id)
         query = {"salon_id": salon_id, "is_active": True}
+        if include_inactive and not customer_view and not available_only:
+            # Admin staff view — also return deactivated staff so they can be
+            # shown in an "Inactive" section and re-activated.
+            query.pop("is_active", None)
         if customer_view:
             # For customer view, include barbers where is_barber=True OR is_barber field doesn't exist (backward compatibility)
             query["$or"] = [{"is_barber": True}, {"is_barber": {"$exists": False}}]
@@ -8188,6 +8272,14 @@ async def get_salon_customers(salon_id: str, branch_id: Optional[str] = None, cu
     # Group by phone to get unique customers + track last visit date
     customers_map = {}
     last_visit_by_phone: Dict[str, str] = {}
+    # Perf: batch-fetch all referenced user accounts in ONE query instead of a
+    # per-customer find_one inside the loop (removes an N+1 that scaled with the
+    # number of unique guests and was a real dashboard-slowness source).
+    user_ids = list({t.get('user_id') for t in tokens if t.get('user_id')})
+    users_by_id: Dict[str, dict] = {}
+    if user_ids:
+        async for u in db.users.find({"id": {"$in": user_ids}}, {"_id": 0}):
+            users_by_id[u.get('id')] = u
     for token in tokens:
         phone = token.get('phone')
         if not phone:
@@ -8198,9 +8290,7 @@ async def get_salon_customers(salon_id: str, branch_id: Optional[str] = None, cu
             if visit_dt > prev:
                 last_visit_by_phone[phone] = visit_dt
         if phone not in customers_map:
-            user_data = None
-            if token.get('user_id'):
-                user_data = await db.users.find_one({"id": token['user_id']}, {"_id": 0})
+            user_data = users_by_id.get(token.get('user_id')) if token.get('user_id') else None
             customers_map[phone] = {
                 "phone": phone,
                 "name": token.get('customer_name'),
@@ -8276,17 +8366,32 @@ async def get_salon_customers(salon_id: str, branch_id: Optional[str] = None, cu
             token_agg_q = {"salon_id": salon_id, "phone": {"$in": phones_needing_agg}, "customer_status": {"$ne": "deleted"}}
             if branch_id:
                 token_agg_q["branch_id"] = branch_id
-            agg_tokens = await db.tokens.find(token_agg_q, {"_id": 0, "phone": 1, "final_amount": 1, "total_amount": 1, "status": 1}).to_list(20000)
+            # Perf: aggregate visit_count + total_spend in MongoDB ($group) instead
+            # of pulling up to 20k token rows and summing in Python. Same result.
             counts: Dict[str, int] = {}
             spends: Dict[str, float] = {}
-            for t in agg_tokens:
-                p = t.get('phone')
+            agg_pipeline = [
+                {"$match": token_agg_q},
+                {"$group": {
+                    "_id": "$phone",
+                    "visit_count": {"$sum": 1},
+                    "total_spend": {"$sum": {"$cond": [
+                        {"$in": ["$status", ["completed", "complete"]]},
+                        {"$cond": [
+                            {"$gt": [{"$ifNull": ["$final_amount", 0]}, 0]},
+                            "$final_amount",
+                            {"$ifNull": ["$total_amount", 0]},
+                        ]},
+                        0,
+                    ]}},
+                }},
+            ]
+            async for row in db.tokens.aggregate(agg_pipeline):
+                p = row.get("_id")
                 if not p:
                     continue
-                counts[p] = counts.get(p, 0) + 1
-                if t.get('status') in ('completed', 'complete'):
-                    amt = t.get('final_amount') or t.get('total_amount') or 0
-                    spends[p] = spends.get(p, 0.0) + float(amt)
+                counts[p] = int(row.get("visit_count") or 0)
+                spends[p] = float(row.get("total_spend") or 0.0)
             for p, c in customers_map.items():
                 if c.get('visit_count') is None:
                     c['visit_count'] = counts.get(p, 0)
@@ -8478,6 +8583,14 @@ async def update_salon_customer(
     if new_dob is not None:
         updates["date_of_birth"] = new_dob
 
+    # Section 1.1 — grouped editable fields. Only set keys the client actually
+    # sent (presence-based, so blanks can clear a value intentionally).
+    for _k in ("email", "address", "city", "pincode", "anniversary", "tag", "tags",
+               "notes", "photo_url",
+               "preferred_barber_id", "source", "instagram_id", "facebook_id"):
+        if _k in body:
+            updates[_k] = body.get(_k)
+
     # If phone is being changed, validate no collision
     phone_changed = bool(new_phone) and new_phone != lookup_phone
     if phone_changed:
@@ -8540,6 +8653,102 @@ async def update_salon_customer(
             "date_of_birth": new_dob if new_dob is not None else (existing.get("date_of_birth") if existing else None),
         },
     }
+
+
+# ============ Section 1.2 — Block online booking toggle ============
+def _norm10(p: str) -> str:
+    """Normalise a phone to its 10-digit local form."""
+    d = "".join(ch for ch in (p or "") if ch.isdigit())
+    if len(d) == 12 and d.startswith("91"):
+        d = d[2:]
+    if len(d) == 11 and d.startswith("0"):
+        d = d[1:]
+    return d[-10:] if len(d) >= 10 else d
+
+
+def _phone_variants(phone: str) -> list:
+    """All stored forms a salon_customers.phone might take for one guest."""
+    p10 = _norm10(phone)
+    variants = {phone, p10, f"+91{p10}", f"91{p10}"}
+    return [v for v in variants if v]
+
+
+@api_router.put("/salons/{salon_id}/customers/{phone}/online-booking")
+async def set_online_booking(salon_id: str, phone: str, blocked: bool,
+                             current_user=Depends(get_current_salon_user)):
+    """Toggle whether this guest may self-book online. When blocked, only the
+    salon can create bookings for them (Section 1.2)."""
+    res = await db.salon_customers.update_one(
+        {"salon_id": salon_id, "phone": {"$in": _phone_variants(phone)}},
+        {"$set": {"online_booking_blocked": bool(blocked),
+                  "updated_at": datetime.now(timezone.utc).isoformat()}})
+    if res.matched_count == 0:
+        # Upsert a thin master row so the flag sticks even for token-only guests.
+        lookup = phone if phone.startswith("+91") else f"+91{_norm10(phone)}"
+        await db.salon_customers.insert_one({
+            "id": str(uuid.uuid4()),
+            "salon_id": salon_id,
+            "branch_id": await resolve_branch_id(salon_id, None),
+            "name": "Customer",
+            "phone": lookup,
+            "online_booking_blocked": bool(blocked),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "source": "edited",
+        })
+    return {"ok": True, "online_booking_blocked": bool(blocked)}
+
+
+# ============ Section 1.3 — Family members CRUD (stored on customer doc) ============
+class FamilyMember(BaseModel):
+    name: str
+    phone: str          # store normalized 10-digit
+    relation: str       # Spouse/Son/Daughter/Father/Mother/Sibling/Other
+
+
+@api_router.get("/salons/{salon_id}/customers/{phone}/family")
+async def get_family(salon_id: str, phone: str, current_user=Depends(get_current_salon_user)):
+    c = await db.salon_customers.find_one(
+        {"salon_id": salon_id, "phone": {"$in": _phone_variants(phone)}},
+        {"_id": 0, "family_members": 1})
+    return {"members": (c or {}).get("family_members", [])}
+
+
+@api_router.post("/salons/{salon_id}/customers/{phone}/family")
+async def add_family(salon_id: str, phone: str, m: FamilyMember,
+                     current_user=Depends(get_current_salon_user)):
+    member = {"name": m.name.strip(), "phone": _norm10(m.phone), "relation": m.relation}
+    if len(member["phone"]) != 10:
+        raise HTTPException(400, "Enter a valid 10-digit mobile.")
+    res = await db.salon_customers.update_one(
+        {"salon_id": salon_id, "phone": {"$in": _phone_variants(phone)}},
+        {"$push": {"family_members": member},
+         "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}})
+    if res.matched_count == 0:
+        lookup = phone if phone.startswith("+91") else f"+91{_norm10(phone)}"
+        await db.salon_customers.insert_one({
+            "id": str(uuid.uuid4()),
+            "salon_id": salon_id,
+            "branch_id": await resolve_branch_id(salon_id, None),
+            "name": "Customer",
+            "phone": lookup,
+            "family_members": [member],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "source": "edited",
+        })
+    return {"ok": True, "member": member}
+
+
+@api_router.delete("/salons/{salon_id}/customers/{phone}/family/{member_phone}")
+async def remove_family(salon_id: str, phone: str, member_phone: str,
+                        current_user=Depends(get_current_salon_user)):
+    await db.salon_customers.update_one(
+        {"salon_id": salon_id, "phone": {"$in": _phone_variants(phone)}},
+        {"$pull": {"family_members": {"phone": _norm10(member_phone)}},
+         "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True}
+
 
 
 @api_router.delete("/salons/{salon_id}/customers/{phone}")
@@ -9394,39 +9603,25 @@ async def upload_services_csv(
     # ---- Dedup against services already present for THIS salon ----
     existing = await db.services.find(
         {"salon_id": salon_id, "is_active": True},
-        {"_id": 0, "service_name": 1},
+        {"_id": 0, "id": 1, "service_name": 1},
     ).to_list(10000)
     existing_names = {(s.get("service_name") or "").strip().lower() for s in existing}
+    existing_ids = {s.get("id") for s in existing if s.get("id")}
 
     now_iso = datetime.now(timezone.utc).isoformat()
     docs_to_insert: List[dict] = []
     seen_in_file: set = set()
     skipped_duplicates = 0
+    updated = 0
     errors: List[dict] = []
 
-    # Row numbers reported to the user are 1-based and account for the header
-    # line (so the first data row is row 2 — matches what they see in Excel).
-    for idx, raw in enumerate(rows):
-        row_no = idx + 2
-        name = str(_find(raw, "service_name", "name", "service") or "").strip()
-        if not name:
-            errors.append({"row": row_no, "reason": "Missing service_name"})
-            continue
-        key = name.lower()
-        if key in existing_names:
-            skipped_duplicates += 1
-            continue
-        if key in seen_in_file:
-            skipped_duplicates += 1
-            continue
-
-        seen_in_file.add(key)
-        doc = {
-            "id": str(uuid.uuid4()),
-            "salon_id": salon_id,
+    def _row_fields(raw: dict, *, for_update: bool) -> dict:
+        """Common field coercion used for both create and update. For updates
+        only non-empty cells overwrite existing values."""
+        out = {
             "service_name": name[:120],
             "description": str(_find(raw, "description", "desc") or "").strip()[:500] or None,
-            "category": (str(_find(raw, "category", "cat") or "").strip()[:60] or "General"),
+            "category": (str(_find(raw, "category", "cat") or "").strip()[:60] or "Services"),
             "sub_category": (str(_find(raw, "sub_category", "subcategory", "sub-cat", "subcat") or "").strip()[:60] or None),
             "gender_tag": _norm_gender(_find(raw, "gender_tag", "gender")),
             "default_duration": max(1, _to_int(_find(raw, "default_duration", "duration", "minutes"), 30)),
@@ -9442,6 +9637,54 @@ async def upload_services_csv(
                 else None
             ),
             "hsn_code": (str(_find(raw, "hsn_code", "hsn", "sac", "sac_code") or "").strip() or None),
+        }
+        if for_update:
+            # Only overwrite with cells that were actually provided (non-empty).
+            pruned = {}
+            for k, v in out.items():
+                cell = _find(raw, k) if k not in ("service_name",) else name
+                if k == "service_name":
+                    pruned[k] = out[k]
+                elif isinstance(v, list):
+                    if v:
+                        pruned[k] = v
+                elif v is not None and str(cell if cell is not None else "").strip() != "":
+                    pruned[k] = v
+            return pruned
+        return out
+
+    # Row numbers reported to the user are 1-based and account for the header
+    # line (so the first data row is row 2 — matches what they see in Excel).
+    for idx, raw in enumerate(rows):
+        row_no = idx + 2
+        name = str(_find(raw, "service_name", "name", "service") or "").strip()
+        if not name:
+            errors.append({"row": row_no, "reason": "Missing service_name"})
+            continue
+
+        # UPSERT BY KEY — if service_key matches an existing service in this
+        # salon, update it in place (no new service, not a duplicate).
+        svc_key = str(_find(raw, "service_key", "servicekey", "key", "service_id", "id") or "").strip()
+        if svc_key and svc_key in existing_ids:
+            upd = _row_fields(raw, for_update=True)
+            upd["updated_at"] = now_iso
+            await db.services.update_one({"id": svc_key, "salon_id": salon_id}, {"$set": upd})
+            updated += 1
+            continue
+
+        key = name.lower()
+        if key in existing_names:
+            skipped_duplicates += 1
+            continue
+        if key in seen_in_file:
+            skipped_duplicates += 1
+            continue
+
+        seen_in_file.add(key)
+        doc = {
+            "id": str(uuid.uuid4()),
+            "salon_id": salon_id,
+            **_row_fields(raw, for_update=False),
             "is_active": True,
             "is_enabled": True,
             "source": "csv_upload",
@@ -9494,10 +9737,12 @@ async def upload_services_csv(
         "batch_id": batch_id,
         "total_rows": len(rows),
         "created": created,
+        "updated": updated,
         "skipped_duplicates": skipped_duplicates,
         "errors": errors,
         "message": (
             f"Added {created} new service(s)"
+            + (f", updated {updated} existing service(s)" if updated else "")
             + (f", skipped {skipped_duplicates} duplicate(s)" if skipped_duplicates else "")
             + (f", {len(errors)} row(s) had errors" if errors else "")
             + "."
@@ -9505,14 +9750,64 @@ async def upload_services_csv(
     }
 
 
+@api_router.get("/salons/{salon_id}/services/export.csv")
+async def export_services_csv(
+    salon_id: str,
+    current_user=Depends(get_current_salon_user),
+):
+    """Download all existing services for this salon in the SAME format the
+    uploader accepts. The first column `service_key` = the service's unique id.
+    Re-uploading this file updates services in place (matched by service_key);
+    rows with a blank service_key create brand-new services."""
+    from fastapi.responses import Response
+    import csv as _csv
+    services = await db.services.find(
+        {"salon_id": salon_id, "is_active": True}, {"_id": 0}
+    ).sort("service_name", 1).to_list(10000)
+
+    headers = [
+        "service_key", "service_name", "description", "category", "sub_category",
+        "gender_tag", "default_duration", "base_price", "price_type",
+        "is_favorite", "available_at_home", "thumbnail_url", "images",
+        "gst_rate", "hsn_code",
+    ]
+    buf = io.StringIO()
+    writer = _csv.writer(buf)
+    writer.writerow(headers)
+    for s in services:
+        imgs = s.get("images") or []
+        writer.writerow([
+            s.get("id") or "",
+            s.get("service_name") or "",
+            s.get("description") or "",
+            s.get("category") or "Services",
+            s.get("sub_category") or "",
+            s.get("gender_tag") or "Unisex",
+            s.get("default_duration") if s.get("default_duration") is not None else 30,
+            s.get("base_price") if s.get("base_price") is not None else 0,
+            s.get("price_type") or "fixed",
+            "true" if s.get("is_favorite") else "false",
+            "true" if s.get("available_at_home") else "false",
+            s.get("thumbnail_url") or "",
+            "|".join(imgs) if isinstance(imgs, list) else (imgs or ""),
+            s.get("gst_rate") if s.get("gst_rate") is not None else "",
+            s.get("hsn_code") or "",
+        ])
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="services-export.csv"'},
+    )
+
+
 # ---- Upload template + history + rollback ------------------------------------
 SERVICES_CSV_TEMPLATE = (
-    "service_name,description,category,sub_category,gender_tag,default_duration,base_price,price_type,is_favorite,available_at_home,thumbnail_url,images,gst_rate,hsn_code\n"
-    "Men's Haircut,Classic scissor cut with styling,Services,Hair,Men,30,300,fixed,true,false,,,9,999721\n"
-    "Beard Trim,Shape-up and hot towel,Services,Beard,Men,20,150,fixed,false,false,,,9,999721\n"
-    "Women's Haircut,Wash + cut + blow-dry,Services,Hair,Women,45,600,fixed,true,false,,,9,999721\n"
-    "Classic Manicure,Nail shaping + cuticle care,Services,Nails,Unisex,30,400,fixed,false,true,,,9,999721\n"
-    "Bridal Glow Package,Facial + hair spa + mani-pedi (bulk-upload packages leave category='Packages' and fill base_price for the bundle),Packages,,Women,180,4999,onwards,true,false,,,9,999721\n"
+    "service_key,service_name,description,category,sub_category,gender_tag,default_duration,base_price,price_type,is_favorite,available_at_home,thumbnail_url,images,gst_rate,hsn_code\n"
+    ",Men's Haircut,Classic scissor cut with styling,Services,Hair,Men,30,300,fixed,true,false,,,9,999721\n"
+    ",Beard Trim,Shape-up and hot towel,Services,Beard,Men,20,150,fixed,false,false,,,9,999721\n"
+    ",Women's Haircut,Wash + cut + blow-dry,Services,Hair,Women,45,600,fixed,true,false,,,9,999721\n"
+    ",Classic Manicure,Nail shaping + cuticle care,Services,Nails,Unisex,30,400,fixed,false,true,,,9,999721\n"
+    ",Bridal Glow Package,Facial + hair spa + mani-pedi,Packages,Bridal,Women,180,4999,onwards,true,false,,,9,999721\n"
 )
 
 
@@ -9807,7 +10102,7 @@ async def create_salon_booking(salon_id: str, body: dict, current_user=Depends(g
             )
         # online_only: salon-side manual booking is allowed
     
-    customer_name = body.get("customer_name", "Walk-in").strip()
+    customer_name = (body.get("customer_name") or "").strip()
     phone = body.get("phone", "").strip()
     gender = body.get("gender", "Men")
     barber_id = body.get("barber_id", "any")
@@ -9817,15 +10112,28 @@ async def create_salon_booking(salon_id: str, body: dict, current_user=Depends(g
     date = body.get("date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     expected_time = (body.get("expected_time") or "").strip() or None
     payment_mode = body.get("payment_mode")
-    
-    if not customer_name:
-        customer_name = "Walk-in"
-    
-    # Normalize phone
+    # Additive billing snapshot (display + Modify prefill; does NOT change total).
+    order_discount_percent = float(body.get("discount_percent") or 0)
+    order_discount_amount = float(body.get("discount_flat") or 0)
+    tip_amount = float(body.get("tip_amount") or 0)
+    membership_discount_percent = float(body.get("membership_discount_percent") or 0)
+
+    # Normalize phone (blank allowed; validate + reject bad non-empty input)
     if phone:
-        phone = phone.replace(" ", "").replace("-", "")
-        if not phone.startswith("+91"):
-            phone = f"+91{phone}"
+        digits = re.sub(r"\D", "", phone)
+        if len(digits) == 11 and digits.startswith("0"):
+            digits = digits[1:]
+        elif len(digits) == 12 and digits.startswith("91"):
+            digits = digits[2:]
+        elif len(digits) == 13 and digits.startswith("091"):
+            digits = digits[3:]
+        if len(digits) != 10:
+            raise HTTPException(status_code=400, detail="Enter a valid 10-digit mobile number")
+        phone = f"+91{digits}"
+
+    # A booking may have no name and/or no number — keep the record either way.
+    # Display fallback: entered name → number → generic label.
+    display_name = customer_name or phone or "Walk-in Guest"
     
     # Auto-detect current shift if not provided
     if not shift:
@@ -10022,7 +10330,7 @@ async def create_salon_booking(salon_id: str, body: dict, current_user=Depends(g
         "salon_id": salon_id,
         "branch_id": booking_branch_id,
         "token_number": token_number,
-        "customer_name": customer_name,
+        "customer_name": display_name,
         "phone": phone or "",
         "user_id": "",
         "barber_id": barber_id,
@@ -10035,6 +10343,10 @@ async def create_salon_booking(salon_id: str, body: dict, current_user=Depends(g
         "time_slot": shift,
         "expected_time": expected_time,
         "total_amount": total_amount,
+        "order_discount_percent": order_discount_percent,
+        "order_discount_amount": order_discount_amount,
+        "tip_amount": tip_amount,
+        "membership_discount_percent": membership_discount_percent,
         "status": "waiting",
         "payment_status": payment_status,
         "payment_mode": payment_mode,
@@ -10050,7 +10362,8 @@ async def create_salon_booking(salon_id: str, body: dict, current_user=Depends(g
     await db.tokens.insert_one(token_dict)
     token_dict.pop("_id", None)
     
-    # Also save customer if phone provided
+    # Also save customer if phone provided — create with number only when no
+    # name given; never overwrite an existing name with a blank.
     if phone:
         existing_customer = await db.salon_customers.find_one({
             "salon_id": salon_id, "phone": phone
@@ -10066,6 +10379,10 @@ async def create_salon_booking(salon_id: str, body: dict, current_user=Depends(g
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "source": "salon_booking"
             })
+        elif customer_name and not (existing_customer.get("name") or "").strip():
+            await db.salon_customers.update_one(
+                {"id": existing_customer["id"]}, {"$set": {"name": customer_name}}
+            )
     
     await broadcast_update("new_token", token_dict)
     # Also emit the standardized "token_created" so all dashboards / queues refresh.
@@ -10073,7 +10390,161 @@ async def create_salon_booking(salon_id: str, body: dict, current_user=Depends(g
     
     return token_dict
 
-@api_router.get("/salons/{salon_id}/customers/{phone}/bookings")
+
+@api_router.put("/salons/{salon_id}/salon-booking/{token_id}")
+async def update_salon_booking(salon_id: str, token_id: str, body: dict, current_user=Depends(get_current_salon_user)):
+    """In-place MODIFY of an existing booking (same token — no new booking).
+
+    Recomputes services, per-service barber attribution, products (with an
+    inventory delta) and the total exactly like create_salon_booking, but writes
+    the changes onto the SAME token, preserving its id / token_number / status /
+    created_at. Used by the 'Modify' action in the queue + appointment chip.
+    """
+    token = await db.tokens.find_one({"id": token_id, "salon_id": salon_id}, {"_id": 0})
+    if not token:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    if token.get("status") in ("completed", "cancelled", "in_service", "in_progress"):
+        raise HTTPException(status_code=400, detail=f"This booking cannot be modified (status: {token.get('status')})")
+
+    customer_name = (body.get("customer_name") or token.get("customer_name") or "Walk-in").strip() or "Walk-in"
+    phone = (body.get("phone") or token.get("phone") or "").strip()
+    if phone:
+        phone = phone.replace(" ", "").replace("-", "")
+        if not phone.startswith("+91"):
+            phone = f"+91{phone}"
+    gender = body.get("gender") or token.get("customer_gender") or "Men"
+    barber_id = body.get("barber_id") or token.get("barber_id") or "any"
+    selected_services = body.get("selected_services")
+    if not isinstance(selected_services, list) or not selected_services:
+        selected_services = token.get("selected_services") or []
+    selected_products = body.get("selected_products") or []
+    date = body.get("date") or token.get("date")
+    shift = body.get("shift") or token.get("shift") or "Morning"
+    expected_time = (body.get("expected_time") or token.get("expected_time") or "").strip() or None
+    payment_mode = body.get("payment_mode") or token.get("payment_mode")
+
+    # --- Services subtotal (barber-specific price, fallback base) ---
+    total_amount = 0.0
+    for service_id in selected_services:
+        if barber_id and barber_id != "any":
+            barber = await db.barbers.find_one({"id": barber_id}, {"_id": 0})
+            if barber:
+                bs = next((s for s in (barber.get("services") or []) if s.get("service_id") == service_id), None)
+                if bs:
+                    total_amount += bs.get("price", 0)
+                    continue
+        svc = await db.services.find_one({"id": service_id}, {"_id": 0})
+        if svc:
+            total_amount += svc.get("base_price", 0)
+
+    # --- Products: restore the OLD lines to inventory, then apply the NEW ones ---
+    for old_p in (token.get("selected_products") or []):
+        opid = old_p.get("product_id") or old_p.get("id")
+        oqty = int(old_p.get("qty") or 0)
+        if opid and oqty > 0:
+            try:
+                await db.salon_inventory.update_one({"id": opid, "salon_id": salon_id}, {"$inc": {"stock_quantity": oqty}})
+            except Exception:
+                pass
+    product_details = []
+    for p in selected_products:
+        pid = p.get("product_id") or p.get("id")
+        qty = int(p.get("qty") or 0)
+        unit_price = float(p.get("unit_price") or 0)
+        if not pid or qty <= 0:
+            continue
+        if unit_price <= 0:
+            item = await db.salon_inventory.find_one({"id": pid, "salon_id": salon_id}, {"_id": 0})
+            if item:
+                unit_price = float(item.get("retail_price") or item.get("selling_price") or 0)
+        line_total = qty * unit_price
+        total_amount += line_total
+        product_details.append({"product_id": pid, "name": p.get("name"), "qty": qty, "unit_price": unit_price, "line_total": line_total})
+        try:
+            await db.salon_inventory.update_one({"id": pid, "salon_id": salon_id}, {"$inc": {"stock_quantity": -qty}})
+        except Exception:
+            pass
+
+    # Resolve barber name
+    barber_name = token.get("barber_name") or "Unknown"
+    if barber_id and barber_id != "any":
+        b = await db.barbers.find_one({"id": barber_id}, {"_id": 0, "name": 1})
+        if b:
+            barber_name = b.get("name", "Unknown")
+
+    # --- Per-service barber attribution (same logic as create) ---
+    services_payload = body.get("services_payload") or []
+    service_assignments = []
+    _distinct = set()
+    for sp in services_payload:
+        svc_id = sp.get("service_id") if isinstance(sp, dict) else sp
+        line_barber = (sp.get("barber_id") if isinstance(sp, dict) else None) or barber_id
+        if not svc_id or not line_barber or line_barber == "any":
+            continue
+        list_price = float(await _resolve_assignment_price(line_barber, svc_id) or 0)
+        _disc_pct = 0.0
+        if isinstance(sp, dict) and sp.get("discount_percent") is not None:
+            try:
+                _disc_pct = max(0.0, min(100.0, float(sp.get("discount_percent") or 0)))
+            except (TypeError, ValueError):
+                _disc_pct = 0.0
+        net_price = round(list_price * (1 - _disc_pct / 100.0), 2) if _disc_pct > 0 else round(list_price, 2)
+        lb = await db.barbers.find_one({"id": line_barber, "salon_id": salon_id}, {"_id": 0, "name": 1})
+        _asg = {"service_id": svc_id, "barber_id": line_barber, "barber_name_snapshot": (lb or {}).get("name", ""),
+                "service_price": net_price, "list_price": round(list_price, 2)}
+        if isinstance(sp, dict):
+            allocs = sp.get("barber_allocations")
+            if isinstance(allocs, list) and allocs:
+                _asg["barber_allocations"] = [{"barber_id": a.get("barber_id"), "pct": round(float(a.get("pct") or 0), 2)}
+                                              for a in allocs if isinstance(a, dict) and a.get("barber_id")]
+            if _disc_pct > 0:
+                _asg["discount_percent"] = round(_disc_pct, 2)
+            if sp.get("tier"):
+                _asg["tier"] = sp.get("tier")
+            if sp.get("length"):
+                _asg["length"] = sp.get("length")
+        service_assignments.append(_asg)
+        _distinct.add(line_barber)
+    _has_extra = any(("barber_allocations" in a or "discount_percent" in a) for a in service_assignments)
+    if len(_distinct) <= 1 and not _has_extra:
+        service_assignments = []
+    else:
+        _assigned = {a["service_id"] for a in service_assignments}
+        _sub = sum(a["service_price"] for a in service_assignments)
+        for _sid in selected_services:
+            if _sid not in _assigned:
+                _svc = await db.services.find_one({"id": _sid}, {"_id": 0})
+                _sub += float((_svc or {}).get("base_price") or 0)
+        _sub += sum(float(pd.get("line_total") or 0) for pd in product_details)
+        total_amount = round(_sub, 2)
+
+    updates = {
+        "customer_name": customer_name,
+        "phone": phone or "",
+        "customer_gender": gender,
+        "barber_id": barber_id,
+        "barber_name": barber_name,
+        "selected_services": selected_services,
+        "service_assignments": service_assignments,
+        "selected_products": product_details,
+        "date": date,
+        "shift": shift,
+        "time_slot": shift,
+        "expected_time": expected_time,
+        "total_amount": round(float(total_amount), 2),
+        "order_discount_percent": float(body.get("discount_percent") or 0),
+        "order_discount_amount": float(body.get("discount_flat") or 0),
+        "tip_amount": float(body.get("tip_amount") or 0),
+        "membership_discount_percent": float(body.get("membership_discount_percent") or 0),
+        "payment_mode": payment_mode,
+        "modified_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.tokens.update_one({"id": token_id}, {"$set": updates})
+    updated = await db.tokens.find_one({"id": token_id}, {"_id": 0})
+    await broadcast_update("token_updated", updated)
+    return updated
+
+
 async def get_customer_bookings(salon_id: str, phone: str, current_user=Depends(get_current_salon_user)):
     """Get all bookings for a specific customer"""
     if not phone.startswith("+91"):
@@ -10133,6 +10604,10 @@ class MembershipPlanCreate(BaseModel):
     color: Optional[str] = None  # hex color override, optional
     plan_type: Optional[str] = "credit"  # "credit" (wallet top-up) | "discount" (flat % off every booking)
     discount_percent: Optional[float] = 0  # flat % off services, used when plan_type == "discount"
+    # Section 1.4 — family membership. When is_family, the buyer must have
+    # family members listed and only listed members can avail benefits.
+    is_family: Optional[bool] = False
+    family_size: Optional[int] = 4
 
 class MembershipPlan(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -10147,6 +10622,8 @@ class MembershipPlan(BaseModel):
     color: Optional[str] = None
     plan_type: Optional[str] = "credit"
     discount_percent: Optional[float] = 0
+    is_family: Optional[bool] = False
+    family_size: Optional[int] = 4
     is_active: bool = True
     created_at: str
 
@@ -10461,6 +10938,31 @@ async def delete_membership_plan(
     
     return {"message": "Membership plan deleted successfully"}
 
+@api_router.get("/salons/{salon_id}/memberships/{membership_id}/covers/{phone}")
+async def check_family_membership_coverage(salon_id: str, membership_id: str, phone: str,
+                                           current_user=Depends(get_current_salon_user)):
+    """Section 1.4 — is this visiting person covered by the (family) membership?
+    Non-family memberships cover only the owner. Family memberships cover the
+    frozen `covered_phones` set captured at sale time.
+    """
+    m = await db.customer_memberships.find_one(
+        {"id": membership_id, "salon_id": salon_id},
+        {"_id": 0, "covered_phones": 1, "customer_phone": 1, "is_family": 1})
+    if not m:
+        raise HTTPException(status_code=404, detail="Membership not found")
+    visitor = _norm10(phone)
+    if m.get("is_family") and m.get("covered_phones"):
+        covered = visitor in [_norm10(p) for p in m.get("covered_phones", [])]
+    else:
+        covered = visitor == _norm10(m.get("customer_phone") or "")
+    return {
+        "covered": covered,
+        "covered_phones": m.get("covered_phones") or [],
+        "detail": None if covered else "This member isn't covered by the family membership.",
+    }
+
+
+
 @api_router.post("/salons/{salon_id}/sell-membership")
 async def sell_membership(salon_id: str, membership: CustomerMembershipCreate, current_user=Depends(get_current_salon_user)):
     """Sell membership to a customer"""
@@ -10473,7 +10975,24 @@ async def sell_membership(salon_id: str, membership: CustomerMembershipCreate, c
     phone = membership.customer_phone
     if not phone.startswith("+91"):
         phone = f"+91{phone}"
-    
+
+    # Section 1.4 — family membership eligibility. The buyer must have family
+    # members listed; the covered set is frozen at sale time (main customer +
+    # up to family_size-1 listed members).
+    covered_phones = None
+    if plan.get("is_family"):
+        cust = await db.salon_customers.find_one(
+            {"salon_id": salon_id, "phone": {"$in": _phone_variants(phone)}},
+            {"_id": 0, "family_members": 1}) or {}
+        fam = cust.get("family_members") or []
+        if len(fam) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Add family members to this profile before selling a family membership.")
+        fam_size = int(plan.get("family_size") or 4)
+        covered_phones = [_norm10(phone)] + [
+            _norm10(fm.get("phone")) for fm in fam][: max(0, fam_size - 1)]
+
     # Calculate expiry date
     expiry_date = datetime.now(timezone.utc) + timedelta(days=plan["validity_months"] * 30)
     
@@ -10487,9 +11006,7 @@ async def sell_membership(salon_id: str, membership: CustomerMembershipCreate, c
     if existing:
         # Add credit to existing wallet
         new_balance = existing["wallet_balance"] + plan["credit"]
-        await db.customer_memberships.update_one(
-            {"id": existing["id"]},
-            {"$set": {
+        _renew_set = {
                 "wallet_balance": new_balance,
                 "expiry_date": expiry_date.isoformat(),
                 "tier": plan.get("tier", existing.get("tier", "Custom")),
@@ -10497,7 +11014,13 @@ async def sell_membership(salon_id: str, membership: CustomerMembershipCreate, c
                 # Reset expiry-warning flags on renewal
                 "notified_1m_expiry": False,
                 "notified_1w_expiry": False,
-            }}
+        }
+        if covered_phones is not None:
+            _renew_set["covered_phones"] = covered_phones
+            _renew_set["is_family"] = True
+        await db.customer_memberships.update_one(
+            {"id": existing["id"]},
+            {"$set": _renew_set}
         )
         
         # Record transaction
@@ -10536,6 +11059,9 @@ async def sell_membership(salon_id: str, membership: CustomerMembershipCreate, c
             "payment_confirmed": True,  # Salon-side sells are auto-confirmed
             "purchased_at": datetime.now(timezone.utc).isoformat()
         }
+        if covered_phones is not None:
+            membership_data["covered_phones"] = covered_phones
+            membership_data["is_family"] = True
         
         await db.customer_memberships.insert_one(membership_data)
         # FastAPI can't serialize ObjectId; strip it after insert.
@@ -11316,8 +11842,21 @@ async def create_booking(booking: BookingCreate):
     phone = booking.phone
     if not phone.startswith("+91"):
         phone = f"+91{phone}"
+
+    # Section 1.2 — enforce "block online booking" ONLY on the customer-facing
+    # path. If the salon has disabled online booking for this guest, the guest
+    # cannot self-book (the salon can still book for them via /salon-booking).
+    _digits = "".join(ch for ch in phone if ch.isdigit())
+    _p10 = _digits[-10:] if len(_digits) >= 10 else _digits
+    _blocked_doc = await db.salon_customers.find_one(
+        {"salon_id": booking.salon_id,
+         "phone": {"$in": [phone, _p10, f"+91{_p10}"]}},
+        {"_id": 0, "online_booking_blocked": 1})
+    if _blocked_doc and _blocked_doc.get("online_booking_blocked"):
+        raise HTTPException(
+            status_code=403,
+            detail="Online booking is disabled for this account. Please contact the salon to book.")
     
-    # Handle guest booking - create or update customer account
     customer = await db.customers.find_one({"phone": phone})
     if not customer:
         # Create new customer account (unverified for guests)
@@ -11852,7 +12391,7 @@ async def call_next_token(salon_id: str, barber_id: str, current_salon=Depends(g
             )
         
         # Check and notify tokens that are near (3, 2, 1 away)
-        await check_and_notify_nearby_tokens(salon_id, barber_id, date, next_token["token_number"])
+        asyncio.create_task(check_and_notify_nearby_tokens(salon_id, barber_id, date, next_token["token_number"]))
         
         return updated
     
@@ -11943,7 +12482,7 @@ async def complete_token(token_id: str, current_salon=Depends(get_current_salon)
         date_n = token.get("date")
         tok_num_n = token.get("token_number")
         if salon_id_n and barber_id_n and date_n and tok_num_n:
-            await check_and_notify_nearby_tokens(salon_id_n, barber_id_n, date_n, str(tok_num_n))
+            asyncio.create_task(check_and_notify_nearby_tokens(salon_id_n, barber_id_n, date_n, str(tok_num_n)))
     except Exception as _e:
         logger.warning(f"nearby-alert skipped on /complete: {_e}")
 
@@ -12150,7 +12689,7 @@ async def call_token(token_id: str, current_salon=Depends(get_current_salon_user
         date = token.get("date")
         tok_num = token.get("token_number")
         if salon_id and barber_id and date and tok_num:
-            await check_and_notify_nearby_tokens(salon_id, barber_id, date, str(tok_num))
+            asyncio.create_task(check_and_notify_nearby_tokens(salon_id, barber_id, date, str(tok_num)))
     except Exception as _e:
         logger.warning(f"nearby-alert skipped on /call: {_e}")
 
@@ -13765,11 +14304,13 @@ async def get_today_sales(
     }
     if branch_id:
         query["branch_id"] = branch_id
-    completed_tokens = await db.tokens.find(query, {"_id": 0, "total_amount": 1}).to_list(1000)
-    
-    # Sum up total_amount from all completed tokens (same as analytics)
-    total_sales = sum(token.get("total_amount", 0) for token in completed_tokens)
-    
+    # Perf: sum in MongoDB ($group) instead of pulling token rows and adding in code.
+    agg = await db.tokens.aggregate([
+        {"$match": query},
+        {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$total_amount", 0]}}}},
+    ]).to_list(1)
+    total_sales = (agg[0]["total"] if agg else 0)
+
     return {"today_sales": total_sales}
 
 
@@ -15091,6 +15632,12 @@ async def get_customer_profile(
         "facebook_id": master.get("facebook_id"),
         "preferred_barber_id": master.get("preferred_barber_id"),
         "source": master.get("source"),
+        "address": master.get("address"),
+        "city": master.get("city"),
+        "pincode": master.get("pincode"),
+        "tag": master.get("tag"),
+        "online_booking_blocked": bool(master.get("online_booking_blocked")),
+        "family_members": master.get("family_members") or [],
         "last_visit": last_visit_iso,
         "last_barber_id": last_barber_id,
         "last_barber_name": last_barber_name,
@@ -15145,12 +15692,24 @@ async def create_direct_invoice(
     if not salon:
         raise HTTPException(status_code=404, detail="Salon not found")
 
-    customer_name = (body.get("customer_name") or "Walk-in").strip() or "Walk-in"
+    # B1 — an invoice may be raised on just a number (no name required), or even
+    # with neither (record is still kept). Never block on a missing name.
+    customer_name = (body.get("customer_name") or "").strip()
     phone = (body.get("phone") or "").strip()
     if phone:
-        phone = phone.replace(" ", "").replace("-", "")
-        if not phone.startswith("+91"):
-            phone = f"+91{phone}"
+        digits = re.sub(r"\D", "", phone)
+        if len(digits) == 11 and digits.startswith("0"):
+            digits = digits[1:]
+        elif len(digits) == 12 and digits.startswith("91"):
+            digits = digits[2:]
+        elif len(digits) == 13 and digits.startswith("091"):
+            digits = digits[3:]
+        if len(digits) != 10:
+            raise HTTPException(status_code=400, detail="Enter a valid 10-digit mobile number")
+        phone = f"+91{digits}"
+    # Display fallback so the invoice/queue always prints something identifiable:
+    # entered name → else the number → else a generic label.
+    display_name = customer_name or phone or "Walk-in Guest"
     gender = body.get("gender") or "Men"
     barber_id = body.get("barber_id") or "any"
     selected_services = body.get("selected_services") or []
@@ -15436,7 +15995,7 @@ async def create_direct_invoice(
         "salon_id": salon_id,
         "branch_id": body.get("branch_id") or salon.get("main_branch_id"),
         "token_number": token_number,
-        "customer_name": customer_name,
+        "customer_name": display_name,
         "phone": phone,
         "gender": gender,
         "barber_id": barber_id,
@@ -15480,15 +16039,34 @@ async def create_direct_invoice(
         except Exception:
             pass
 
-    # Upsert customer master
+    # Upsert customer master — create with number only when no name is given, and
+    # never overwrite an existing name with a blank.
     if phone:
         try:
+            _set = {"gender": gender, "last_visit_at": now_iso}
+            if customer_name:
+                _set["name"] = customer_name
             await db.customer_master.update_one(
                 {"salon_id": salon_id, "phone": phone},
                 {
-                    "$set": {"name": customer_name, "gender": gender, "last_visit_at": now_iso},
-                    "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now_iso},
+                    "$set": _set,
+                    "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now_iso,
+                                     **({} if customer_name else {"name": ""})},
                     "$inc": {"total_visits": 1, "total_spent": grand_total},
+                },
+                upsert=True,
+            )
+            # Also reflect into the Guests list collection (salon_customers).
+            _scset = {"gender": gender}
+            if customer_name:
+                _scset["name"] = customer_name
+            await db.salon_customers.update_one(
+                {"salon_id": salon_id, "phone": phone},
+                {
+                    "$set": _scset,
+                    "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now_iso,
+                                     "source": "direct_invoice",
+                                     **({} if customer_name else {"name": ""})},
                 },
                 upsert=True,
             )
@@ -16991,6 +17569,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+# --- Perf: request timing middleware (item 1d) ---
+# Adds a Server-Timing header to every response and logs any request slower than
+# 500ms with its path + duration, so we can tell app-time vs DB/hosting latency.
+import time as _perf_time
+
+
+@fastapi_app.middleware("http")
+async def _server_timing_middleware(request, call_next):
+    _start = _perf_time.perf_counter()
+    response = await call_next(request)
+    dur_ms = (_perf_time.perf_counter() - _start) * 1000.0
+    try:
+        response.headers["Server-Timing"] = f"app;dur={dur_ms:.1f}"
+    except Exception:
+        pass
+    if dur_ms > 500:
+        try:
+            logger.warning(f"[SLOW] {request.method} {request.url.path} took {dur_ms:.0f}ms")
+        except Exception:
+            pass
+    return response
+
+
 # ============================================================================
 # MEMBERSHIP EXPIRY NOTIFICATIONS — runs daily to notify customers whose
 # membership expires in 30 or 7 days. Honors customer notification settings.
@@ -17420,6 +18022,85 @@ async def clear_attendance_override(
         "deleted": res.deleted_count > 0,
         "id": record_id,
     }
+
+
+# ============ Section 2 — Quick attendance marking (bulk + single row) ============
+def _today_ist() -> str:
+    return datetime.now(_IST).strftime("%Y-%m-%d")
+
+
+VALID_ATTN_STATUS = {"present", "absent", "half_day", "holiday", "on_leave"}
+
+
+class AttnRow(BaseModel):
+    barber_id: str
+    status: Optional[str] = None       # for service_completion mode
+    check_in: Optional[str] = None     # "HH:MM" for geo_checkin mode
+    check_out: Optional[str] = None
+
+
+class AttnMarkIn(BaseModel):
+    date: Optional[str] = None         # defaults to today IST
+    rows: List[AttnRow]
+
+
+@api_router.post("/salons/{salon_id}/attendance/mark")
+async def mark_attendance(salon_id: str, body: AttnMarkIn,
+                          current_user=Depends(get_current_salon_user)):
+    """Section 2 — one-tap quick attendance for a single day.
+
+    Row layout depends on the salon's attendance_mode:
+      • service_completion → each row carries a `status` (present/absent/half_day/
+        holiday/on_leave).
+      • geo_checkin        → each row carries check_in / check_out (HH:MM); an
+        optional status override (absent/holiday/on_leave) is still honoured.
+    Writes to db.attendance so the salary screen (Section 3) reflects it.
+    """
+    if current_user.get("role") not in ["admin", "salon_admin", "salon"]:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    date = body.date or _today_ist()
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    salon = await db.salons.find_one({"id": salon_id}, {"_id": 0, "attendance_mode": 1})
+    mode = (salon or {}).get("attendance_mode") or "service_completion"
+    now = datetime.now(timezone.utc).isoformat()
+
+    count = 0
+    for r in body.rows:
+        record_id = f"{salon_id}_{r.barber_id}_{date}"
+        doc = {
+            "id": record_id,
+            "salon_id": salon_id,
+            "barber_id": r.barber_id,
+            "date": date,
+            "marked_by": "salon",
+            "auto_calculated": False,
+            "override_by": current_user.get("id"),
+            "updated_at": now,
+            "attendance_mode": mode,
+        }
+        if mode == "geo_checkin":
+            doc["check_in_at"] = r.check_in
+            doc["check_out_at"] = r.check_out
+            if r.status in VALID_ATTN_STATUS:   # allow A/Holiday/Leave overrides
+                doc["status"] = r.status
+        else:
+            if r.status not in VALID_ATTN_STATUS:
+                continue
+            doc["status"] = r.status
+        await db.attendance.update_one(
+            {"id": record_id},
+            {"$set": doc, "$setOnInsert": {"created_at": now}},
+            upsert=True,
+        )
+        count += 1
+
+    return {"ok": True, "date": date, "mode": mode, "count": count}
+
 
 
 @api_router.post("/salons/{salon_id}/staff-attendance/mark-all-present/{date}")
@@ -17925,24 +18606,28 @@ async def get_monthly_salary(
             else:
                 unpaid_leave_days += qty
 
-        # ---- Salary math (prorated to actual attendance) ----
+        # ---- Salary math (prorated to actual attendance, basis-driven) ----
+        # Section 3: the proration divisor is a salon setting.
+        #   calendar_days (default): base ÷ total days in month; weekly-offs &
+        #     public holidays are PAID (added to earned_days as paid_offs).
+        #   working_days: base ÷ (days − offs − holidays); offs already excluded.
+        basis = salon.get("salary_proration_basis") or "calendar_days"
         base_compensation = _barber_base_salary(barber)
-        per_day_rate = base_compensation / working_days_in_month if working_days_in_month > 0 else 0
+
+        if basis == "working_days":
+            divisor = working_days_in_month                 # excl. offs & holidays
+            paid_offs = 0                                    # already excluded
+        else:  # calendar_days (default)
+            divisor = num_days                               # 28/30/31
+            paid_offs = weekly_off_count + public_holiday_count_in_month  # paid
+
+        per_day_rate = base_compensation / divisor if divisor > 0 else 0
         lop_deduction = round(per_day_rate * unpaid_leave_days, 2)  # informational
 
-        # Days the staff "earned" pay for. Policy:
-        #   present_days + half_days * 0.5 + paid_leave_days
-        # (weekly offs and holidays are excluded from working_days_in_month, so
-        #  per_day_rate already accounts for them being paid implicitly.)
-        earned_days = max(0.0, present_days + (half_days * 0.5) + paid_leave_days)
+        # Days the staff "earned" pay for. A perfect-attendance month always
+        # pays full base regardless of basis.
+        earned_days = max(0.0, present_days + (half_days * 0.5) + paid_leave_days + paid_offs)
         earned_salary = round(per_day_rate * earned_days, 2)
-
-        # Legacy "calculated_salary" — keep computing the way it used to so
-        # existing readers don't regress.  Effective working days = present + 0.5*half.
-        # We use num_days as the daily-rate divisor (old behaviour).
-        old_daily_rate = base_compensation / num_days if num_days > 0 else 0
-        effective_days = present_days + (half_days * 0.5)
-        calculated_salary = round(old_daily_rate * effective_days, 2)
 
         # Incentive (existing).
         incentive = await db.incentive_payouts.find_one({
@@ -17954,12 +18639,11 @@ async def get_monthly_salary(
         incentive_amount = float(incentive.get("incentive_earned", 0)) if incentive else 0.0
 
         # ---- Canonical total: prorated earnings + incentive ----
-        # Previously this was `base − lop_deduction` which only deducted unpaid
-        # leave; absent days were silently paid. Now it scales linearly with
-        # earned_days so 10 present days in a 26-working-day month pays
-        # base × 10/26 + incentive.
+        # Section 3: collapse the legacy `calculated_salary` field onto the
+        # correct `final_payable` so every reader shows the same number.
         final_payable = round(earned_salary + incentive_amount, 2)
         total_payable = final_payable  # keep total_payable in lock-step with final_payable
+        calculated_salary = final_payable  # legacy field now mirrors the correct value
 
         attendance_mode_snapshot = salon.get("attendance_mode") or "service_completion"
 
@@ -17986,6 +18670,19 @@ async def get_monthly_salary(
             "incentive_amount": incentive_amount,
             "final_payable": final_payable,
             "total_payable": total_payable,
+            # Section 3 — expose the basis + the maths so the UI can explain
+            # exactly how attendance drove the figure.
+            "salary_proration_basis": basis,
+            "proration_divisor": divisor,
+            "per_day_rate": round(per_day_rate, 2),
+            "earned_days": round(earned_days, 2),
+            "paid_offs": paid_offs,
+            "earned_salary": earned_salary,
+            "pay_formula": (
+                f"₹{round(base_compensation)} × {round(earned_days, 2)}/{divisor} "
+                f"= ₹{earned_salary}"
+                + (f" + ₹{round(incentive_amount)} incentive = ₹{final_payable}" if incentive_amount else "")
+            ),
             "attendance_mode_snapshot": attendance_mode_snapshot,
             "is_paid": False,
             "updated_at": now,
@@ -18046,7 +18743,7 @@ async def mark_salary_paid(
         "amount": salary_record["total_payable"],
         "payment_method": body.payment_method,
         "description": f"Salary payment for {barber_name} - {month}",
-        "narration": f"Monthly salary paid to {barber_name} for {month}. Base: ₹{salary_record['calculated_salary']}, Incentive: ₹{salary_record['incentive_amount']}",
+        "narration": f"Monthly salary paid to {barber_name} for {month}. {salary_record.get('pay_formula') or ('Base: ₹' + str(salary_record.get('base_compensation') or salary_record.get('calculated_salary')))}. Total paid: ₹{salary_record['total_payable']}",
         "linked_salary_id": salary_id,
         "barber_id": barber_id,
         "barber_name": barber_name,
@@ -19927,6 +20624,7 @@ async def startup_event():
             db.barbers.create_index([("salon_id", 1), ("is_active", 1)], background=True),
             db.barbers.create_index("id", background=True),
             db.attendance.create_index([("salon_id", 1), ("date", -1)], background=True),
+            db.attendance.create_index([("salon_id", 1), ("barber_id", 1), ("date", -1)], background=True),
             db.attendance.create_index([("staff_id", 1), ("date", -1)], background=True),
             db.financial_transactions.create_index([("salon_id", 1), ("date", -1)], background=True),
             db.invoices.create_index([("salon_id", 1), ("date", -1)], background=True),
@@ -19935,6 +20633,9 @@ async def startup_event():
             db.login_ids.create_index("key", unique=True, background=True),
             db.login_ids.create_index("owner_id", background=True),
             db.categories.create_index([("salon_id", 1), ("type", 1), ("slug", 1)], unique=True, background=True),
+            # Perf: salon_services is read on the services & menu screens but had no index.
+            db.salon_services.create_index([("salon_id", 1), ("is_enabled", 1)], background=True),
+            db.salon_services.create_index([("salon_id", 1), ("service_id", 1)], background=True),
         )
         logger.info("[STARTUP] MongoDB indexes ensured for hot query paths")
     except Exception as _idx_e:

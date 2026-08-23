@@ -5,7 +5,7 @@ import pytest
 import requests
 import os
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://appt-filter-redesign.preview.emergentagent.com').rstrip('/')
+BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://service-catalog-sync.preview.emergentagent.com').rstrip('/')
 
 # Test salon credentials (override via env in CI)
 TEST_PHONE = os.environ.get("TEST_SALON_PHONE", "7503070727")

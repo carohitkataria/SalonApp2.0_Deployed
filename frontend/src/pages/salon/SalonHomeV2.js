@@ -40,7 +40,7 @@ const API = `${BACKEND_URL}/api`;
 
 // ---- Rail items (Home is now provided by the logo click at the top) ----
 const RAIL_ITEMS = [
-  { id: 'queue',           label: 'Queue',     route: '/salon/dashboard?tab=queue' },
+  { id: 'queue',           label: 'Bookings',     route: '/salon/dashboard?tab=queue' },
   { id: 'customer-master', label: 'Guests',    route: '/salon/dashboard?tab=customer-master' },
   { id: 'marketing',       label: 'Marketing', route: '/salon/dashboard?tab=marketing' },
   { id: 'inventory',       label: 'Inventory', route: '/salon/dashboard?tab=inventory' },

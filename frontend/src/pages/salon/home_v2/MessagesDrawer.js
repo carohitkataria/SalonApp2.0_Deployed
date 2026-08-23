@@ -86,6 +86,9 @@ export default function MessagesDrawer({ open, onClose, salonId, getAuthHeaders,
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Item 6 — salons on the shared platform sender cannot receive inbound
+  // replies; show a persistent banner prompting them to configure their own.
+  const [senderConfigured, setSenderConfigured] = useState(true);
   const bodyRef = useRef(null);
   const activeIdRef = useRef(null);
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
@@ -117,6 +120,18 @@ export default function MessagesDrawer({ open, onClose, salonId, getAuthHeaders,
   }, [salonId, headers, emitUnread]);
 
   useEffect(() => { if (open) load(); }, [open, load]);
+
+  // Check whether the salon has its own active WhatsApp sender.
+  useEffect(() => {
+    if (!open || !salonId) return;
+    (async () => {
+      try {
+        const { data } = await axios.get(`${API}/salons/${salonId}/whatsapp-sender`, { headers: headers() });
+        const wa = data?.whatsapp || {};
+        setSenderConfigured(wa.mode === 'own' && wa.status === 'active' && !!wa.sender_number);
+      } catch (e) { setSenderConfigured(true); /* fail-open: don't nag on error */ }
+    })();
+  }, [open, salonId, headers]);
 
   // Near-real-time: poll conversations every 4s while the drawer is open.
   useEffect(() => {
@@ -191,6 +206,18 @@ export default function MessagesDrawer({ open, onClose, salonId, getAuthHeaders,
             <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
           </button>
         </div>
+        {!senderConfigured && (
+          <div data-testid="messages-configure-banner" style={{
+            display: 'flex', alignItems: 'flex-start', gap: 8, margin: '10px 14px 0',
+            padding: '10px 12px', borderRadius: 12, background: '#FFF6E5',
+            border: '1px solid #F5D48A', color: '#8A5A00', fontSize: 12.5, lineHeight: 1.4,
+          }}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0, marginTop: 1 }}>
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <span>Please configure your own mobile number to receive incoming messages from customers. Outbound notifications still go out from the SalonHub default number.</span>
+          </div>
+        )}
         <div className="chat">
           <div className="chat__list">
             <div className="chat__search">

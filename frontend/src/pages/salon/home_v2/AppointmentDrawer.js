@@ -92,7 +92,7 @@ const formatApiError = (err, fallback = 'Save failed') => {
 
 export default function AppointmentDrawer({
   open, onClose, onSaved, getAuthHeaders, salonId, defaultMode = 'queue',
-  presetGuest = null, preset = null,
+  presetGuest = null, preset = null, editToken = null,
 }) {
   /* ----------- catalogs ----------- */
   const [services, setServices] = useState([]);
@@ -136,6 +136,7 @@ export default function AppointmentDrawer({
   const [couponChecking, setCouponChecking] = useState(false);
   const [discountPct, setDiscountPct] = useState(0);
   const [discountAbs, setDiscountAbs] = useState(0);
+  const [membershipDiscPct, setMembershipDiscPct] = useState(0); // auto from membership; editable
   const [tip, setTip] = useState(0);
   const [finalOverride, setFinalOverride] = useState(null);
 
@@ -170,12 +171,14 @@ export default function AppointmentDrawer({
   const modeRef = useRef(defaultMode);
   const presetGuestRef = useRef(presetGuest);
   const presetRef = useRef(preset);
+  const editTokenRef = useRef(editToken);
   const expectedTimeRef = useRef(null);
   useEffect(() => { authRef.current = getAuthHeaders; }, [getAuthHeaders]);
   useEffect(() => { salonRef.current = salonId; }, [salonId]);
   useEffect(() => { modeRef.current = defaultMode; }, [defaultMode]);
   useEffect(() => { presetGuestRef.current = presetGuest; }, [presetGuest]);
   useEffect(() => { presetRef.current = preset; }, [preset]);
+  useEffect(() => { editTokenRef.current = editToken; }, [editToken]);
 
   /* Reset + reload ONLY on drawer open. */
   useEffect(() => {
@@ -198,7 +201,7 @@ export default function AppointmentDrawer({
       }
     }
     setCouponCode(''); setCouponApplied(false); setDiscountPct(0); setDiscountAbs(0);
-    setTip(0); setFinalOverride(null);
+    setTip(0); setFinalOverride(null); setMembershipDiscPct(0);
     setPaySel(new Set(['upi'])); setPayAmt({}); setMultiPay(false);
     setErrors({}); setCategory('all'); setOfferType('svc'); setQ(''); setProductsOpen(false);
     setShowSug(false); setSubOpen(false); setEditOpen(false); setProfileOpen(false);
@@ -246,6 +249,44 @@ export default function AppointmentDrawer({
           setCustSearch(match.name || match.phone || '');
           setShowSug(false);
           if (match.phone) fetchProfile(match.phone);
+        }
+        // MODIFY — prefill the chip from an existing booking so Save edits it.
+        const et = editTokenRef.current;
+        if (et && et.id) {
+          const svcIds = Array.isArray(et.selected_services) ? et.selected_services.filter(Boolean) : [];
+          setSelectedSvc(svcIds);
+          setStaffId(et.barber_id && et.barber_id !== 'any' ? et.barber_id : '');
+          const assigns = Array.isArray(et.service_assignments) ? et.service_assignments : [];
+          const sb = {}; const sd = {}; const sa = {}; const sv = {};
+          assigns.forEach((a) => {
+            if (!a || !a.service_id) return;
+            if (a.barber_id) sb[a.service_id] = a.barber_id;
+            if (a.discount_percent) sd[a.service_id] = Number(a.discount_percent);
+            if (Array.isArray(a.barber_allocations) && a.barber_allocations.length) sa[a.service_id] = a.barber_allocations;
+            if (a.tier || a.length) sv[a.service_id] = { tier: a.tier || null, length: a.length || null, price: a.service_price };
+          });
+          setSvcBarber(sb); setSvcDiscount(sd); setSvcAlloc(sa); setSvcVariant(sv);
+          // Order-level discount / tip snapshot
+          if (et.order_discount_percent) setDiscountPct(Number(et.order_discount_percent));
+          if (et.order_discount_amount) setDiscountAbs(Number(et.order_discount_amount));
+          if (et.tip_amount) setTip(Number(et.tip_amount));
+          // Products
+          const prodMap = {};
+          (et.selected_products || []).forEach((p) => { const pid = p.product_id || p.id; if (pid && p.qty) prodMap[pid] = Number(p.qty); });
+          setSelectedProd(prodMap);
+          // Schedule vs queue
+          const isScheduled = !!(et.date && et.date !== todayISO()) || !!et.expected_time;
+          setMode(isScheduled ? 'schedule' : (et.booking_type === 'direct' ? 'direct' : 'queue'));
+          if (et.date) setDate(et.date);
+          if (et.shift) setSlot(et.shift);
+          if (et.payment_mode) setPaySel(new Set([et.payment_mode]));
+          if (!pg && (et.phone || et.customer_name)) {
+            const list2 = Array.isArray(custRes.data) ? custRes.data : (custRes.data?.customers || []);
+            const k2 = String(et.phone || '').replace(/\D/g, '').slice(-10);
+            const m2 = list2.find((c) => String(c.phone || '').replace(/\D/g, '').endsWith(k2)) || { name: et.customer_name, phone: et.phone, gender: et.customer_gender };
+            setCustomer(m2); setCustSearch(m2.name || m2.phone || ''); setShowSug(false);
+            if (m2.phone) fetchProfile(m2.phone);
+          }
         }
       } catch (_) { /* noop */ }
     })();
@@ -325,11 +366,34 @@ export default function AppointmentDrawer({
     [memberships, sellMembershipId],
   );
 
+  // Item 1a — auto-apply a discount membership's % for the selected customer
+  // (editable afterwards). Runs whenever the chosen customer changes.
+  useEffect(() => {
+    const ph = customer?.phone;
+    if (!ph || !salonId) { setMembershipDiscPct(0); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await axios.get(
+          `${API}/salons/${salonId}/customers/${encodeURIComponent(ph)}/membership`,
+          { headers: authRef.current ? authRef.current() : {} });
+        if (cancelled) return;
+        if (data && data.plan_type === 'discount' && Number(data.discount_percent) > 0) {
+          setMembershipDiscPct(Number(data.discount_percent));
+        } else {
+          setMembershipDiscPct(0);
+        }
+      } catch (_) { if (!cancelled) setMembershipDiscPct(0); }
+    })();
+    return () => { cancelled = true; };
+  }, [customer?.phone, salonId]);
+
   const svcSub = svcRows.reduce((t, s) => t + linePrice(s), 0);
   const prodSub = prodRows.reduce((t, r) => t + Number(r.p.retail_price || r.p.selling_price || 0) * r.qty, 0);
   const subtotal = svcSub + prodSub;
   const discountAmtPct = Math.round((subtotal * (Number(discountPct) || 0)) / 100);
-  const totalDiscount = discountAmtPct + Number(discountAbs || 0) + Number(couponDiscount || 0);
+  const membershipDiscAmt = Math.round((subtotal * (Number(membershipDiscPct) || 0)) / 100);
+  const totalDiscount = discountAmtPct + membershipDiscAmt + Number(discountAbs || 0) + Number(couponDiscount || 0);
   const membershipPrice = Number(membershipPlan?.price || membershipPlan?.amount || 0);
   const computedTotal = Math.max(0, subtotal - totalDiscount + Number(tip || 0) + membershipPrice);
   const payable = finalOverride != null ? Number(finalOverride) : computedTotal;
@@ -594,6 +658,15 @@ export default function AppointmentDrawer({
     try {
       const headers = authRef.current();
       const sid = salonRef.current;
+      // Effective guest: use the selected customer, else fall back to whatever
+      // the user typed in the search box (digits -> phone, else -> name). This
+      // lets a booking/invoice be raised on just a name OR just a number.
+      let effName = customer?.name || '';
+      let effPhone = customer?.phone || '';
+      if (!customer && custSearch.trim()) {
+        const d = custSearch.replace(/\D/g, '');
+        if (d.length >= 10) effPhone = d.slice(-10); else effName = custSearch.trim();
+      }
       const products_payload = Object.entries(selectedProd).map(([pid, qty]) => {
         const p = products.find((x) => x.id === pid);
         return {
@@ -634,14 +707,32 @@ export default function AppointmentDrawer({
         coupon_code: couponApplied ? (couponCode || null) : null,
         discount_percent: Number(discountPct) || 0,
         discount_flat: Number(discountAbs) || 0,
+        membership_discount_percent: Number(membershipDiscPct) || 0,
         tip_amount: Number(tip) || 0,
         membership_plan_id: sellMembershipId || null,
         final_amount_override: finalOverride != null ? Number(finalOverride) : Number(payable),
       };
 
-      if (mode === 'direct') {
+      const editTok = editTokenRef.current;
+      if (editTok && editTok.id) {
+        // In-place MODIFY — update the same booking (no new token).
+        await axios.put(`${API}/salons/${sid}/salon-booking/${editTok.id}`, {
+          customer_name: effName || editTok.customer_name || '',
+          phone: effPhone || editTok.phone || '',
+          gender: customer?.gender || editTok.customer_gender || 'Men',
+          barber_id: staffId || 'any',
+          selected_services: selectedSvc,
+          services_payload,
+          selected_products: products_payload,
+          shift: mode === 'schedule' ? slot : (editTok.shift || currentSlot()),
+          date: mode === 'schedule' ? date : (editTok.date || todayISO()),
+          expected_time: expectedTimeRef.current || editTok.expected_time || null,
+          ...paymentPayload,
+          ...billingExtras,
+        }, { headers });
+      } else if (mode === 'direct') {
         await axios.post(`${API}/salons/${sid}/direct-invoice`, {
-          customer_name: customer?.name || 'Walk-in Guest', phone: customer?.phone || '', gender: customer?.gender || 'Men',
+          customer_name: effName, phone: effPhone, gender: customer?.gender || 'Men',
           barber_id: staffId,
           selected_services: selectedSvc,
           services_payload,
@@ -653,7 +744,7 @@ export default function AppointmentDrawer({
         }, { headers });
       } else {
         await axios.post(`${API}/salons/${sid}/salon-booking`, {
-          customer_name: customer?.name || 'Walk-in Guest', phone: customer?.phone || '', gender: customer?.gender || 'Men',
+          customer_name: effName, phone: effPhone, gender: customer?.gender || 'Men',
           barber_id: staffId || 'any',
           selected_services: selectedSvc,
           services_payload,
@@ -1217,10 +1308,18 @@ export default function AppointmentDrawer({
                            onChange={(e) => setDiscountAbs(Math.max(0, Number(e.target.value) || 0))} />
                   </div>
                 </div>
-                <div className="bi-field" style={{ marginBottom: 10 }}>
-                  <label>Tip ₹</label>
-                  <input type="number" min="0" value={tip}
-                         onChange={(e) => setTip(Math.max(0, Number(e.target.value) || 0))} />
+                <div className="bi-row" style={{ marginBottom: 10 }}>
+                  <div className="bi-field">
+                    <label>Membership discount %</label>
+                    <input type="number" min="0" max="100" value={membershipDiscPct}
+                           data-testid="apt-membership-disc"
+                           onChange={(e) => setMembershipDiscPct(Math.min(100, Math.max(0, Number(e.target.value) || 0)))} />
+                  </div>
+                  <div className="bi-field">
+                    <label>Tip ₹</label>
+                    <input type="number" min="0" value={tip}
+                           onChange={(e) => setTip(Math.max(0, Number(e.target.value) || 0))} />
+                  </div>
                 </div>
                 <div className="bi-field">
                   <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
@@ -1283,7 +1382,7 @@ export default function AppointmentDrawer({
               {/* Totals */}
               <div className="os-totals">
                 <div className="os-t"><div className="n">Subtotal</div><div className="p">{money(subtotal)}</div></div>
-                {totalDiscount > 0 && (
+                {(totalDiscount - membershipDiscAmt) > 0 && (
                   <div className="os-t">
                     <div className="n">
                       Discount
@@ -1291,7 +1390,13 @@ export default function AppointmentDrawer({
                         : discountPct > 0 ? ` (${discountPct}%)`
                         : ' (flat)'}
                     </div>
-                    <div className="p" style={{ color: '#2FA96A' }}>− {money(totalDiscount)}</div>
+                    <div className="p" style={{ color: '#2FA96A' }}>− {money(totalDiscount - membershipDiscAmt)}</div>
+                  </div>
+                )}
+                {membershipDiscAmt > 0 && (
+                  <div className="os-t">
+                    <div className="n">Membership discount ({membershipDiscPct}%)</div>
+                    <div className="p" style={{ color: '#2FA96A' }}>− {money(membershipDiscAmt)}</div>
                   </div>
                 )}
                 {Number(tip) > 0 && (
@@ -1391,7 +1496,7 @@ export default function AppointmentDrawer({
 
 /* --------- small presentational components --------- */
 function ServiceCard({ s, on, onClick, price, variant }) {
-  const col = catOf(s.category || 'General');
+  const col = catOf(s.sub_category || s.category || 'General');
   const thumb = s.thumbnail_url || s.image_url;
   const shown = price != null ? price : (s.base_price || s.price);
   const onwards = s.price_type === 'onwards';
@@ -1409,7 +1514,7 @@ function ServiceCard({ s, on, onClick, price, variant }) {
         <span className="pr" style={{ color: col.cc }}>
           {money(shown)}{onwards ? '+' : ''} <span className="dur">· {s.default_duration || 30}m</span>
         </span>
-        {variant ? <span className="svc-tag">{variant}</span> : (s.category && <span className="svc-tag">{s.category}</span>)}
+        {variant ? <span className="svc-tag">{variant}</span> : ((s.sub_category || s.category) && <span className="svc-tag">{s.sub_category || s.category}</span>)}
       </span>
     </button>
   );

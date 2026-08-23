@@ -283,8 +283,9 @@ def init_reports_router(*, db, get_current_salon_user, has_module_permission,
             if svc_ids:
                 async for s in db.services.find({"id": {"$in": list(svc_ids)}},
                                                 {"_id": 0, "id": 1, "sub_category": 1, "category": 1}):
-                    # Guide: prefer category (Hair/Spa/Beard/Facial), fallback to sub_category
-                    svc_cat_map[s["id"]] = s.get("category") or s.get("sub_category") or "Services"
+                    # L2 category (Haircut/Hair Spa/Facial…) lives in sub_category;
+                    # `category` is now the L1 type (Services/Packages) — prefer sub_category.
+                    svc_cat_map[s["id"]] = s.get("sub_category") or s.get("category") or "Services"
             for t in completed:
                 assigns = t.get("service_assignments") or []
                 if assigns:

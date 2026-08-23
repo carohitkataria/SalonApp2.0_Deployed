@@ -138,3 +138,4 @@ websockets==16.0
 wsproto==1.3.2
 yarl==1.23.0
 zipp==3.23.0
+zstandard>=0.22.0

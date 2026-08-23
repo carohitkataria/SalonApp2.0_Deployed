@@ -30,7 +30,7 @@ const MAX_RECENT = 6;
 // Static navigable app features (also searchable when user types).
 const APP_FEATURES = [
   { id: 'home',            title: 'Home',          subtitle: 'Dashboard overview',    route: '/salon/dashboard?tab=home',            keywords: 'home dashboard overview main today kpi' },
-  { id: 'queue',           title: 'Queue',         subtitle: 'Live token queue',       route: '/salon/dashboard?tab=queue',           keywords: 'queue tokens live bookings today waiting' },
+  { id: 'queue',           title: 'Bookings',         subtitle: 'Live token queue',       route: '/salon/dashboard?tab=queue',           keywords: 'queue tokens live bookings today waiting' },
   { id: 'staff',           title: 'Staff',         subtitle: 'Manage staff & barbers', route: '/salon/dashboard?tab=staff',           keywords: 'staff barber employee stylist team manage' },
   { id: 'services',        title: 'Services',      subtitle: 'Enable & price services',route: '/salon/dashboard?tab=services',        keywords: 'services haircut catalog offerings menu pricing' },
   { id: 'reports',         title: 'Reports',       subtitle: 'Financials + Analytics', route: '/salon/dashboard?tab=reports',         keywords: 'reports finance financials analytics revenue expense insights charts kpi targets' },

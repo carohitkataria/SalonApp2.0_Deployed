@@ -12,6 +12,7 @@ Production setup (Feb 2026):
                         updates from staff).  Falls back to mock if Twilio
                         credentials are not configured.
 """
+import asyncio
 import json
 from twilio.rest import Client
 import os
@@ -193,9 +194,11 @@ async def send_whatsapp_otp(phone_number: str, otp: str = None) -> dict:
     last_error = None
     for channel in ("sms",):
         try:
-            verification = client.verify.v2.services(VERIFY_SERVICE_SID).verifications.create(
-                to=phone_number,
-                channel=channel,
+            verification = await asyncio.to_thread(
+                lambda: client.verify.v2.services(VERIFY_SERVICE_SID).verifications.create(
+                    to=phone_number,
+                    channel=channel,
+                )
             )
             logger.info(
                 f"Twilio Verify OTP sent via {channel} to {phone_number}. SID: {verification.sid} status={verification.status}"
@@ -237,9 +240,11 @@ async def verify_whatsapp_otp(phone_number: str, code: str) -> dict:
         return {"status": "failed", "valid": False, "error": "verify_not_configured"}
 
     try:
-        check = client.verify.v2.services(VERIFY_SERVICE_SID).verification_checks.create(
-            to=phone_number,
-            code=code,
+        check = await asyncio.to_thread(
+            lambda: client.verify.v2.services(VERIFY_SERVICE_SID).verification_checks.create(
+                to=phone_number,
+                code=code,
+            )
         )
         valid = (check.status == "approved")
         logger.info(
@@ -305,7 +310,7 @@ async def send_whatsapp_template(
         if _cb:
             create_kwargs["status_callback"] = _cb
 
-        message = client.messages.create(**create_kwargs)
+        message = await asyncio.to_thread(client.messages.create, **create_kwargs)
         logger.info(
             f"WhatsApp template '{template_name}' sent to {phone_number} "
             f"via {list(sender_kwargs.keys())[0]}={list(sender_kwargs.values())[0]}. SID: {message.sid}"
@@ -567,7 +572,7 @@ async def send_whatsapp_notification(phone_number: str, message: str, template_n
         _cb = _status_callback_url()
         if _cb:
             create_kwargs["status_callback"] = _cb
-        whatsapp_message = client.messages.create(**create_kwargs)
+        whatsapp_message = await asyncio.to_thread(client.messages.create, **create_kwargs)
         
         logger.info(f"WhatsApp notification sent to {phone_number}. Template: {template_name}, SID: {whatsapp_message.sid}")
         

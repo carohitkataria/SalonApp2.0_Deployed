@@ -1215,7 +1215,7 @@ export default function EnhancedSalonDashboard() {
   // Define menu items with role-based visibility
   const menuItems = [
     { id: 'home', label: 'Home', icon: LayoutDashboard, show: true },
-    { id: 'queue', label: 'Token Queue', icon: Calendar, show: true },
+    { id: 'queue', label: 'Bookings', icon: Calendar, show: true },
     { id: 'staff', label: 'Staff Management', icon: Users, show: checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_access_staff') },
     { id: 'services', label: 'Services', icon: Scissors, show: checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_access_services') },
     { id: 'reports', label: 'Reports', icon: TrendingUp, show: checkIsAdmin() || checkIsBranchManager() || checkHasPermission('can_access_financials') || checkHasPermission('can_access_analytics') },

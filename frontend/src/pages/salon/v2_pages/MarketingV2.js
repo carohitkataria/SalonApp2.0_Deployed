@@ -106,6 +106,232 @@ function Drawer({ open, onClose, title, subtitle, iconFn, children, footer }) {
 }
 
 // ============================================================
+// AUDIENCE (segment rules) — mirrors backend ALLOWED_FIELDS
+// ============================================================
+const AUDIENCE_FIELDS = [
+  { key: 'age_min', label: 'Age ≥', type: 'number', defOp: 'gte' },
+  { key: 'age_max', label: 'Age ≤', type: 'number', defOp: 'lte' },
+  { key: 'birthday_month', label: 'Birthday month', type: 'month', defOp: 'eq' },
+  { key: 'wedding_anniversary_month', label: 'Anniversary month', type: 'month', defOp: 'eq' },
+  { key: 'spouse_birthday_month', label: 'Spouse birthday month', type: 'month', defOp: 'eq' },
+  { key: 'last_visit_min_days', label: 'Last visit ≥ (days ago)', type: 'number', defOp: 'gte' },
+  { key: 'last_visit_max_days', label: 'Last visit ≤ (days ago)', type: 'number', defOp: 'lte' },
+  { key: 'avg_spend_min', label: 'Avg spend ≥ (₹)', type: 'number', defOp: 'gte' },
+  { key: 'total_spend_min', label: 'Total spend ≥ (₹)', type: 'number', defOp: 'gte' },
+  { key: 'visit_count_min', label: 'Visit count ≥', type: 'number', defOp: 'gte' },
+  { key: 'gender', label: 'Gender', type: 'gender', defOp: 'eq' },
+  { key: 'membership_tier', label: 'Membership tier', type: 'text', defOp: 'eq' },
+  { key: 'has_wallet', label: 'Has wallet', type: 'bool', defOp: 'eq' },
+  { key: 'phones', label: 'Specific phone numbers', type: 'phones', defOp: 'in' },
+];
+const AUDIENCE_OPS = [
+  { key: 'eq', label: 'equals' },
+  { key: 'gte', label: '≥ (at least)' },
+  { key: 'lte', label: '≤ (at most)' },
+  { key: 'in', label: 'in list' },
+  { key: 'contains', label: 'contains' },
+];
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const fieldMeta = (key) => AUDIENCE_FIELDS.find((f) => f.key === key) || AUDIENCE_FIELDS[0];
+const SEGMENT_PRESETS = [
+  { name: 'Inactive 60+ days', rules: { logic: 'AND', conditions: [{ field: 'last_visit_min_days', op: 'gte', value: 60 }] } },
+  { name: 'Birthdays this month', rules: { logic: 'AND', conditions: [{ field: 'birthday_month', op: 'eq', value: (new Date().getMonth() + 1) }] } },
+  { name: 'High spenders ₹5k+', rules: { logic: 'AND', conditions: [{ field: 'total_spend_min', op: 'gte', value: 5000 }] } },
+  { name: 'Members with wallet', rules: { logic: 'AND', conditions: [{ field: 'has_wallet', op: 'eq', value: true }] } },
+];
+
+// Automation types — mirrors backend AutomationIn.type enum
+const AUTOMATION_TYPES = [
+  { key: 'birthday', title: 'Birthday wish + treat', desc: 'Send on the guest\u2019s birthday' },
+  { key: 'wedding_anniversary', title: 'Anniversary offer', desc: 'Send on wedding anniversary' },
+  { key: 'spouse_birthday', title: 'Spouse birthday', desc: 'Send on spouse\u2019s birthday' },
+  { key: 'win_back', title: 'Win-back lapsed guests', desc: 'Re-engage guests who went quiet' },
+  { key: 'reminder', title: 'Appointment reminder', desc: 'Nudge before/after appointments' },
+];
+const AUTOMATION_LABELS = AUTOMATION_TYPES.reduce((acc, t) => { acc[t.key] = { title: t.title, desc: t.desc, ic: Ico.bolt }; return acc; }, {});
+
+// Reusable audience / segment-rules builder (Section 2).
+function AudienceBuilder({ rules, onChange }) {
+  const logic = rules?.logic || 'AND';
+  const conditions = rules?.conditions || [];
+
+  const setLogic = (l) => onChange({ logic: l, conditions });
+  const addCond = () => {
+    const f = AUDIENCE_FIELDS[0];
+    onChange({ logic, conditions: [...conditions, { field: f.key, op: f.defOp, value: '' }] });
+  };
+  const removeCond = (i) => onChange({ logic, conditions: conditions.filter((_, idx) => idx !== i) });
+  const patchCond = (i, patch) => onChange({ logic, conditions: conditions.map((c, idx) => idx === i ? { ...c, ...patch } : c) });
+
+  const renderValue = (c, i) => {
+    const meta = fieldMeta(c.field);
+    if (meta.type === 'month') {
+      return (
+        <select value={String(c.value ?? '')} onChange={(e) => patchCond(i, { value: Number(e.target.value) })}>
+          <option value="">— month —</option>
+          {MONTHS.map((m, idx) => <option key={m} value={idx + 1}>{m}</option>)}
+        </select>
+      );
+    }
+    if (meta.type === 'gender') {
+      return (
+        <select value={String(c.value ?? '')} onChange={(e) => patchCond(i, { value: e.target.value })}>
+          <option value="">— gender —</option>
+          <option value="Male">Male</option>
+          <option value="Female">Female</option>
+          <option value="Other">Other</option>
+        </select>
+      );
+    }
+    if (meta.type === 'bool') {
+      return (
+        <select value={c.value === true ? '1' : c.value === false ? '0' : ''} onChange={(e) => patchCond(i, { value: e.target.value === '1' })}>
+          <option value="">— pick —</option>
+          <option value="1">Yes</option>
+          <option value="0">No</option>
+        </select>
+      );
+    }
+    if (meta.type === 'phones' || c.op === 'in') {
+      const asText = Array.isArray(c.value) ? c.value.join(', ') : (c.value ?? '');
+      return (
+        <input placeholder="9876543210, 9812345601"
+          value={asText}
+          onChange={(e) => patchCond(i, { value: e.target.value.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean) })} />
+      );
+    }
+    if (meta.type === 'number') {
+      return <input type="number" value={c.value ?? ''} onChange={(e) => patchCond(i, { value: e.target.value === '' ? '' : Number(e.target.value) })} />;
+    }
+    return <input value={c.value ?? ''} onChange={(e) => patchCond(i, { value: e.target.value })} />;
+  };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted,#6b6489)' }}>Match</span>
+        <div className="ch-pick" style={{ display: 'inline-flex' }}>
+          <button type="button" className={logic === 'AND' ? 'on' : ''} onClick={() => setLogic('AND')}>ALL (AND)</button>
+          <button type="button" className={logic === 'OR' ? 'on' : ''} onClick={() => setLogic('OR')}>ANY (OR)</button>
+        </div>
+        <span style={{ fontSize: 12, color: 'var(--muted,#6b6489)' }}>of these conditions</span>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+        {SEGMENT_PRESETS.map((p) => (
+          <button key={p.name} type="button" className="btn-ghost" style={{ padding: '4px 10px', fontSize: 11.5 }}
+            onClick={() => onChange(JSON.parse(JSON.stringify(p.rules)))}>{p.name}</button>
+        ))}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {conditions.length === 0 && (
+          <div style={{ fontSize: 12, color: 'var(--muted,#6b6489)' }}>No conditions — this targets ALL guests. Add a rule or pick a preset.</div>
+        )}
+        {conditions.map((c, i) => (
+          <div key={i} style={{ display: 'grid', gridTemplateColumns: '1.3fr .9fr 1.2fr 32px', gap: 6, alignItems: 'center', background: 'var(--line-2,#f7f6fc)', padding: '8px 10px', borderRadius: 10 }}>
+            <select value={c.field} onChange={(e) => { const m = fieldMeta(e.target.value); patchCond(i, { field: e.target.value, op: m.defOp, value: '' }); }}>
+              {AUDIENCE_FIELDS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
+            </select>
+            <select value={c.op} onChange={(e) => patchCond(i, { op: e.target.value })}>
+              {AUDIENCE_OPS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+            </select>
+            {renderValue(c, i)}
+            <button type="button" className="btn-ghost" title="Remove" style={{ padding: '4px 6px', color: 'var(--rose,#e11d48)' }} onClick={() => removeCond(i)}><Ico.trash /></button>
+          </div>
+        ))}
+      </div>
+      <button type="button" className="btn-ghost" style={{ marginTop: 10, padding: '6px 12px' }} onClick={addCond}><Ico.plus /> Add condition</button>
+    </div>
+  );
+}
+
+// Drawer: create / edit an audience segment (Section 2).
+function NewSegmentDrawer({ open, onClose, salonId, authHeaders, initial, onSaved }) {
+  const editing = !!(initial && initial.id);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [rules, setRules] = useState({ logic: 'AND', conditions: [] });
+  const [count, setCount] = useState(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    if (initial && initial.id) {
+      setName(initial.name || '');
+      setDescription(initial.description || '');
+      setRules(initial.rules && initial.rules.conditions ? initial.rules : { logic: 'AND', conditions: [] });
+    } else {
+      setName(''); setDescription(''); setRules({ logic: 'AND', conditions: [] });
+    }
+    setCount(null);
+  }, [open, initial]);
+
+  const preview = useCallback(async () => {
+    setPreviewing(true);
+    try {
+      const res = await axios.post(`${API}/salons/${salonId}/marketing/segments/preview`,
+        { name: name || 'preview', description, rules }, { headers: authHeaders() });
+      setCount(res.data?.count ?? 0);
+    } catch (e) { toast.error(e.response?.data?.detail || 'Preview failed'); }
+    finally { setPreviewing(false); }
+  }, [salonId, authHeaders, name, description, rules]);
+
+  // auto-preview whenever rules change (debounced)
+  useEffect(() => {
+    if (!open) return undefined;
+    const t = setTimeout(() => { preview(); }, 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rules, open]);
+
+  const submit = async () => {
+    if (!name.trim()) { toast.error('Segment name required'); return; }
+    setSaving(true);
+    try {
+      const payload = { name: name.trim(), description: description || null, rules };
+      if (editing) {
+        await axios.put(`${API}/salons/${salonId}/marketing/segments/${initial.id}`, payload, { headers: authHeaders() });
+        toast.success('Segment updated');
+      } else {
+        await axios.post(`${API}/salons/${salonId}/marketing/segments`, payload, { headers: authHeaders() });
+        toast.success('Segment saved');
+      }
+      onSaved?.();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Save failed'); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Drawer open={open} onClose={onClose} title={editing ? 'Edit Audience Segment' : 'New Audience Segment'} subtitle="Build a rule-based audience" iconFn={Ico.users}
+      footer={
+        <>
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" data-testid="segment-save-btn" disabled={saving} onClick={submit}><Ico.check /> {editing ? 'Save changes' : 'Save segment'}</button>
+        </>
+      }
+    >
+      <div className="v2-field"><label>Segment name</label>
+        <input placeholder="e.g. Lapsed high spenders" value={name} onChange={(e) => setName(e.target.value)} data-testid="segment-name-input" />
+      </div>
+      <div className="v2-field"><label>Description (optional)</label>
+        <input placeholder="Who is in this audience?" value={description} onChange={(e) => setDescription(e.target.value)} />
+      </div>
+      <div className="v2-field"><label>Audience rules</label>
+        <AudienceBuilder rules={rules} onChange={setRules} />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, background: 'var(--wa-bg)', border: '1px solid #CDEBD9', padding: '10px 12px', borderRadius: 10 }}>
+        <b style={{ fontSize: 18, color: 'var(--wa)' }} data-testid="segment-preview-count">{count == null ? '…' : count.toLocaleString('en-IN')}</b>
+        <span style={{ fontSize: 12.5, color: 'var(--ink-soft,#556)' }}>guests match right now</span>
+        <button type="button" className="btn-ghost" style={{ marginLeft: 'auto', padding: '5px 10px' }} disabled={previewing} onClick={preview}>
+          <Ico.refresh /> {previewing ? 'Counting…' : 'Refresh'}
+        </button>
+      </div>
+    </Drawer>
+  );
+}
+
+
+// ============================================================
 // MAIN COMPONENT
 // ============================================================
 export default function MarketingV2({ salonId, getAuthHeaders, salon }) {
@@ -130,6 +356,10 @@ export default function MarketingV2({ salonId, getAuthHeaders, salon }) {
   const [membershipDrawer, setMembershipDrawer] = useState(false);
   const [editingPlan, setEditingPlan] = useState(null);
   const [editingTemplate, setEditingTemplate] = useState(null);
+  const [editingAutomation, setEditingAutomation] = useState(null);
+  const [editingCampaign, setEditingCampaign] = useState(null);
+  const [segmentDrawer, setSegmentDrawer] = useState(false);
+  const [editingSegment, setEditingSegment] = useState(null);
 
   // Stable auth reference so background auto-refresh doesn't recreate fetchAll
   const authRef = useRef(getAuthHeaders);
@@ -317,14 +547,25 @@ export default function MarketingV2({ salonId, getAuthHeaders, salon }) {
           <div className="card">
             <div className="card__h">
               <div className="t"><Ico.users /> Audience segments</div>
-              <a onClick={() => toast.info('Segment builder coming soon')} style={{cursor:'pointer'}}>Manage ›</a>
+              <button className="btn-ghost" data-testid="segment-new-btn" onClick={() => { setEditingSegment(null); setSegmentDrawer(true); }}><Ico.plus /> New segment</button>
             </div>
             <div className="seg-grid">
-              {segments.slice(0, 6).map((s, idx) => {
+              {segments.slice(0, 8).map((s, idx) => {
                 const dots = ['var(--rose)','var(--amber)','var(--violet)','var(--teal)','var(--sky)','var(--green)'];
                 return (
-                  <div className="seg-card" key={s.id}>
-                    <div className="st"><span className="d" style={{background: dots[idx % dots.length]}}/>{s.name}</div>
+                  <div className="seg-card" key={s.id} data-testid={`segment-card-${s.id}`}>
+                    <div className="st" style={{display:'flex', alignItems:'center', justifyContent:'space-between'}}>
+                      <span style={{display:'flex', alignItems:'center', gap:6}}><span className="d" style={{background: dots[idx % dots.length]}}/>{s.name}</span>
+                      <span style={{display:'flex', gap:4}}>
+                        <button className="btn-ghost" title="Edit segment" style={{padding:'2px 6px'}} onClick={() => { setEditingSegment(s); setSegmentDrawer(true); }}><Ico.pencil /></button>
+                        <button className="btn-ghost" title="Delete segment" style={{padding:'2px 6px', color:'var(--rose,#e11d48)'}}
+                          onClick={async () => {
+                            if (!window.confirm(`Delete segment "${s.name}"?`)) return;
+                            try { await axios.delete(`${API}/salons/${salonId}/marketing/segments/${s.id}`, { headers: authHeaders() }); toast.success('Segment deleted'); fetchAll({ silent: true }); }
+                            catch (e) { toast.error(e.response?.data?.detail || 'Delete failed'); }
+                          }}><Ico.trash /></button>
+                      </span>
+                    </div>
                     <div className="sc">{segCounts[s.id] ?? '…'} <small>guests</small></div>
                     <button className="seg-send" onClick={() => { setCampaignDrawer({ preselectSegmentId: s.id }); }}>
                       <Ico.send /> Send offer
@@ -349,30 +590,33 @@ export default function MarketingV2({ salonId, getAuthHeaders, salon }) {
         <div className="card">
           <div className="card__h">
             <div className="t"><Ico.send /> All campaigns</div>
-            <button className="btn-ghost" onClick={() => setCampaignDrawer(true)}><Ico.plus />New</button>
+            <button className="btn-ghost" onClick={() => { setEditingCampaign(null); setCampaignDrawer(true); }}><Ico.plus />New</button>
           </div>
           <div className="clist">
             {campaigns.length === 0 && <div className="placeholder"><b>No campaigns yet</b><p>Click "New" to create your first WhatsApp/SMS/Email campaign.</p></div>}
-            {campaigns.map(c => (
-              <CampaignRow
-                key={c.id}
-                c={c}
-                onLaunch={async () => {
-                  try {
-                    await axios.post(`${API}/salons/${salonId}/marketing/campaigns/${c.id}/launch`, {}, { headers: authHeaders() });
-                    toast.success('Campaign launched');
-                    fetchAll();
-                  } catch (e) { toast.error(e.response?.data?.detail || 'Launch failed'); }
-                }}
-                onPause={async () => {
-                  try {
-                    await axios.post(`${API}/salons/${salonId}/marketing/campaigns/${c.id}/pause`, {}, { headers: authHeaders() });
-                    toast.success('Paused');
-                    fetchAll();
-                  } catch (e) { toast.error(e.response?.data?.detail || 'Pause failed'); }
-                }}
-              />
-            ))}
+            {campaigns.map(c => {
+              const st = String(c.status || 'draft').toLowerCase();
+              const act = async (verb) => {
+                try { await axios.post(`${API}/salons/${salonId}/marketing/campaigns/${c.id}/${verb}`, {}, { headers: authHeaders() }); toast.success(`Campaign ${verb}${verb.endsWith('e') ? 'd' : 'ed'}`); fetchAll({ silent: true }); }
+                catch (e) { toast.error(e.response?.data?.detail || `${verb} failed`); }
+              };
+              return (
+                <CampaignRow
+                  key={c.id}
+                  c={c}
+                  onLaunch={st === 'draft' || st === 'scheduled' ? () => act('launch') : null}
+                  onPause={st === 'running' || st === 'live' ? () => act('pause') : null}
+                  onResume={st === 'paused' ? () => act('resume') : null}
+                  onStop={['running', 'live', 'paused', 'scheduled'].includes(st) ? () => act('stop') : null}
+                  onEdit={(st === 'draft' || st === 'scheduled') ? () => { setEditingCampaign(c); setCampaignDrawer(true); } : null}
+                  onDelete={async () => {
+                    if (!window.confirm(`Delete campaign "${c.name}"?`)) return;
+                    try { await axios.delete(`${API}/salons/${salonId}/marketing/campaigns/${c.id}`, { headers: authHeaders() }); toast.success('Campaign deleted'); fetchAll({ silent: true }); }
+                    catch (e) { toast.error(e.response?.data?.detail || 'Delete failed'); }
+                  }}
+                />
+              );
+            })}
           </div>
         </div>
       )}
@@ -382,31 +626,52 @@ export default function MarketingV2({ salonId, getAuthHeaders, salon }) {
         <div className="card">
           <div className="card__h">
             <div className="t"><Ico.bolt /> Always-on automations</div>
-            <button className="btn-ghost" onClick={() => setAutomationDrawer(true)}><Ico.plus />New automation</button>
+            <button className="btn-ghost" data-testid="automation-new-btn" onClick={() => { setEditingAutomation(null); setAutomationDrawer(true); }}><Ico.plus />New automation</button>
           </div>
           <div>
-            {automations.length === 0 && <div className="placeholder"><b>No automations yet</b><p>Create trigger-based flows like reminders, birthday wishes, win-backs.</p></div>}
-            {automations.map((a) => (
-              <div className="auto-row" key={a.id}>
-                <div className="ai" style={{background:'var(--sky-bg)', color:'var(--sky)'}}><Ico.bolt /></div>
-                <div className="an">
-                  <b>{a.name || a.trigger || 'Automation'}</b>
-                  <span>{a.description || `${a.channel || 'WhatsApp'} · trigger: ${a.trigger || 'custom'}`}</span>
+            {automations.length === 0 && <div className="placeholder"><b>No automations yet</b><p>Create trigger-based flows: birthday wishes, anniversary offers, win-backs and reminders.</p></div>}
+            {automations.map((a) => {
+              const label = AUTOMATION_LABELS[a.type] || { title: a.type || 'Automation', desc: '', ic: Ico.bolt };
+              const extra = a.type === 'win_back' ? ` · after ${a.threshold_days || 0} inactive days`
+                : a.type === 'reminder' ? ` · offset ${a.offset_days || 0} day(s)` : '';
+              return (
+                <div className="auto-row" key={a.id} data-testid={`automation-row-${a.id}`}>
+                  <div className="ai" style={{background:'var(--sky-bg)', color:'var(--sky)'}}><label.ic /></div>
+                  <div className="an" style={{flex:1, minWidth:0}}>
+                    <b>{label.title}</b>
+                    <span style={{display:'block', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+                      {(a.template_body || label.desc || 'WhatsApp message')}{extra}
+                    </span>
+                  </div>
+                  <button className="btn-ghost" title="Run now" style={{padding:'5px 9px', fontSize:11}} data-testid={`automation-run-${a.id}`}
+                    onClick={async () => {
+                      try { const r = await axios.post(`${API}/salons/${salonId}/marketing/automations/${a.id}/run-now`, {}, { headers: authHeaders() }); toast.success(`Ran now · ${r.data?.sent ?? 0} sent`); }
+                      catch (e) { toast.error(e.response?.data?.detail || 'Run failed'); }
+                    }}><Ico.send /> Run now</button>
+                  <button className="btn-ghost" title="Edit" style={{padding:'5px 9px', fontSize:11}} data-testid={`automation-edit-${a.id}`}
+                    onClick={() => { setEditingAutomation(a); setAutomationDrawer(true); }}><Ico.pencil /></button>
+                  <button className="btn-ghost" title="Delete" style={{padding:'5px 9px', fontSize:11, color:'var(--rose,#e11d48)'}}
+                    onClick={async () => {
+                      if (!window.confirm('Delete this automation?')) return;
+                      try { await axios.delete(`${API}/salons/${salonId}/marketing/automations/${a.id}`, { headers: authHeaders() }); toast.success('Automation deleted'); fetchAll({ silent: true }); }
+                      catch (e) { toast.error(e.response?.data?.detail || 'Delete failed'); }
+                    }}><Ico.trash /></button>
+                  <button
+                    className={`toggle ${a.active ? 'on' : ''}`}
+                    data-testid={`automation-toggle-${a.id}`}
+                    onClick={async () => {
+                      try {
+                        await axios.put(`${API}/salons/${salonId}/marketing/automations/${a.id}`,
+                          { type: a.type, active: !a.active, template_body: a.template_body || '', coupon_id: a.coupon_id || null, threshold_days: a.threshold_days ?? null, offset_days: a.offset_days ?? null, provider: a.provider || null },
+                          { headers: authHeaders() });
+                        toast.success(`Automation ${!a.active ? 'enabled' : 'paused'}`);
+                        fetchAll({ silent: true });
+                      } catch (e) { toast.error(e.response?.data?.detail || 'Update failed'); }
+                    }}
+                  />
                 </div>
-                <button
-                  className={`toggle ${a.active ? 'on' : ''}`}
-                  onClick={async () => {
-                    try {
-                      await axios.put(`${API}/salons/${salonId}/marketing/automations/${a.id}`,
-                        { ...a, active: !a.active },
-                        { headers: authHeaders() });
-                      toast.success(`Automation ${!a.active ? 'enabled' : 'paused'}`);
-                      fetchAll();
-                    } catch (e) { toast.error(e.response?.data?.detail || 'Update failed'); }
-                  }}
-                />
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -523,6 +788,17 @@ export default function MarketingV2({ salonId, getAuthHeaders, salon }) {
                     </label>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignSelf: 'flex-start' }}>
+                    <button className="btn-ghost" data-testid={`coupon-publish-${c.id}`}
+                      title={c.visibility === 'published' ? 'Unpublish (make private)' : 'Publish (make live)'}
+                      style={{ padding: '4px 8px', fontSize: 10.5, fontWeight: 800, color: c.visibility === 'published' ? 'var(--green,#16a34a)' : 'var(--muted,#6b6489)' }}
+                      onClick={async () => {
+                        const verb = c.visibility === 'published' ? 'unpublish' : 'publish';
+                        try {
+                          await axios.post(`${API}/salons/${salonId}/coupons/${c.id}/${verb}`, {}, { headers: authHeaders() });
+                          toast.success(verb === 'publish' ? 'Published' : 'Unpublished');
+                          fetchAll({ silent: true });
+                        } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
+                      }}>{c.visibility === 'published' ? 'LIVE' : 'DRAFT'}</button>
                     <button className="btn-ghost" data-testid={`coupon-edit-${c.id}`} title="Edit coupon"
                       style={{ padding: '4px 8px' }}
                       onClick={() => { setEditingCoupon(c); setCouponDrawer(true); }}><Ico.pencil /></button>
@@ -594,7 +870,7 @@ export default function MarketingV2({ salonId, getAuthHeaders, salon }) {
           <div className="card">
             <div className="card__h">
               <div className="t"><Ico.star /> Recent reviews · Google · JustDial <span style={{marginLeft:6, fontSize:10, fontWeight:800, background:'var(--amber-bg)', color:'var(--amber)', padding:'2px 7px', borderRadius:20, letterSpacing:.3}}>DEMO · API COMING SOON</span></div>
-              <button className="btn-primary" onClick={() => toast.success('Review requests queued to recent guests on WhatsApp')}><Ico.plus />Request reviews</button>
+              <button className="btn-primary" onClick={() => toast.info('Review requests are coming soon — this section is a preview')}><Ico.plus />Request reviews</button>
             </div>
             <div className="clist">
               {[
@@ -608,7 +884,7 @@ export default function MarketingV2({ salonId, getAuthHeaders, salon }) {
                     <b>{r.who} · {'★'.repeat(r.stars)}{'☆'.repeat(5-r.stars)}</b>
                     <span>"{r.text}"</span>
                   </div>
-                  <button className="btn-ghost" onClick={() => toast.success('Reply drafted')}>Reply</button>
+                  <button className="btn-ghost" onClick={() => toast.info('Reviews integration coming soon')}>Reply</button>
                 </div>
               ))}
             </div>
@@ -623,29 +899,43 @@ export default function MarketingV2({ salonId, getAuthHeaders, salon }) {
 
       {/* ===== SETTINGS ===== */}
       {tab === 'settings' && (
-        <MarketingSettingsPanel salonId={salonId} authHeaders={authHeaders} />
+        <div style={{display:'flex', flexDirection:'column', gap:16}}>
+          <MarketingGuardrailsCard salonId={salonId} authHeaders={authHeaders} />
+          <MarketingSettingsPanel salonId={salonId} authHeaders={authHeaders} />
+        </div>
       )}
 
       {/* -------- DRAWERS -------- */}
       <NewCampaignDrawer
         open={!!campaignDrawer}
         preselectSegmentId={typeof campaignDrawer === 'object' ? campaignDrawer.preselectSegmentId : undefined}
-        onClose={() => setCampaignDrawer(false)}
+        onClose={() => { setCampaignDrawer(false); setEditingCampaign(null); }}
         segments={segments}
         segCounts={segCounts}
         templates={templates}
         coupons={coupons}
         salonId={salonId}
         authHeaders={authHeaders}
-        onSaved={() => { setCampaignDrawer(false); fetchAll(); }}
+        initial={editingCampaign}
+        onSaved={() => { setCampaignDrawer(false); setEditingCampaign(null); fetchAll(); }}
       />
       <NewAutomationDrawer
         open={automationDrawer}
-        onClose={() => setAutomationDrawer(false)}
+        onClose={() => { setAutomationDrawer(false); setEditingAutomation(null); }}
         templates={templates}
+        coupons={coupons}
         salonId={salonId}
         authHeaders={authHeaders}
-        onSaved={() => { setAutomationDrawer(false); fetchAll(); }}
+        initial={editingAutomation}
+        onSaved={() => { setAutomationDrawer(false); setEditingAutomation(null); fetchAll(); }}
+      />
+      <NewSegmentDrawer
+        open={segmentDrawer}
+        onClose={() => { setSegmentDrawer(false); setEditingSegment(null); }}
+        salonId={salonId}
+        authHeaders={authHeaders}
+        initial={editingSegment}
+        onSaved={() => { setSegmentDrawer(false); setEditingSegment(null); fetchAll(); }}
       />
       <NewTemplateDrawer
         open={templateDrawer}
@@ -696,16 +986,16 @@ function KpiTile({ chip, icon, val, label, sub }) {
   );
 }
 
-function CampaignRow({ c, onLaunch, onPause }) {
+function CampaignRow({ c, onLaunch, onPause, onResume, onStop, onEdit, onDelete }) {
   const prov = String(c.provider || 'whatsapp').toLowerCase();
   const chKey = prov.includes('email') ? 'email' : prov.includes('sms') ? 'sms' : 'whatsapp';
   const st = CH_STYLE[chKey];
   const status = String(c.status || 'draft').toLowerCase();
-  const statusLabel = status === 'running' ? 'Live' : status === 'scheduled' ? 'Scheduled' : status === 'paused' ? 'Paused' : status === 'completed' ? 'Completed' : 'Draft';
+  const statusLabel = status === 'running' ? 'Live' : status === 'scheduled' ? 'Scheduled' : status === 'paused' ? 'Paused' : status === 'completed' ? 'Completed' : status === 'stopped' ? 'Stopped' : 'Draft';
   const revenue = ((c.stats?.revenue) || 0);
   const redeemed = (c.stats?.redeemed) || 0;
   return (
-    <div className="crow">
+    <div className="crow" data-testid={`campaign-row-${c.id}`}>
       <div className="ci" style={{background:st.bg, color:st.fg}}><Ico.chat /></div>
       <div className="cn">
         <b>{c.name}</b>
@@ -716,12 +1006,14 @@ function CampaignRow({ c, onLaunch, onPause }) {
         <b>{rupee(revenue)}</b>
         <span>{redeemed} redeemed</span>
       </div>
-      {status === 'draft' && onLaunch && (
-        <button className="btn-ghost" style={{marginLeft:8}} onClick={onLaunch}>Launch</button>
-      )}
-      {status === 'running' && onPause && (
-        <button className="btn-ghost" style={{marginLeft:8}} onClick={onPause}>Pause</button>
-      )}
+      <div style={{display:'flex', gap:6, marginLeft:8, alignItems:'center'}}>
+        {onLaunch && <button className="btn-ghost" style={{padding:'5px 9px', fontSize:11}} onClick={onLaunch}>Launch</button>}
+        {onPause && <button className="btn-ghost" style={{padding:'5px 9px', fontSize:11}} onClick={onPause}>Pause</button>}
+        {onResume && <button className="btn-ghost" style={{padding:'5px 9px', fontSize:11}} onClick={onResume}>Resume</button>}
+        {onStop && <button className="btn-ghost" style={{padding:'5px 9px', fontSize:11}} onClick={onStop}>Stop</button>}
+        {onEdit && <button className="btn-ghost" title="Edit" style={{padding:'5px 9px', fontSize:11}} onClick={onEdit}><Ico.pencil /></button>}
+        {onDelete && <button className="btn-ghost" title="Delete" style={{padding:'5px 9px', fontSize:11, color:'var(--rose,#e11d48)'}} onClick={onDelete}><Ico.trash /></button>}
+      </div>
     </div>
   );
 }
@@ -830,90 +1122,134 @@ function MediaPanel({ salon, salonId, authHeaders }) {
   );
 }
 
-// -------------------- Settings panel --------------------
-function SettingsPanel({ salonId, authHeaders }) {
-  const [settings, setSettings] = useState(null);
-  const [prov, setProv] = useState('twilio');
+// -------------------- Card: Marketing guardrails (MarketingSettingsIn) --------------------
+function MarketingGuardrailsCard({ salonId, authHeaders }) {
+  const [s, setS] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
         const res = await axios.get(`${API}/salons/${salonId}/marketing/settings`, { headers: authHeaders() });
-        setSettings(res.data || {});
-        setProv(res.data?.default_provider || 'twilio');
-      } catch { setSettings({}); }
+        setS(res.data || {});
+      } catch { setS({}); }
     })();
   }, [salonId, authHeaders]);
 
+  const set = (k, v) => setS((p) => ({ ...(p || {}), [k]: v }));
+
   const save = async () => {
+    setSaving(true);
     try {
-      await axios.put(`${API}/salons/${salonId}/marketing/settings`, { ...(settings || {}), default_provider: prov }, { headers: authHeaders() });
-      toast.success('Settings saved');
+      const payload = {
+        monthly_cap_inr: Number(s?.monthly_cap_inr || 0),
+        freq_cap_per_customer_per_week: Number(s?.freq_cap_per_customer_per_week || 0),
+        quiet_hours_start: s?.quiet_hours_start || '22:00',
+        quiet_hours_end: s?.quiet_hours_end || '09:00',
+        spend_brake: !!s?.spend_brake,
+        consent_required: s?.consent_required !== false,
+      };
+      await axios.put(`${API}/salons/${salonId}/marketing/settings`, payload, { headers: authHeaders() });
+      toast.success('Guardrails saved');
     } catch (e) { toast.error(e.response?.data?.detail || 'Save failed'); }
+    finally { setSaving(false); }
   };
 
+  if (!s) return null;
+
   return (
-    <div className="card">
-      <div className="card__h"><div className="t"><Ico.gear /> Marketing settings</div><button className="btn-primary" onClick={save}><Ico.check /> Save</button></div>
+    <div className="card" data-testid="marketing-guardrails-card">
+      <div className="card__h">
+        <div className="t"><Ico.gear /> Guardrails &amp; spend controls</div>
+        <button className="btn-primary" data-testid="guardrails-save-btn" disabled={saving} onClick={save}><Ico.check /> {saving ? 'Saving…' : 'Save'}</button>
+      </div>
+      <p style={{fontSize:12.5, color:'var(--muted,#6b6489)', margin:'0 0 12px'}}>
+        Protect your guests and your budget: cap monthly spend, limit how often each guest is messaged, and pause everything with the spend brake.
+      </p>
       <div className="v2-grid2b">
         <div>
-          <div className="v2-field">
-            <label>Default provider</label>
-            <select value={prov} onChange={(e) => setProv(e.target.value)}>
-              <option value="twilio">Twilio (WhatsApp + SMS)</option>
-              <option value="meta">Meta WhatsApp Cloud API</option>
-              <option value="stub">Stub / test only</option>
-            </select>
+          <div className="v2-field"><label>Monthly spend cap (₹) — 0 = no cap</label>
+            <input type="number" min="0" value={s.monthly_cap_inr ?? 0} onChange={(e) => set('monthly_cap_inr', e.target.value)} data-testid="guardrails-monthly-cap" />
           </div>
-          <div className="v2-field">
-            <label>WhatsApp opt-in required</label>
-            <select value={settings?.opt_in_required ? '1' : '0'} onChange={(e) => setSettings({ ...(settings||{}), opt_in_required: e.target.value === '1' })}>
-              <option value="1">Yes — only send to opted-in guests</option>
-              <option value="0">No — send to all guests</option>
-            </select>
-          </div>
-          <div className="v2-field">
-            <label>Quiet hours</label>
-            <input placeholder="e.g. 22:00 – 08:00 IST" value={settings?.quiet_hours || ''} onChange={(e) => setSettings({ ...(settings||{}), quiet_hours: e.target.value })}/>
+          <div className="v2-field"><label>Max messages / guest / week</label>
+            <input type="number" min="0" value={s.freq_cap_per_customer_per_week ?? 3} onChange={(e) => set('freq_cap_per_customer_per_week', e.target.value)} data-testid="guardrails-freq-cap" />
           </div>
         </div>
         <div>
-          <div className="v2-field">
-            <label>DLT sender ID (SMS)</label>
-            <input placeholder="e.g. THLOOKS" value={settings?.dlt_sender_id || ''} onChange={(e) => setSettings({ ...(settings||{}), dlt_sender_id: e.target.value })}/>
-          </div>
-          <div className="v2-field">
-            <label>Email sender</label>
-            <input placeholder="hello@yoursalon.com" value={settings?.email_sender || ''} onChange={(e) => setSettings({ ...(settings||{}), email_sender: e.target.value })}/>
-          </div>
-          <div className="v2-field">
-            <label>Twilio Content SID prefix (optional)</label>
-            <input placeholder="HX…" value={settings?.twilio_content_prefix || ''} onChange={(e) => setSettings({ ...(settings||{}), twilio_content_prefix: e.target.value })}/>
+          <div className="v2-field"><label>Quiet hours (no sends)</label>
+            <div style={{display:'flex', alignItems:'center', gap:8}}>
+              <input type="time" value={s.quiet_hours_start || '22:00'} onChange={(e) => set('quiet_hours_start', e.target.value)} data-testid="guardrails-quiet-start" />
+              <span style={{color:'var(--muted,#6b6489)'}}>to</span>
+              <input type="time" value={s.quiet_hours_end || '09:00'} onChange={(e) => set('quiet_hours_end', e.target.value)} data-testid="guardrails-quiet-end" />
+            </div>
           </div>
         </div>
       </div>
-      <p style={{fontSize:12, color:'var(--muted)', marginTop:8}}>
-        Twilio + Meta WhatsApp Cloud are already wired in the backend. Set default here to change how new campaigns/automations send by default.
-      </p>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, fontSize: 13, fontWeight: 600, cursor: 'pointer' }} data-testid="guardrails-consent">
+        <input type="checkbox" checked={s.consent_required !== false} onChange={(e) => set('consent_required', e.target.checked)} />
+        Only send to guests who opted in (consent required)
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 13, fontWeight: 600, cursor: 'pointer' }} data-testid="guardrails-spend-brake">
+        <input type="checkbox" checked={!!s.spend_brake} onChange={(e) => set('spend_brake', e.target.checked)} />
+        <span style={{color: s.spend_brake ? 'var(--rose,#e11d48)' : 'inherit'}}>Spend brake — pause ALL outbound marketing immediately</span>
+      </label>
     </div>
   );
 }
 
-// -------------------- Drawer: New Campaign --------------------
-function NewCampaignDrawer({ open, onClose, preselectSegmentId, segments, segCounts, templates, coupons, salonId, authHeaders, onSaved }) {
+// -------------------- Drawer: New/Edit Campaign --------------------
+function NewCampaignDrawer({ open, onClose, preselectSegmentId, segments, segCounts, templates, coupons, salonId, authHeaders, initial, onSaved }) {
+  const editing = !!(initial && initial.id);
   const [name, setName] = useState('');
+  const [audienceMode, setAudienceMode] = useState('segment');
   const [segId, setSegId] = useState('');
+  const [adHocPhones, setAdHocPhones] = useState('');
   const [channel, setChannel] = useState('whatsapp');
   const [tmplId, setTmplId] = useState('');
   const [body, setBody] = useState('');
   const [couponId, setCouponId] = useState('');
   const [scheduleAt, setScheduleAt] = useState('');
   const [saving, setSaving] = useState(false);
+  const [audience, setAudience] = useState(null); // { count, estimated_spend_inr }
 
   useEffect(() => {
-    if (!open) { setName(''); setChannel('whatsapp'); setTmplId(''); setBody(''); setCouponId(''); setScheduleAt(''); }
-    if (preselectSegmentId) setSegId(preselectSegmentId);
-  }, [open, preselectSegmentId]);
+    if (!open) return;
+    if (initial && initial.id) {
+      setName(initial.name || '');
+      setSegId(initial.segment_id || '');
+      setAudienceMode(initial.segment_id ? 'segment' : (initial.ad_hoc_phones?.length ? 'phones' : 'segment'));
+      setAdHocPhones(Array.isArray(initial.ad_hoc_phones) ? initial.ad_hoc_phones.join(', ') : '');
+      setChannel(initial.provider && String(initial.provider).includes('email') ? 'email' : initial.provider && String(initial.provider).includes('sms') ? 'sms' : 'whatsapp');
+      setTmplId(initial.template_id || '');
+      setBody(initial.template_body || '');
+      setCouponId(initial.coupon_id || '');
+      setScheduleAt(initial.schedule_at ? String(initial.schedule_at).slice(0, 16) : '');
+    } else {
+      setName(''); setAudienceMode('segment'); setSegId(preselectSegmentId || ''); setAdHocPhones('');
+      setChannel('whatsapp'); setTmplId(''); setBody(''); setCouponId(''); setScheduleAt('');
+    }
+    setAudience(null);
+  }, [open, initial, preselectSegmentId]);
+
+  const phonesArr = useMemo(() => adHocPhones.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean), [adHocPhones]);
+
+  // Live recipient + cost estimate
+  useEffect(() => {
+    if (!open) return undefined;
+    const t = setTimeout(async () => {
+      const payload = audienceMode === 'segment'
+        ? { segment_id: segId || null }
+        : { ad_hoc_phones: phonesArr };
+      if (audienceMode === 'segment' && !segId) { setAudience(null); return; }
+      if (audienceMode === 'phones' && phonesArr.length === 0) { setAudience({ count: 0, estimated_spend_inr: 0 }); return; }
+      try {
+        const res = await axios.post(`${API}/salons/${salonId}/marketing/campaigns/preview-audience`, payload, { headers: authHeaders() });
+        setAudience({ count: res.data?.count ?? 0, estimated_spend_inr: res.data?.estimated_spend_inr ?? 0 });
+      } catch { setAudience(null); }
+    }, 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, audienceMode, segId, adHocPhones]);
 
   const applyTemplate = (id) => {
     setTmplId(id);
@@ -924,23 +1260,32 @@ function NewCampaignDrawer({ open, onClose, preselectSegmentId, segments, segCou
   const submit = async (launchNow) => {
     if (!name.trim()) { toast.error('Name required'); return; }
     if (!body.trim()) { toast.error('Message body required (pick a template or write custom)'); return; }
+    if (audienceMode === 'segment' && !segId) { toast.error('Pick an audience segment (or switch to specific phones)'); return; }
+    if (audienceMode === 'phones' && phonesArr.length === 0) { toast.error('Add at least one phone number'); return; }
     setSaving(true);
     try {
       const payload = {
         name: name.trim(),
-        segment_id: segId || null,
+        segment_id: audienceMode === 'segment' ? (segId || null) : null,
+        ad_hoc_phones: audienceMode === 'phones' ? phonesArr : null,
         template_id: tmplId || null,
         template_body: body,
         coupon_id: couponId || null,
         provider: channel === 'whatsapp' ? null : channel,
-        schedule_at: (!launchNow && scheduleAt) ? scheduleAt : null,
+        schedule_at: (!launchNow && scheduleAt) ? new Date(scheduleAt).toISOString() : null,
       };
-      const res = await axios.post(`${API}/salons/${salonId}/marketing/campaigns`, payload, { headers: authHeaders() });
+      let cid = initial?.id;
+      if (editing) {
+        await axios.put(`${API}/salons/${salonId}/marketing/campaigns/${cid}`, payload, { headers: authHeaders() });
+      } else {
+        const res = await axios.post(`${API}/salons/${salonId}/marketing/campaigns`, payload, { headers: authHeaders() });
+        cid = res.data.id;
+      }
       if (launchNow) {
-        await axios.post(`${API}/salons/${salonId}/marketing/campaigns/${res.data.id}/launch`, {}, { headers: authHeaders() });
+        await axios.post(`${API}/salons/${salonId}/marketing/campaigns/${cid}/launch`, {}, { headers: authHeaders() });
         toast.success('Campaign queued');
       } else {
-        toast.success('Campaign saved');
+        toast.success(editing ? 'Campaign updated' : 'Campaign saved');
       }
       onSaved?.();
     } catch (e) {
@@ -949,7 +1294,7 @@ function NewCampaignDrawer({ open, onClose, preselectSegmentId, segments, segCou
   };
 
   return (
-    <Drawer open={!!open} onClose={onClose} title="New Campaign" subtitle="Reach the right guests in a few taps" iconFn={Ico.send}
+    <Drawer open={!!open} onClose={onClose} title={editing ? 'Edit Campaign' : 'New Campaign'} subtitle="Reach the right guests in a few taps" iconFn={Ico.send}
       footer={
         <>
           <button className="btn-ghost" onClick={onClose}>Cancel</button>
@@ -959,13 +1304,31 @@ function NewCampaignDrawer({ open, onClose, preselectSegmentId, segments, segCou
       }
     >
       <div className="v2-field"><label>Campaign name</label>
-        <input placeholder="e.g. Diwali Glow Offer" value={name} onChange={(e) => setName(e.target.value)} />
+        <input placeholder="e.g. Diwali Glow Offer" value={name} onChange={(e) => setName(e.target.value)} data-testid="campaign-name-input" />
       </div>
-      <div className="v2-field"><label>Audience segment</label>
-        <select value={segId} onChange={(e) => setSegId(e.target.value)}>
-          <option value="">— Select segment —</option>
-          {segments.map(s => <option key={s.id} value={s.id}>{s.name} ({segCounts?.[s.id] ?? '—'})</option>)}
-        </select>
+      <div className="v2-field"><label>Audience</label>
+        <div className="ch-pick">
+          <button type="button" className={audienceMode==='segment' ? 'on' : ''} onClick={() => setAudienceMode('segment')}><Ico.users /> Saved segment</button>
+          <button type="button" className={audienceMode==='phones' ? 'on' : ''} onClick={() => setAudienceMode('phones')}><Ico.chat /> Specific phones</button>
+        </div>
+      </div>
+      {audienceMode === 'segment' ? (
+        <div className="v2-field"><label>Audience segment</label>
+          <select value={segId} onChange={(e) => setSegId(e.target.value)} data-testid="campaign-segment-select">
+            <option value="">— Select segment —</option>
+            {segments.map(s => <option key={s.id} value={s.id}>{s.name} ({segCounts?.[s.id] ?? '—'})</option>)}
+          </select>
+        </div>
+      ) : (
+        <div className="v2-field"><label>Phone numbers (comma or space separated)</label>
+          <textarea rows={3} placeholder="9876543210, 9812345601" value={adHocPhones} onChange={(e) => setAdHocPhones(e.target.value)} data-testid="campaign-phones-input" />
+        </div>
+      )}
+      {/* Live audience + cost preview */}
+      <div style={{display:'flex', alignItems:'center', gap:10, margin:'2px 0 12px', background:'var(--wa-bg)', border:'1px solid #CDEBD9', padding:'10px 12px', borderRadius:10}}>
+        <b style={{fontSize:18, color:'var(--wa)'}} data-testid="campaign-recipient-count">{audience ? audience.count.toLocaleString('en-IN') : '—'}</b>
+        <span style={{fontSize:12.5, color:'var(--ink-soft,#556)'}}>recipients</span>
+        {audience && <span style={{marginLeft:'auto', fontSize:12.5, color:'var(--ink-soft,#556)'}}>est. spend ≈ {rupee(audience.estimated_spend_inr)}</span>}
       </div>
       <div className="v2-field"><label>Channel</label>
         <div className="ch-pick">
@@ -981,7 +1344,7 @@ function NewCampaignDrawer({ open, onClose, preselectSegmentId, segments, segCou
         </select>
       </div>
       <div className="v2-field"><label>Message body</label>
-        <textarea placeholder="Hi {{name}}, we miss you! Here's 20% off…" value={body} onChange={(e) => setBody(e.target.value)} />
+        <textarea placeholder="Hi {{name}}, we miss you! Here's 20% off…" value={body} onChange={(e) => setBody(e.target.value)} data-testid="campaign-body-input" />
       </div>
       <div className="v2-field"><label>Attach coupon (optional)</label>
         <select value={couponId} onChange={(e) => setCouponId(e.target.value)}>
@@ -996,73 +1359,109 @@ function NewCampaignDrawer({ open, onClose, preselectSegmentId, segments, segCou
   );
 }
 
-// -------------------- Drawer: New Automation --------------------
-function NewAutomationDrawer({ open, onClose, templates, salonId, authHeaders, onSaved }) {
-  const [name, setName] = useState('');
-  const [trigger, setTrigger] = useState('appointment_reminder');
-  const [channel, setChannel] = useState('whatsapp');
-  const [tmplId, setTmplId] = useState('');
+// -------------------- Drawer: New/Edit Automation --------------------
+function NewAutomationDrawer({ open, onClose, templates, coupons = [], salonId, authHeaders, initial, onSaved }) {
+  const editing = !!(initial && initial.id);
+  const [type, setType] = useState('birthday');
+  const [templateBody, setTemplateBody] = useState('');
+  const [couponId, setCouponId] = useState('');
+  const [thresholdDays, setThresholdDays] = useState('60');
+  const [offsetDays, setOffsetDays] = useState('1');
+  const [provider, setProvider] = useState('');
   const [active, setActive] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!open) { setName(''); setTrigger('appointment_reminder'); setChannel('whatsapp'); setTmplId(''); setActive(true); }
-  }, [open]);
+    if (!open) return;
+    if (initial && initial.id) {
+      setType(initial.type || 'birthday');
+      setTemplateBody(initial.template_body || '');
+      setCouponId(initial.coupon_id || '');
+      setThresholdDays(String(initial.threshold_days ?? 60));
+      setOffsetDays(String(initial.offset_days ?? 1));
+      setProvider(initial.provider || '');
+      setActive(initial.active !== false);
+    } else {
+      setType('birthday'); setTemplateBody(''); setCouponId(''); setThresholdDays('60'); setOffsetDays('1'); setProvider(''); setActive(true);
+    }
+  }, [open, initial]);
 
   const submit = async () => {
-    if (!name.trim()) { toast.error('Name required'); return; }
+    if (!templateBody.trim()) { toast.error('Message body required'); return; }
     setSaving(true);
     try {
-      await axios.post(`${API}/salons/${salonId}/marketing/automations`, {
-        name: name.trim(),
-        trigger,
-        channel,
-        template_id: tmplId || null,
+      const payload = {
+        type,
         active,
-      }, { headers: authHeaders() });
-      toast.success('Automation created');
+        template_body: templateBody.trim(),
+        coupon_id: couponId || null,
+        threshold_days: type === 'win_back' ? Number(thresholdDays || 0) : null,
+        offset_days: type === 'reminder' ? Number(offsetDays || 0) : null,
+        provider: provider || null,
+      };
+      if (editing) {
+        await axios.put(`${API}/salons/${salonId}/marketing/automations/${initial.id}`, payload, { headers: authHeaders() });
+        toast.success('Automation updated');
+      } else {
+        await axios.post(`${API}/salons/${salonId}/marketing/automations`, payload, { headers: authHeaders() });
+        toast.success('Automation created');
+      }
       onSaved?.();
-    } catch (e) { toast.error(e.response?.data?.detail || 'Save failed'); }
-    finally { setSaving(false); }
+    } catch (e) {
+      const detail = e.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Save failed');
+    } finally { setSaving(false); }
   };
 
   return (
-    <Drawer open={open} onClose={onClose} title="New Automation" subtitle="Always-on, trigger-based journeys" iconFn={Ico.bolt}
+    <Drawer open={open} onClose={onClose} title={editing ? 'Edit Automation' : 'New Automation'} subtitle="Always-on, trigger-based journeys" iconFn={Ico.bolt}
       footer={
         <>
           <button className="btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn-primary" disabled={saving} onClick={submit}><Ico.check /> Create</button>
+          <button className="btn-primary" data-testid="automation-save-btn" disabled={saving} onClick={submit}><Ico.check /> {editing ? 'Save changes' : 'Create'}</button>
         </>
       }
     >
-      <div className="v2-field"><label>Name</label>
-        <input placeholder="e.g. Appointment reminder 24h" value={name} onChange={(e) => setName(e.target.value)} />
-      </div>
-      <div className="v2-field"><label>Trigger</label>
-        <select value={trigger} onChange={(e) => setTrigger(e.target.value)}>
-          <option value="appointment_reminder">Appointment reminders (24h + 2h)</option>
-          <option value="birthday">Birthday wish + treat</option>
-          <option value="anniversary">Anniversary offer</option>
-          <option value="winback_lapsed">Win-back lapsed (60d)</option>
-          <option value="review_request">Review request after checkout</option>
-          <option value="rebooking">Rebooking nudge (service cycle)</option>
+      <div className="v2-field"><label>Trigger type</label>
+        <select value={type} onChange={(e) => setType(e.target.value)} data-testid="automation-type-select">
+          {AUTOMATION_TYPES.map((t) => <option key={t.key} value={t.key}>{t.title}</option>)}
         </select>
+        <div style={{fontSize:11.5, color:'var(--muted,#6b6489)', marginTop:4}}>{(AUTOMATION_TYPES.find(t => t.key === type) || {}).desc}</div>
       </div>
-      <div className="v2-field"><label>Channel</label>
-        <div className="ch-pick">
-          <button type="button" className={channel==='whatsapp' ? 'on' : ''} onClick={() => setChannel('whatsapp')}><Ico.wa /> WhatsApp</button>
-          <button type="button" className={channel==='sms' ? 'on' : ''} onClick={() => setChannel('sms')}><Ico.chat /> SMS</button>
-          <button type="button" className={channel==='email' ? 'on' : ''} onClick={() => setChannel('email')}><Ico.mail /> Email</button>
+      {type === 'win_back' && (
+        <div className="v2-field"><label>Inactive threshold (days)</label>
+          <input type="number" min="1" value={thresholdDays} onChange={(e) => setThresholdDays(e.target.value)} data-testid="automation-threshold-input" />
         </div>
-      </div>
-      <div className="v2-field"><label>Template</label>
-        <select value={tmplId} onChange={(e) => setTmplId(e.target.value)}>
-          <option value="">— None —</option>
+      )}
+      {type === 'reminder' && (
+        <div className="v2-field"><label>Offset (days before/after appointment)</label>
+          <input type="number" value={offsetDays} onChange={(e) => setOffsetDays(e.target.value)} data-testid="automation-offset-input" />
+        </div>
+      )}
+      <div className="v2-field"><label>Prefill from a template (optional)</label>
+        <select value="" onChange={(e) => { const t = templates.find(x => x.id === e.target.value); if (t) setTemplateBody(t.body || ''); }}>
+          <option value="">— pick a template to copy its body —</option>
           {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
       </div>
+      <div className="v2-field"><label>Message body</label>
+        <textarea rows={4} placeholder="Hi {{1}}, happy birthday! Here's a treat from us 🎉" value={templateBody} onChange={(e) => setTemplateBody(e.target.value)} data-testid="automation-body-input" />
+      </div>
+      <div className="v2-field"><label>Attach coupon (optional)</label>
+        <select value={couponId} onChange={(e) => setCouponId(e.target.value)} data-testid="automation-coupon-select">
+          <option value="">— No coupon —</option>
+          {coupons.map(c => <option key={c.id} value={c.id}>{c.code} · {c.title}</option>)}
+        </select>
+      </div>
+      <div className="v2-field"><label>Send via (optional override)</label>
+        <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+          <option value="">Default provider</option>
+          <option value="twilio">Twilio (WhatsApp/SMS)</option>
+          <option value="meta">Meta WhatsApp Cloud</option>
+        </select>
+      </div>
       <div className="v2-field"><label>Active</label>
-        <select value={active ? '1' : '0'} onChange={(e) => setActive(e.target.value === '1')}>
+        <select value={active ? '1' : '0'} onChange={(e) => setActive(e.target.value === '1')} data-testid="automation-active-select">
           <option value="1">On</option>
           <option value="0">Off</option>
         </select>
@@ -1516,6 +1915,8 @@ function NewMembershipDrawer({ open, onClose, salonId, authHeaders, initial, onS
   const [terms, setTerms] = useState('');
   const [tier, setTier] = useState('Gold');
   const [color, setColor] = useState('#f59e0b');
+  const [scope, setScope] = useState('single'); // 'single' | 'family'
+  const [familySize, setFamilySize] = useState('4');
   const [saving, setSaving] = useState(false);
 
   const TIER_PRESETS = { Diamond: '#38bdf8', Gold: '#f59e0b', Silver: '#94a3b8', Platinum: '#64748b', Custom: '#a855f7' };
@@ -1532,8 +1933,10 @@ function NewMembershipDrawer({ open, onClose, salonId, authHeaders, initial, onS
       setTerms(initial.terms_conditions || '');
       setTier(initial.tier || 'Custom');
       setColor(initial.color || '#a855f7');
+      setScope(initial.is_family ? 'family' : 'single');
+      setFamilySize(String(initial.family_size ?? 4));
     } else {
-      setName(''); setPlanType('credit'); setDiscountPct('10'); setAmount('1000'); setCredit('1200'); setValidity('12'); setTerms(''); setTier('Gold'); setColor('#f59e0b');
+      setName(''); setPlanType('credit'); setDiscountPct('10'); setAmount('1000'); setCredit('1200'); setValidity('12'); setTerms(''); setTier('Gold'); setColor('#f59e0b'); setScope('single'); setFamilySize('4');
     }
   }, [open, initial]);
 
@@ -1554,6 +1957,8 @@ function NewMembershipDrawer({ open, onClose, salonId, authHeaders, initial, onS
       tier, color,
       plan_type: planType,
       discount_percent: planType === 'discount' ? dp : 0,
+      is_family: scope === 'family',
+      family_size: scope === 'family' ? (Number(familySize) || 4) : 1,
     };
     try {
       if (editing) {
@@ -1596,6 +2001,27 @@ function NewMembershipDrawer({ open, onClose, salonId, authHeaders, initial, onS
         <div style={{ fontSize: 11.5, color: 'var(--muted,#6b6489)', marginTop: 6 }}>
           {planType === 'credit' ? 'Guest pays once and gets wallet balance to spend on services.' : 'Guest pays once and gets a flat % off every booking, auto-applied at checkout.'}
         </div>
+      </div>
+      <div className="v2-field"><label>Membership scope</label>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {[['single', 'Single (standalone)'], ['family', 'Family']].map(([v, lbl]) => (
+            <button key={v} type="button" data-testid={`membership-scope-${v}`}
+              onClick={() => setScope(v)}
+              style={{ flex: 1, padding: '9px 10px', borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                border: `1.5px solid ${scope === v ? color : 'var(--line,#e0dbe8)'}`,
+                color: scope === v ? color : 'var(--muted,#6b6489)',
+                background: scope === v ? color + '1A' : '#fff' }}>{lbl}</button>
+          ))}
+        </div>
+        {scope === 'family' && (
+          <div style={{ marginTop: 8 }}>
+            <label style={{ fontSize: 12 }}>Covers up to (members)</label>
+            <input type="number" min="2" max="10" value={familySize} onChange={(e) => setFamilySize(e.target.value)} data-testid="membership-family-size" />
+            <div style={{ fontSize: 11.5, color: 'var(--muted,#6b6489)', marginTop: 6 }}>
+              A family membership covers the buyer plus the family members listed on their profile.
+            </div>
+          </div>
+        )}
       </div>
       <div className="v2-field"><label>Tier &amp; card theme</label>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
@@ -1659,11 +2085,18 @@ function NewCouponDrawer({ open, onClose, salonId, authHeaders, initial, onSaved
   const editing = !!(initial && initial.id);
   const [code, setCode] = useState('');
   const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
   const [type, setType] = useState('percent');
   const [value, setValue] = useState('20');
   const [minBill, setMinBill] = useState('0');
   const [maxDiscount, setMaxDiscount] = useState('');
+  const [perCustomerLimit, setPerCustomerLimit] = useState('1');
+  const [totalCap, setTotalCap] = useState('');
+  const [validFrom, setValidFrom] = useState('');
   const [validTo, setValidTo] = useState('');
+  const [stackable, setStackable] = useState(false);
+  const [visibility, setVisibility] = useState('published');
+  const [isActive, setIsActive] = useState(true);
   const [showToCustomer, setShowToCustomer] = useState(true);
   const [showOnInvoice, setShowOnInvoice] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1673,15 +2106,24 @@ function NewCouponDrawer({ open, onClose, salonId, authHeaders, initial, onSaved
     if (initial && initial.id) {
       setCode(initial.code || '');
       setTitle(initial.title || '');
+      setDescription(initial.description || '');
       setType(initial.type || 'percent');
       setValue(String(initial.value ?? 20));
       setMinBill(String(initial.min_bill_amount ?? 0));
       setMaxDiscount(initial.max_discount_amount != null ? String(initial.max_discount_amount) : '');
+      setPerCustomerLimit(initial.per_customer_limit != null ? String(initial.per_customer_limit) : '');
+      setTotalCap(initial.total_cap != null ? String(initial.total_cap) : '');
+      setValidFrom(initial.valid_from ? String(initial.valid_from).slice(0, 10) : '');
       setValidTo(initial.valid_to ? String(initial.valid_to).slice(0, 10) : '');
+      setStackable(!!initial.stackable);
+      setVisibility(initial.visibility || 'published');
+      setIsActive(initial.is_active !== false);
       setShowToCustomer(!!initial.show_to_customer);
       setShowOnInvoice(!!initial.show_on_invoice);
     } else {
-      setCode(''); setTitle(''); setType('percent'); setValue('20'); setMinBill('0'); setMaxDiscount(''); setValidTo(''); setShowToCustomer(true); setShowOnInvoice(false);
+      setCode(''); setTitle(''); setDescription(''); setType('percent'); setValue('20'); setMinBill('0'); setMaxDiscount('');
+      setPerCustomerLimit('1'); setTotalCap(''); setValidFrom(''); setValidTo(''); setStackable(false); setVisibility('published');
+      setIsActive(true); setShowToCustomer(true); setShowOnInvoice(false);
     }
   }, [open, initial]);
 
@@ -1691,13 +2133,18 @@ function NewCouponDrawer({ open, onClose, salonId, authHeaders, initial, onSaved
     const payload = {
       code: code.trim().toUpperCase(),
       title: title.trim(),
+      description: description || null,
       type,
       value: Number(value),
       min_bill_amount: Number(minBill || 0),
       max_discount_amount: maxDiscount === '' ? null : Number(maxDiscount),
+      per_customer_limit: perCustomerLimit === '' ? null : Number(perCustomerLimit),
+      total_cap: totalCap === '' ? null : Number(totalCap),
+      valid_from: validFrom ? new Date(validFrom).toISOString() : null,
       valid_to: validTo ? new Date(validTo).toISOString() : null,
-      is_active: true,
-      visibility: 'published',
+      stackable,
+      is_active: isActive,
+      visibility,
       show_to_customer: showToCustomer,
       show_on_invoice: showOnInvoice,
     };
@@ -1729,6 +2176,9 @@ function NewCouponDrawer({ open, onClose, salonId, authHeaders, initial, onSaved
       <div className="v2-field"><label>Title</label>
         <input placeholder="Monsoon Glow" value={title} onChange={(e) => setTitle(e.target.value)} data-testid="coupon-title-input" />
       </div>
+      <div className="v2-field"><label>Description (optional)</label>
+        <input placeholder="Flat 20% off all services this monsoon" value={description} onChange={(e) => setDescription(e.target.value)} data-testid="coupon-description-input" />
+      </div>
       <div className="v2-field"><label>Type</label>
         <select value={type} onChange={(e) => setType(e.target.value)} data-testid="coupon-type-select">
           <option value="percent">Percent (%)</option>
@@ -1745,9 +2195,36 @@ function NewCouponDrawer({ open, onClose, salonId, authHeaders, initial, onSaved
         <input type="number" min="0" placeholder="No upper limit" value={maxDiscount} onChange={(e) => setMaxDiscount(e.target.value)} data-testid="coupon-maxdiscount-input" />
         <div style={{ fontSize: 11, color: 'var(--muted,#6b6489)', marginTop: 4 }}>Caps the discount on high-value bills. Leave blank for no limit.</div>
       </div>
-      <div className="v2-field"><label>Valid until</label>
-        <input type="date" value={validTo} onChange={(e) => setValidTo(e.target.value)} data-testid="coupon-validto-input" />
+      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
+        <div className="v2-field"><label>Per-customer limit</label>
+          <input type="number" min="0" placeholder="Unlimited" value={perCustomerLimit} onChange={(e) => setPerCustomerLimit(e.target.value)} data-testid="coupon-percustomer-input" />
+        </div>
+        <div className="v2-field"><label>Total redemption cap</label>
+          <input type="number" min="0" placeholder="Unlimited" value={totalCap} onChange={(e) => setTotalCap(e.target.value)} data-testid="coupon-totalcap-input" />
+        </div>
       </div>
+      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
+        <div className="v2-field"><label>Valid from</label>
+          <input type="date" value={validFrom} onChange={(e) => setValidFrom(e.target.value)} data-testid="coupon-validfrom-input" />
+        </div>
+        <div className="v2-field"><label>Valid until</label>
+          <input type="date" value={validTo} onChange={(e) => setValidTo(e.target.value)} data-testid="coupon-validto-input" />
+        </div>
+      </div>
+      <div className="v2-field"><label>Visibility</label>
+        <select value={visibility} onChange={(e) => setVisibility(e.target.value)} data-testid="coupon-visibility-select">
+          <option value="published">Published (live &amp; usable)</option>
+          <option value="private">Private (staff-only / draft)</option>
+        </select>
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, fontSize: 13, fontWeight: 600, cursor: 'pointer' }} data-testid="coupon-stackable">
+        <input type="checkbox" checked={stackable} onChange={(e) => setStackable(e.target.checked)} />
+        Stackable with other offers
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }} data-testid="coupon-active">
+        <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
+        Active
+      </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }} data-testid="coupon-show-to-customer">
         <input type="checkbox" checked={showToCustomer} onChange={(e) => setShowToCustomer(e.target.checked)} />
         Show to customers at checkout

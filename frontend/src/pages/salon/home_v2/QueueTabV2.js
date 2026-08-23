@@ -16,7 +16,9 @@
  *     from the parent, so behaviour is identical.
  */
 import React, { useEffect, useMemo, useState } from 'react';
+import { useServicesEnabled } from '@/lib/salonQueries';
 import QueueCalendarView from './QueueCalendarView';
+import GuestProfileModal from './GuestProfileModal';
 
 const QV2_CSS = `
 .qv2{font-family:'Plus Jakarta Sans','Inter',system-ui,sans-serif;color:#23252F}
@@ -117,6 +119,52 @@ const QV2_CSS = `
 .qv2 .qv2-actbtn.dial:hover{background:linear-gradient(135deg,#2FA96A,#3EBD7D);color:#fff}
 .qv2 .qv2-noact{font-size:11px;color:#9A9EAE;font-style:italic;font-weight:600}
 
+/* ---- Compact one-line list (Section 4) ---- */
+.qv2 .qv2-lines{background:#fff;border:1px solid #ECECF3;border-radius:14px;overflow:hidden;box-shadow:0 3px 12px rgba(30,32,50,.03)}
+.qv2 .qv2-lhead,.qv2 .qv2-line{display:grid;grid-template-columns:92px 54px 1.5fr 1.3fr 1fr 96px 84px 150px;gap:10px;align-items:center;padding:10px 14px}
+.qv2 .qv2-lhead{background:#FAFAFD;border-bottom:1px solid #ECECF3;font-size:10.5px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:#9298AA}
+.qv2 .qv2-line{border-bottom:1px solid #F2F2F7;cursor:pointer;transition:.12s;border-left:3px solid transparent}
+.qv2 .qv2-line:last-child{border-bottom:none}
+.qv2 .qv2-line:hover{background:#FAF8FF}
+.qv2 .qv2-line.st-waiting{border-left-color:#F0AD4E}
+.qv2 .qv2-line.st-called{border-left-color:#4A9BFA}
+.qv2 .qv2-line.st-completed{border-left-color:#2FA96A}
+.qv2 .qv2-line.st-skipped{border-left-color:#E45C86}
+.qv2 .qv2-line.st-cancelled{border-left-color:#C3C6D3;opacity:.72}
+.qv2 .qv2-line .tk{font-weight:900;color:#6C4FE0;font-size:14px}
+.qv2 .qv2-line .nm{font-weight:800;color:#23252F;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qv2 .qv2-line .sub{font-size:11px;color:#7C8092;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qv2 .qv2-line .money{font-weight:800;color:#23252F;font-size:13px;text-align:right}
+.qv2 .qv2-line.st-cancelled .nm{text-decoration:line-through}
+.qv2 .qv2-lact{display:flex;gap:4px;justify-content:flex-end}
+.qv2 .qv2-lact button{border:1px solid #ECECF3;background:#fff;border-radius:8px;padding:5px 8px;font-size:11px;font-weight:800;cursor:pointer;color:#5A5E70;transition:.12s;font-family:inherit}
+.qv2 .qv2-lact button:hover{border-color:#DDDFE9;background:#F6F6FA}
+.qv2 .qv2-lact button.call{background:#4A9BFA;color:#fff;border-color:transparent}
+.qv2 .qv2-lact button.complete{background:#2FA96A;color:#fff;border-color:transparent}
+.qv2 .qv2-lact button.cancel{color:#E45C86}
+.qv2 .qv2-lact button.rebook{background:#F1EEFF;color:#6C4FE0;border-color:#E7E2FF}
+@media (max-width:820px){
+  .qv2 .qv2-lhead{display:none}
+  .qv2 .qv2-line{grid-template-columns:44px 1fr auto;grid-template-rows:auto auto;row-gap:4px}
+  .qv2 .qv2-line .l-staff,.qv2 .qv2-line .l-svc{grid-column:2}
+}
+
+/* ---- Detail drawer ---- */
+.qv2 .qvd-ov{position:fixed;inset:0;background:rgba(20,20,40,.35);z-index:9070;opacity:0;pointer-events:none;transition:.2s}
+.qv2 .qvd-ov.open{opacity:1;pointer-events:auto}
+.qv2 .qvd{position:fixed;top:0;right:0;height:100vh;width:420px;max-width:94vw;background:#fff;z-index:9072;box-shadow:-8px 0 30px rgba(20,20,40,.14);transform:translateX(100%);transition:.24s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column}
+.qv2 .qvd.open{transform:translateX(0)}
+.qv2 .qvd h3{margin:0;font-size:16px;font-weight:900;color:#23252F}
+.qv2 .qvd .qvd-h{display:flex;align-items:flex-start;justify-content:space-between;padding:18px 20px;border-bottom:1px solid #F0F0F5}
+.qv2 .qvd .qvd-b{padding:18px 20px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:14px}
+.qv2 .qvd .qvd-sec{border:1px solid #EEF0F6;border-radius:12px;padding:12px 14px}
+.qv2 .qvd .qvd-sec .t{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#6C4FE0;margin-bottom:8px}
+.qv2 .qvd .qvd-kv{display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0}
+.qv2 .qvd .qvd-kv .k{color:#8A8EA0;font-weight:600}
+.qv2 .qvd .qvd-kv .v{color:#23252F;font-weight:700;text-align:right}
+.qv2 .qvd .qvd-f{padding:14px 20px;border-top:1px solid #F0F0F5;display:flex;gap:8px;flex-wrap:wrap}
+.qv2 .qvd .qvd-f button{flex:1;min-width:110px;border:none;border-radius:10px;padding:10px 12px;font-weight:800;font-size:12.5px;cursor:pointer;font-family:inherit}
+
 .qv2 .qv2-empty{text-align:center;padding:70px 20px;background:#fff;border:2px dashed #ECECF3;border-radius:16px}
 .qv2 .qv2-empty svg{width:56px;height:56px;color:#C3C6D3;stroke:currentColor;stroke-width:1.6;fill:none;margin-bottom:14px}
 .qv2 .qv2-empty h4{font-size:15.5px;font-weight:800;color:#23252F;margin:0 0 6px}
@@ -155,10 +203,58 @@ export default function QueueTabV2({
   barbers, selectedBarber, setSelectedBarber,
   tokens, filter, setFilter,
   handleCallNext, handleCallToken, handleCompleteToken, handleRecallToken,
-  handleSkipToken, handleCancelToken, handleSendNotification, handleOpenAddServices,
+  handleSkipToken, handleCancelToken, handleSendNotification,
   API, navigate, salonId, getAuthHeaders,
 }) {
-  const [view, setView] = useState('list'); // 'list' | 'calendar'
+  const [view, setView] = useState(() => {
+    try { return localStorage.getItem('qv2_view') || 'compact'; } catch (_) { return 'compact'; }
+  }); // 'compact' (List, default) | 'list' (Cards) | 'calendar'
+  const [detail, setDetail] = useState(null); // token shown in the detail drawer
+  const [profilePhone, setProfilePhone] = useState(null); // customer profile modal
+  const changeView = (v) => { setView(v); try { localStorage.setItem('qv2_view', v); } catch (_) { /* ignore */ } };
+
+  // Resolve service IDs -> names for the List view (bookings sometimes store ids).
+  const [svcMap, setSvcMap] = useState({});
+  const _qHeaders = (typeof getAuthHeaders === 'function') ? getAuthHeaders() : {};
+  const { data: _svcData } = useServicesEnabled(salonId, { headers: _qHeaders });
+  useEffect(() => {
+    if (_svcData == null) return;
+    const arr = Array.isArray(_svcData) ? _svcData : (_svcData?.services || []);
+    const m = {};
+    arr.forEach((s) => { if (s.id) m[s.id] = s.service_name || s.name; });
+    setSvcMap(m);
+  }, [_svcData]);
+
+  // Resizable columns for the List view (salon can drag column edges).
+  const COLS = useMemo(() => ([
+    { key: 'date', label: 'Date', def: 92, align: 'left' },
+    { key: 'customer', label: 'Customer', def: 200, align: 'left' },
+    { key: 'services', label: 'Services', def: 220, align: 'left' },
+    { key: 'staff', label: 'Staff', def: 130, align: 'left' },
+    { key: 'status', label: 'Status', def: 110, align: 'left' },
+    { key: 'amount', label: 'Amount', def: 100, align: 'center' },
+    { key: 'actions', label: 'Actions', def: 168, align: 'right' },
+  ]), []);
+  const [colW, setColW] = useState(() => {
+    try { const s = JSON.parse(localStorage.getItem('qv2_colw') || '{}'); return (s && typeof s === 'object') ? s : {}; } catch (_) { return {}; }
+  });
+  const widthOf = (k) => colW[k] || COLS.find((c) => c.key === k)?.def || 120;
+  const gridTemplate = COLS.map((c) => `${widthOf(c.key)}px`).join(' ');
+  const startResize = (e, key) => {
+    e.preventDefault(); e.stopPropagation();
+    const startX = e.clientX; const startW = widthOf(key);
+    const onMove = (ev) => {
+      const next = Math.max(60, startW + (ev.clientX - startX));
+      setColW((prev) => ({ ...prev, [key]: next }));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      setColW((prev) => { try { localStorage.setItem('qv2_colw', JSON.stringify(prev)); } catch (_) { /* ignore */ } return prev; });
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
   useEffect(() => {
     const id = 'qv2-styles';
     if (document.getElementById(id)) return;
@@ -188,17 +284,18 @@ export default function QueueTabV2({
       <div className="qv2-topbar">
         <div style={{ display: 'inline-flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <div className="qv2-dates qv2-viewtoggle">
-            <button className={view === 'list' ? 'on' : ''} onClick={() => setView('list')}>List</button>
-            <button className={view === 'calendar' ? 'on' : ''} onClick={() => setView('calendar')}>Calendar</button>
+            <button className={view === 'list' ? 'on' : ''} onClick={() => changeView('list')}>Cards</button>
+            <button className={view === 'compact' ? 'on' : ''} onClick={() => changeView('compact')}>List</button>
+            <button className={view === 'calendar' ? 'on' : ''} onClick={() => changeView('calendar')}>Calendar</button>
           </div>
-          {view === 'list' && (
+          {view !== 'calendar' && (
             <div className="qv2-dates">
               <button className={dateMode === 'today' ? 'on' : ''} onClick={() => setDateMode('today')}>Today</button>
               <button className={dateMode === 'yesterday' ? 'on' : ''} onClick={() => setDateMode('yesterday')}>Yesterday</button>
               <button className={dateMode === 'range' ? 'on' : ''} onClick={() => setDateMode('range')}>Range</button>
             </div>
           )}
-          {view === 'list' && dateMode === 'range' && (
+          {view !== 'calendar' && dateMode === 'range' && (
             <div className="qv2-daterange">
               <input type="date" value={dateFrom || ''} onChange={e => setDateFrom(e.target.value)} />
               <span>→</span>
@@ -206,7 +303,7 @@ export default function QueueTabV2({
             </div>
           )}
         </div>
-        {view === 'list' && (
+        {view !== 'calendar' && (
           <div className="qv2-viewinfo">
             Viewing bookings for <b>{dateMode === 'range'
               ? `${dateFrom || '—'} → ${dateTo || '—'}`
@@ -227,6 +324,116 @@ export default function QueueTabV2({
           handleSendNotification={handleSendNotification}
         />
       )}
+
+      {view === 'compact' && (() => {
+        const nameFor = (v) => {
+          if (v == null) return '';
+          if (typeof v === 'object') {
+            return v.name || v.service_name || svcMap[v.id || v.service_id] || v.id || v.service_id || '';
+          }
+          // string: could be a name or an id — resolve ids via the services map.
+          return svcMap[v] || v;
+        };
+        const svcNames = (t) => {
+          const arr = t.selected_services || t.services || [];
+          if (Array.isArray(arr) && arr.length) return arr.map(nameFor).filter(Boolean);
+          return [];
+        };
+        const timeOf = (t) => t.created_at
+          ? new Date(t.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+          : (t.shift || t.time_slot || '—');
+        const dateOf = (t) => {
+          const d = t.date || t.appointment_date || t.created_at;
+          try { return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }); }
+          catch (_) { return '—'; }
+        };
+        return (
+          <div className="qv2-lines">
+            {tokens.length === 0 && (
+              <div className="qv2-empty" style={{ border: 'none', boxShadow: 'none' }}>
+                <I.clock /><h4>No bookings {filter !== 'all' ? `(${STATUS_LABEL[filter] || filter})` : 'yet'}</h4>
+                <p>New bookings will show up here in real-time.</p>
+              </div>
+            )}
+            {tokens.length > 0 && (
+              <div className="qv2-lhead" style={{ gridTemplateColumns: gridTemplate }}>
+                {COLS.map((c, i) => (
+                  <div key={c.key} style={{ position: 'relative', textAlign: c.align }}>
+                    {c.label}
+                    {i < COLS.length - 1 && (
+                      <span
+                        onMouseDown={(e) => startResize(e, c.key)}
+                        title="Drag to resize column"
+                        style={{ position: 'absolute', top: -6, right: -7, height: 24, width: 12, cursor: 'col-resize', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                      >
+                        <span style={{ width: 2, height: 14, background: '#D5D2E2', borderRadius: 2 }} />
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            {tokens.map(t => {
+              const st = t.status || 'waiting';
+              const names = svcNames(t);
+              const extra = names.length > 2 ? names.length - 2 : 0;
+              return (
+                <div key={t.id} className={`qv2-line st-${st}`} style={{ gridTemplateColumns: gridTemplate }} onClick={() => setDetail(t)} data-testid={`queue-line-${t.id}`}>
+                  <div className="sub" style={{ fontWeight: 700, color: '#5A5F72' }}>
+                    <div>{dateOf(t)}</div>
+                    <div style={{ fontWeight: 500, color: '#8A8F9E', fontSize: 11 }}>{timeOf(t)}</div>
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="nm" role="button" tabIndex={0}
+                         onClick={(e) => { e.stopPropagation(); if (t.phone) setProfilePhone(t.phone); }}
+                         style={{ cursor: t.phone ? 'pointer' : 'default' }}
+                         data-testid={`queue-name-${t.id}`} title="View customer profile">
+                      {t.customer_name || 'Unknown'}
+                    </div>
+                    <div className="sub">{t.phone || '—'}{t.token_number ? ` · #${t.token_number}` : ''}</div>
+                  </div>
+                  <div className="sub l-svc" style={{ lineHeight: 1.3, whiteSpace: 'normal' }} title={names.join(', ')}>
+                    {names.length === 0 ? '—' : (
+                      <>
+                        {names.slice(0, 2).map((n, i) => <div key={i} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n}</div>)}
+                        {extra > 0 && <div style={{ color: '#6C4FE0', fontWeight: 700 }}>+{extra} more</div>}
+                      </>
+                    )}
+                  </div>
+                  <div className="sub l-staff">{t.barber_name || 'Unassigned'}</div>
+                  <div><span className={`qv2-statuspill ${st}`}>{STATUS_LABEL[st] || st}</span></div>
+                  <div className="money" style={{ textAlign: 'center' }}>₹{Number(t.total_amount || 0).toLocaleString('en-IN')}</div>
+                  <div className="qv2-lact" style={{ justifyContent: 'flex-end' }} onClick={e => e.stopPropagation()}>
+                    {st === 'waiting' && <>
+                      <button className="call" onClick={() => handleCallToken(t.id)} title="Call / check-in">Call</button>
+                      <button onClick={() => window.dispatchEvent(new CustomEvent('salon:open-new-appointment', { detail: { edit: t } }))} title="Modify booking">Modify</button>
+                      <button onClick={() => handleSkipToken(t.id)} title="Skip">Skip</button>
+                      <button className="cancel" onClick={() => handleCancelToken(t.id)} title="Cancel">✕</button>
+                    </>}
+                    {st === 'called' && <>
+                      <button className="complete" onClick={() => handleCompleteToken(t.id)} title="Complete">Done</button>
+                      <button onClick={() => window.dispatchEvent(new CustomEvent('salon:open-new-appointment', { detail: { edit: t } }))} title="Modify booking">Modify</button>
+                      <button onClick={() => handleSkipToken(t.id)} title="Skip">Skip</button>
+                    </>}
+                    {st === 'skipped' && <>
+                      <button onClick={() => handleRecallToken(t.id)} title="Recall">Recall</button>
+                      <button className="cancel" onClick={() => handleCancelToken(t.id)} title="Cancel">✕</button>
+                    </>}
+                    {st === 'completed' && (
+                      <button className="rebook" data-testid={`queue-invoice-${t.id}`}
+                        onClick={() => { if (t.invoice_id) { window.open(`${API}/invoices/${t.invoice_id}/view`, '_blank'); } else { setDetail(t); } }}
+                        title="View invoice">Invoice</button>
+                    )}
+                    {st === 'cancelled' && (
+                      <button className="rebook" onClick={() => { try { window.dispatchEvent(new CustomEvent('salon:open-new-appointment', { detail: { rebook: t } })); } catch (_) { /* ignore */ } }} title="Rebook">Rebook</button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {view === 'list' && (<React.Fragment>
       {/* -------- Primary actions: Call Next + Add Booking -------- */}
@@ -346,7 +553,7 @@ export default function QueueTabV2({
                       <button className="qv2-actbtn call" onClick={() => handleCallToken(t.id)} title="Call this customer">
                         <I.chevRight /> Call
                       </button>
-                      <button className="qv2-actbtn modify" onClick={() => handleOpenAddServices(t)} title="Modify booking">
+                      <button className="qv2-actbtn modify" onClick={() => window.dispatchEvent(new CustomEvent('salon:open-new-appointment', { detail: { edit: t } }))} title="Modify booking">
                         <I.edit /> Modify
                       </button>
                       <button className="qv2-actbtn icon-only" onClick={() => handleSendNotification(t.id)} title="Send notification">
@@ -365,7 +572,7 @@ export default function QueueTabV2({
                       <button className="qv2-actbtn complete" onClick={() => handleCompleteToken(t.id)} title="Complete">
                         <I.check /> Complete
                       </button>
-                      <button className="qv2-actbtn modify" onClick={() => handleOpenAddServices(t)} title="Modify">
+                      <button className="qv2-actbtn modify" onClick={() => window.dispatchEvent(new CustomEvent('salon:open-new-appointment', { detail: { edit: t } }))} title="Modify">
                         <I.edit /> Modify
                       </button>
                       <button className="qv2-actbtn recall" onClick={() => handleRecallToken(t.id)} title="Re-call">
@@ -415,6 +622,107 @@ export default function QueueTabV2({
         })}
       </div>
       </React.Fragment>)}
+
+      {/* -------- Detail drawer (Section 4) -------- */}
+      <div className={`qvd-ov ${detail ? 'open' : ''}`} onClick={() => setDetail(null)} />
+      <aside className={`qvd ${detail ? 'open' : ''}`}>
+        {detail && (() => {
+          const t = detail; const st = t.status || 'waiting';
+          const svc = t.selected_services || t.services || [];
+          const asgs = Array.isArray(t.service_assignments) ? t.service_assignments : [];
+          const barberNm = (id) => (barbers.find(b => b.id === id)?.name) || 'Staff';
+          const svcLines = (Array.isArray(svc) ? svc : []).map((s) => {
+            const id = typeof s === 'string' ? s : (s.service_id || s.id);
+            const nm = (typeof s === 'string' ? '' : (s.name || s.service_name)) || svcMap[id] || 'Service';
+            const a = asgs.find(x => x.service_id === id);
+            let barberLabel = t.barber_name || 'Unassigned';
+            let multi = false;
+            if (a) {
+              if (Array.isArray(a.barber_allocations) && a.barber_allocations.length) {
+                barberLabel = a.barber_allocations.map(al => `${barberNm(al.barber_id)} (${al.pct}%)`).join(' · ');
+                multi = a.barber_allocations.length > 1;
+              } else {
+                barberLabel = a.barber_name_snapshot || barberNm(a.barber_id);
+              }
+            }
+            return { id, nm, barberLabel, multi, disc: a?.discount_percent, price: a?.service_price };
+          });
+          const orderDiscPct = Number(t.order_discount_percent || 0);
+          const orderDiscAmt = Number(t.order_discount_amount || 0);
+          const kv = (k, v) => (<div className="qvd-kv"><span className="k">{k}</span><span className="v">{v || '—'}</span></div>);
+          return (
+            <>
+              <div className="qvd-h">
+                <div>
+                  <h3>{t.customer_name || 'Unknown'}</h3>
+                  <div style={{ fontSize: 12, color: '#7C8092', fontWeight: 600, marginTop: 4 }}>Token #{t.token_number} · <span className={`qv2-statuspill ${st}`} style={{ verticalAlign: 'middle' }}>{STATUS_LABEL[st] || st}</span></div>
+                </div>
+                <button className="shv2-profile__close" onClick={() => setDetail(null)} aria-label="Close" style={{ background: '#F4F5F9', border: 'none', borderRadius: 8, width: 30, height: 30, cursor: 'pointer', fontSize: 16 }}>✕</button>
+              </div>
+              <div className="qvd-b">
+                <div className="qvd-sec">
+                  <div className="t">Customer</div>
+                  {kv('Name', t.customer_name)}
+                  {kv('Phone', t.phone && <a href={`tel:${t.phone}`} style={{ color: '#6C4FE0', textDecoration: 'none' }}>{t.phone}</a>)}
+                  {t.phone && kv('WhatsApp', <a href={`https://wa.me/91${String(t.phone).replace(/\D/g, '').slice(-10)}`} target="_blank" rel="noreferrer" style={{ color: '#0E9C82', textDecoration: 'none' }}>Open chat</a>)}
+                </div>
+                <div className="qvd-sec">
+                  <div className="t">Booking</div>
+                  {kv('Date', new Date(t.date).toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short' }))}
+                  {kv('Time', t.created_at ? new Date(t.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : (t.shift || t.time_slot || '—'))}
+                  {(!asgs.length) && kv('Staff', t.barber_name || 'Unassigned')}
+                </div>
+                <div className="qvd-sec">
+                  <div className="t">Services &amp; stylists</div>
+                  {svcLines.length === 0 ? kv('Services', t.services_count ? `${t.services_count} service(s)` : '—') : (
+                    svcLines.map((l, i) => (
+                      <div key={l.id || i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '7px 0', borderBottom: i < svcLines.length - 1 ? '1px solid #F0F0F6' : 'none' }} data-testid={`qvd-svc-${i}`}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 700, fontSize: 13, color: '#2A2E3D' }}>{l.nm}</div>
+                          <div style={{ fontSize: 11.5, color: '#7C8092', marginTop: 2 }}>
+                            {l.multi ? '👥 ' : ''}{l.barberLabel}
+                            {l.disc ? <span style={{ color: '#2FA96A', fontWeight: 700 }}> · {l.disc}% off</span> : null}
+                          </div>
+                        </div>
+                        {l.price != null && <div style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap' }}>₹{Number(l.price).toLocaleString('en-IN')}</div>}
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="qvd-sec">
+                  <div className="t">Payment</div>
+                  {t.subtotal != null && kv('Subtotal', `₹${Number(t.subtotal).toLocaleString('en-IN')}`)}
+                  {orderDiscPct > 0 && kv('Discount', `${orderDiscPct}%`)}
+                  {orderDiscAmt > 0 && kv('Discount (flat)', `₹${orderDiscAmt.toLocaleString('en-IN')}`)}
+                  {Number(t.membership_discount_percent || 0) > 0 && kv('Membership discount', `${t.membership_discount_percent}%`)}
+                  {Number(t.tip_amount || 0) > 0 && kv('Tip', `₹${Number(t.tip_amount).toLocaleString('en-IN')}`)}
+                  {kv('Total', `₹${Number(t.total_amount || 0).toLocaleString('en-IN')}`)}
+                  {kv('Mode', (t.payment_mode || '—').toUpperCase())}
+                  {kv('Status', t.payment_confirmed ? 'Paid' : 'Unpaid')}
+                  {t.recall_count > 0 && kv('Re-calls', `${t.recall_count}×`)}
+                </div>
+              </div>
+              <div className="qvd-f">
+                {st === 'waiting' && <button style={{ background: '#4A9BFA', color: '#fff' }} onClick={() => { handleCallToken(t.id); setDetail(null); }}>Call</button>}
+                {st === 'called' && <button style={{ background: '#2FA96A', color: '#fff' }} onClick={() => { handleCompleteToken(t.id); setDetail(null); }}>Complete</button>}
+                {(st === 'waiting' || st === 'called') && <button style={{ background: '#F1EEFF', color: '#6C4FE0' }} onClick={() => { window.dispatchEvent(new CustomEvent('salon:open-new-appointment', { detail: { edit: t } })); setDetail(null); }}>Modify</button>}
+                {t.invoice_id && <button style={{ background: '#E4F6ED', color: '#1F8F52' }} onClick={() => window.open(`${API}/invoices/${t.invoice_id}/view`, '_blank')}>Invoice</button>}
+                {(st === 'completed' || st === 'cancelled' || st === 'skipped') && <button style={{ background: '#F1EEFF', color: '#6C4FE0' }} onClick={() => { try { window.dispatchEvent(new CustomEvent('salon:open-new-appointment', { detail: { rebook: t } })); } catch (_) { /* ignore */ } setDetail(null); }}>Rebook</button>}
+                {(st === 'waiting' || st === 'called' || st === 'skipped') && <button style={{ background: '#fff', color: '#E45C86', border: '1px solid #F5C0D0' }} onClick={() => { handleCancelToken(t.id); setDetail(null); }}>Cancel</button>}
+              </div>
+            </>
+          );
+        })()}
+      </aside>
+
+      {/* Customer profile modal — opens when a customer name is tapped */}
+      <GuestProfileModal
+        open={!!profilePhone}
+        onClose={() => setProfilePhone(null)}
+        phone={profilePhone}
+        salonId={salonId}
+        getAuthHeaders={getAuthHeaders}
+      />
     </div>
   );
 }

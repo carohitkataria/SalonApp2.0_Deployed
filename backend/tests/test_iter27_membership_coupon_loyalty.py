@@ -13,7 +13,7 @@ import pytest
 import requests
 from motor.motor_asyncio import AsyncIOMotorClient
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://appt-filter-redesign.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://service-catalog-sync.preview.emergentagent.com").rstrip("/")
 SALON_ID = "5ddd4a6e-20f3-4982-b4b4-8e75a5cfd4ae"
 TEST_PHONE = "+917503070727"
 TEST_PHONE2 = "+919000000027"   # customer WITHOUT discount membership
