@@ -1,4 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { qk } from '@/lib/salonQueries';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useWebSocket } from '@/contexts/WebSocketContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -62,6 +64,7 @@ const API = `${BACKEND_URL}/api`;
 
 export default function EnhancedSalonDashboard() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const { subscribe, unsubscribe } = useWebSocket();
   const { salonUser, isAdmin, hasPermission, isBranchManager } = useAuth();
@@ -887,8 +890,12 @@ export default function EnhancedSalonDashboard() {
       const params = new URLSearchParams();
       if (selectedBranchId) params.set('branch_id', selectedBranchId);
       const url = `${API}/salons/${sid}/today-sales${params.toString() ? `?${params.toString()}` : ''}`;
-      const response = await axios.get(url, { headers: getAuthHeaders() });
-      setDailySales(response.data.today_sales || 0);
+      // Perf (item 1a): reuse the React Query cache so today-sales downloads once.
+      const data = await queryClient.fetchQuery({
+        queryKey: qk.todaySales(sid, selectedBranchId),
+        queryFn: () => axios.get(url, { headers: getAuthHeaders() }).then((r) => r.data),
+      });
+      setDailySales(data.today_sales || 0);
     } catch (error) {
       console.error('Error fetching daily sales:', error);
     }

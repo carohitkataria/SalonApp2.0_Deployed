@@ -11,6 +11,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { useQuery } from '@tanstack/react-query';
 import { Icon, rupee, injectZenCss } from './opsTheme';
 import './reportsTheme.css';
 import {
@@ -341,30 +342,35 @@ function GaugeRing({ pct }) {
 
 function SnapshotTab({ salonId, view, date, compare, branchId, getAuthHeaders, onLoaded }) {
   const [cards, setCards] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [sel, setSel] = useState(null);
   const [drill, setDrill] = useState(null);
   const [tgtEdit, setTgtEdit] = useState(null);
 
-  const load = useCallback(async () => {
-    if (!salonId) return;
-    setLoading(true);
-    try {
+  // Perf (item 1a): cache the reports/payments snapshot via React Query, keyed by
+  // salon+view+date+compare+branch, so revisiting the screen reuses it (one call).
+  const _snapQuery = useQuery({
+    queryKey: ['reportsSnapshot', salonId, view, date, compare, branchId || null],
+    queryFn: async () => {
       const bp = branchId ? `&branch_id=${branchId}` : '';
       const res = await axios.get(
         `${API}/salons/${salonId}/reports/snapshot?view=${view}&date=${date}&compare=${compare}${bp}`,
-        { headers: getAuthHeaders() }
+        { headers: getAuthHeaders() },
       );
-      const list = res.data?.cards || [];
-      setCards(list);
-      if (list.length && !list.find((c) => c.id === sel)) setSel(list[0].id);
-      if (onLoaded) onLoaded({ cards: list, window: res.data?.window });
-    } catch (_) {
-      toast.error('Failed to load snapshot');
-    } finally { setLoading(false); }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [salonId, view, date, compare, branchId]);
-  useEffect(() => { load(); }, [load]);
+      return res.data;
+    },
+    enabled: !!salonId,
+  });
+  const loading = _snapQuery.isLoading;
+  const load = _snapQuery.refetch;
+  useEffect(() => {
+    const data = _snapQuery.data;
+    if (!data) return;
+    const list = data?.cards || [];
+    setCards(list);
+    setSel((prev) => (list.length && !list.find((c) => c.id === prev) ? list[0].id : prev));
+    if (onLoaded) onLoaded({ cards: list, window: data?.window });
+  }, [_snapQuery.data]);
+  useEffect(() => { if (_snapQuery.isError) toast.error('Failed to load snapshot'); }, [_snapQuery.isError]);
 
   const active = useMemo(() => cards.find((c) => c.id === sel) || cards[0], [cards, sel]);
 
