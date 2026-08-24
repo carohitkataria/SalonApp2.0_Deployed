@@ -368,17 +368,10 @@ async def send_booking_confirmation_template(
     """
     if not BOOKING_CONFIRMATION_TEMPLATE_SID:
         logger.warning(
-            "TWILIO_BOOKING_CONFIRMATION_TEMPLATE_SID not configured — falling back to freeform message."
+            "TWILIO_BOOKING_CONFIRMATION_TEMPLATE_SID not configured — skipping. "
+            "(Not sending freeform: Twilio rejects free-text business-initiated messages outside the 24h window.)"
         )
-        body = format_booking_confirmation(
-            customer_name=customer_name,
-            token_number=token_number,
-            date=date,
-            time_slot=time_slot,
-            barber_name=barber_name,
-            salon_name=salon_name,
-        )
-        return await send_whatsapp_notification(phone_number, body, "booking_confirmation", salon=salon)
+        return {"status": "skipped", "reason": "template_not_configured"}
 
     return await send_whatsapp_template(
         phone_number=phone_number,
