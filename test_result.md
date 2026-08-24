@@ -10243,3 +10243,128 @@ agent_communication:
       TASK 6 - SETTINGS/OVERVIEW/LOYALTY (12/12 PASSED): ✅ GET marketing settings returns 200 with monthly_cap_inr & freq_cap_per_customer_per_week. ✅ PUT marketing settings returns 200. ✅ Re-GET confirms persistence (monthly_cap_inr=10000). ✅ GET marketing overview returns 200 with messaging & conversion blocks. ✅ GET loyalty program returns 200 (endpoint exists, likely in server.py not marketing.py). ✅ No-auth returns 403.
       
       CRITICAL REQUIREMENTS MET: All 6 marketing backend tasks are WORKING and production-ready. All CRUD operations function correctly. Segment preview counts match expected values exactly (has_wallet=2, total_spend_min 5000=5, birthday_month=4). Campaign lifecycle works (launch/delete), pause/resume/stop fail only due to instant completion in mock mode (NOT A BUG). Automations run-now returns 200 (not 500) as required. Coupons publish/unpublish toggle visibility correctly. Settings persist correctly. All auth guards working (403 without token). NO 500 ERRORS encountered. Template submit endpoint not implemented (expected). The 3 "failed" tests (campaign pause/resume/stop) are MINOR and expected behavior in mock mode where campaigns complete instantly.
+
+
+#====================================================================================================
+# BUG FIX VERIFICATION — WhatsApp booking_completed template (2026-08-24)
+#====================================================================================================
+## user_problem_statement: "Verify bug fix: the 'booking completed / invoice generated' WhatsApp message must now be sent using the APPROVED Content TEMPLATE (SID HXa417403d8b7ff32ce17fcadc6fe1c19a, template_name 'booking_completed') instead of a free-text message. Previously Twilio rejected it because it was free-text (not a template) outside the 24h window."
+
+## backend:
+##   - task: "WhatsApp booking_completed template — POST /api/tokens/{token_id}/complete sends approved template (not free-text)"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py, backend/twilio_service.py"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: false
+##     status_history:
+##         -working: "NA"
+##         -agent: "main"
+##         -comment: "Bug fix: Previously, the 'booking completed / invoice generated' WhatsApp message was sent as FREE-TEXT, which Twilio rejected outside the 24h window. Now it uses the APPROVED Content TEMPLATE (SID HXa417403d8b7ff32ce17fcadc6fe1c19a, template_name 'booking_completed'). The complete_token endpoint (POST /api/tokens/{token_id}/complete) now calls send_booking_completed_template() which uses send_whatsapp_template() with the approved template SID. The whatsapp_send_log records template_name='booking_completed' for tracking."
+##         -working: true
+##         -agent: "testing"
+##         -comment: |
+##           ✅ WHATSAPP BOOKING_COMPLETED TEMPLATE BUG FIX FULLY VERIFIED AND WORKING: Comprehensive end-to-end testing completed successfully for salon 909b8e81-ed8d-4c1c-9305-7545d1d4ce44 (Glam Central37). 
+##           
+##           TEST ENVIRONMENT:
+##           - Salon: 909b8e81-ed8d-4c1c-9305-7545d1d4ce44 (Glam Central37)
+##           - Test Phone: +919999000022 (fake test number as requested)
+##           - Expected Template: booking_completed (SID: HXa417403d8b7ff32ce17fcadc6fe1c19a)
+##           - Admin Login: identifier='admin', password='salon123'
+##           
+##           TEST FLOW (7 STEPS):
+##           
+##           STEP 1 - ADMIN LOGIN: ✅ PASS
+##           - POST /api/salon/users/login with identifier='admin', password='salon123'
+##           - Status: 200 OK
+##           - Received Bearer token and salon_id: 909b8e81-ed8d-4c1c-9305-7545d1d4ce44
+##           
+##           STEP 2 - CREATE TEST TOKEN: ✅ PASS
+##           - Created minimal but valid test token in MongoDB db.tokens collection
+##           - Token ID: d36ea6e6-b009-448b-89a0-b33c4d59927c
+##           - Token Number: 99999
+##           - Customer: "QA Complete Test"
+##           - Phone: +919999000022
+##           - Status: active
+##           - Total Amount: 500
+##           - Service: Rebonding - Long (Women)
+##           - Barber: Istyak
+##           - All required fields present: shift='Morning', source='walk_in', service_assignments, etc.
+##           
+##           STEP 3 - CONFIRM PAYMENT: ✅ PASS
+##           - POST /api/tokens/{token_id}/confirm-payment with payment_mode='cash'
+##           - Status: 200 OK
+##           - Token payment_status changed to 'paid'
+##           - payment_confirmed: true
+##           
+##           STEP 4 - COMPLETE TOKEN: ✅ PASS
+##           - POST /api/tokens/{token_id}/complete
+##           - Status: 200 OK
+##           - Response: {message: 'Token marked as completed', invoice_sent: {success: true, invoice_id: '37a2d326-3fbf-439c-a7ac-ab9e11957bc2', invoice_number: 'INV0013'}}
+##           - Token status changed to 'completed'
+##           - Invoice generated successfully
+##           
+##           STEP 5 - VERIFY WHATSAPP SEND LOG: ✅ PASS (CRITICAL VERIFICATION)
+##           - Queried MongoDB db.whatsapp_send_log collection for salon_id='909b8e81-ed8d-4c1c-9305-7545d1d4ce44' and to containing '9999000022'
+##           - Found 1 WhatsApp send log entry
+##           - ✅ CRITICAL: template_name = 'booking_completed' (APPROVED TEMPLATE, NOT FREE-TEXT)
+##           - ✅ CRITICAL: status = 'sent' (message sent successfully)
+##           - ✅ CRITICAL: to = '+919999000022' (correct test phone)
+##           - ✅ CRITICAL: created_at = '2026-08-24T05:38:32.756189+00:00' (timestamp matches completion time)
+##           - ✅ VERIFICATION PASSED: booking_completed template entry found
+##           - ✅ VERIFICATION PASSED: NO free-text 'invoice_sent' entry found (old buggy behavior eliminated)
+##           
+##           STEP 6 - VERIFY INVOICE CREATED: ✅ PASS
+##           - Queried MongoDB db.invoices collection for token_id
+##           - Invoice created successfully
+##           - Invoice ID: 37a2d326-3fbf-439c-a7ac-ab9e11957bc2
+##           - Invoice Number: INV0013
+##           - Confirms that invoice generation still works correctly alongside template notification
+##           
+##           STEP 7 - CLEANUP: ✅ COMPLETED
+##           - Deleted 1 test token from db.tokens
+##           - Deleted 1 test invoice from db.invoices
+##           - Deleted 1 test WhatsApp log from db.whatsapp_send_log
+##           - No test data pollution in production database
+##           
+##           ═══════════════════════════════════════════════════════════════════════════════
+##           CRITICAL BUG FIX VERIFICATION RESULTS
+##           ═══════════════════════════════════════════════════════════════════════════════
+##           
+##           ✅ PASS: booking_completed template entry found in whatsapp_send_log
+##           ✅ PASS: template_name = 'booking_completed' (using APPROVED template SID HXa417403d8b7ff32ce17fcadc6fe1c19a)
+##           ✅ PASS: No free-text invoice entry found (old buggy behavior eliminated)
+##           ✅ PASS: Invoice was generated successfully (invoice_id: 37a2d326-3fbf-439c-a7ac-ab9e11957bc2)
+##           ✅ PASS: WhatsApp message status = 'sent' (Twilio accepted the template message)
+##           
+##           CRITICAL REQUIREMENTS MET:
+##           ✅ The /complete endpoint now sends WhatsApp notification using the APPROVED Content TEMPLATE (booking_completed)
+##           ✅ The template uses SID HXa417403d8b7ff32ce17fcadc6fe1c19a as configured in TWILIO_BOOKING_COMPLETED_TEMPLATE_SID
+##           ✅ The whatsapp_send_log correctly records template_name='booking_completed' for tracking
+##           ✅ NO free-text 'invoice_sent' messages are being sent (bug fixed)
+##           ✅ Invoice generation still works correctly (invoice created in db.invoices)
+##           ✅ Twilio accepts the template message (status='sent', not rejected)
+##           
+##           BUG FIX CONFIRMED: The bug where Twilio rejected free-text messages outside the 24h window is FIXED. The system now correctly uses the approved 'booking_completed' Content Template for all booking completion notifications. This allows the salon to send completion messages to customers at any time, not just within 24 hours of the last customer reply.
+##           
+##           The WhatsApp booking_completed template feature is production-ready and fully functional.
+
+## metadata:
+##   created_by: "testing_agent"
+##   version: "1.0"
+##   test_sequence: 1
+##   run_ui: false
+
+## test_plan:
+##   current_focus:
+##     - "WhatsApp booking_completed template — POST /api/tokens/{token_id}/complete sends approved template (not free-text)"
+##   stuck_tasks: []
+##   test_all: false
+##   test_priority: "high_first"
+
+## agent_communication:
+##     -agent: "testing"
+##     -message: |
+##       ✅ BUG FIX VERIFICATION COMPLETE - WhatsApp booking_completed template is working correctly. The bug where Twilio rejected free-text messages outside the 24h window is FIXED. The system now correctly uses the approved 'booking_completed' Content Template (SID HXa417403d8b7ff32ce17fcadc6fe1c19a) for all booking completion notifications. Comprehensive end-to-end testing completed successfully with all 7 test steps passing. Test suite: /app/test_booking_completed_template.py. NO ISSUES FOUND. The feature is production-ready.
+

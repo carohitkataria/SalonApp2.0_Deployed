@@ -3535,29 +3535,18 @@ async def generate_and_send_invoice(token_id: str):
         except Exception as _pdf_err:
             logger.warning(f"PDF generation skipped: {_pdf_err}")
 
-        # Send link via WhatsApp
-        message = f"""
-📄 *Invoice Generated*
-
-Hello {token.get('customer_name')}!
-
-Your service at {salon.get('salon_name')} is complete.
-
-*Invoice #{invoice_no}*
-Total Amount: ₹{total:.2f}
-
-🔗 View/Download Invoice:
-{invoice_link}
-
-Thank you for visiting us! 💈
-        """.strip()
-        
-        # Send message with link
-        result = await send_whatsapp_notification(
-            token.get('phone'),
-            message,
-            'invoice_sent'
-        )
+        # Notify the customer via the APPROVED 'booking_completed' Content template
+        # (TWILIO_BOOKING_COMPLETED_TEMPLATE_SID = HXa417403d8b7ff32ce17fcadc6fe1c19a).
+        # Previously this sent a FREE-TEXT invoice message which Twilio rejects
+        # outside the 24h session window ("not a template"). Routing through
+        # send_booking_notification reuses the template + customer/salon opt-out checks.
+        _ = invoice_link  # link is available for the in-app/PDF invoice view
+        try:
+            await send_booking_notification(token, 'booking_completed')
+            result = {"status": "template_sent"}
+        except Exception as _wa_err:
+            logger.warning(f"booking_completed template send failed: {_wa_err}")
+            result = {"status": "failed"}
         
         # Store invoice record
         invoice_record = {
@@ -12498,11 +12487,9 @@ async def complete_token(token_id: str, current_salon=Depends(get_current_salon)
             salon_id=token.get("salon_id", ""),
             related_id=token_id,
         )
-        # Send approved WhatsApp 'booking_completed' template (Item 8).
-        await send_booking_notification(
-            {**token, "status": "completed", "completed_at": datetime.now(timezone.utc).isoformat()},
-            'booking_completed',
-        )
+        # NOTE: the approved 'booking_completed' WhatsApp template is now sent from
+        # generate_and_send_invoice() (called just below), so it goes out exactly once
+        # per completion and carries the invoice/amount details.
     
     # Check and apply loyalty reward (only for non-wallet payments)
     loyalty_reward = None
