@@ -4,7 +4,7 @@ import uuid
 import pytest
 import requests
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://service-catalog-sync.preview.emergentagent.com').rstrip('/')
+BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://salon-booking-hub-167.preview.emergentagent.com').rstrip('/')
 SALON_ID = "f99309ea-7d35-4a33-aabb-8ca20cac7551"
 
 

@@ -4,7 +4,7 @@ import requests
 import sys
 from datetime import datetime, timezone
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://service-catalog-sync.preview.emergentagent.com").rstrip("/")
+BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://salon-booking-hub-167.preview.emergentagent.com").rstrip("/")
 SALON_ID = "62609c3d-a90a-481b-9cd4-4208f741e121"
 BRANCH_ID = "b829d20e-f923-4db8-a69c-9daf38fcd5a9"
 BARBER_A = "a3e12da2-b2d2-4e78-ae7c-2e3b4b0c0169"

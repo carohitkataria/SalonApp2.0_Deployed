@@ -1,7 +1,7 @@
 import requests
 import json
 
-BASE_URL = "https://service-catalog-sync.preview.emergentagent.com/api"
+BASE_URL = "https://salon-booking-hub-167.preview.emergentagent.com/api"
 SALON_ID = "525d3b3e-6a39-4e28-8597-60b6c4ddcb60"
 
 # Authenticate

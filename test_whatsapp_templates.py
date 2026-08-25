@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 load_dotenv('/app/backend/.env')
 
 # Configuration
-BASE_URL = "https://release-candidate-16.preview.emergentagent.com/api"
+BASE_URL = "https://salon-booking-hub-167.preview.emergentagent.com/api"
 SALON_ID = "909b8e81-ed8d-4c1c-9305-7545d1d4ce44"
 MONGO_URL = os.environ.get('MONGO_URL')
 DB_NAME = os.environ.get('DB_NAME', 'salonhub')

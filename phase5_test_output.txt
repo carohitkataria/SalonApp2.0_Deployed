@@ -2,7 +2,7 @@
 [94m============================================================[0m
 [94mITERATION 5 — Phase 5 (Part A) Backend Regression Test[0m
 [94m============================================================[0m
-Base URL: https://service-catalog-sync.preview.emergentagent.com/api
+Base URL: https://salon-booking-hub-167.preview.emergentagent.com/api
 Platform Owner: 7503070727
 Test Salon (Premium): c72d0479-1131-42ec-a952-89cd33b80de0
 Test Salon (Free): fff82245-2d17-47ed-8c0d-d404e26ad33f

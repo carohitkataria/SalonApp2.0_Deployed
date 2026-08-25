@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 import uuid
 
 # Configuration
-BASE_URL = "https://release-candidate-16.preview.emergentagent.com/api"
+BASE_URL = "https://salon-booking-hub-167.preview.emergentagent.com/api"
 SALON_ID = "909b8e81-ed8d-4c1c-9305-7545d1d4ce44"
 TEST_PHONE = "+919999000022"  # Fake test phone (Twilio may reject, that's fine)
 ADMIN_IDENTIFIER = "admin"
