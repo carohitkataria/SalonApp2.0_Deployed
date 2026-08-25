@@ -101,7 +101,6 @@ export default function CustomersV2({ salonId, getAuthHeaders, salon }) {
   const [filter, setFilter] = useState('all');
   const [selectedPhone, setSelectedPhone] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
-  const [editGuest, setEditGuest] = useState(null); // opens CustomerDrawer in edit mode
   const importInputRef = useRef(null);
   const [importing, setImporting] = useState(false);
   // Tag editor (pencil on the Tags column)
@@ -439,18 +438,6 @@ export default function CustomersV2({ salonId, getAuthHeaders, salon }) {
         authHeaders={authHeaders}
         onClose={() => setSelectedPhone(null)}
         onChanged={() => fetchAll({ silent: true })}
-        onEdit={(g) => setEditGuest(g)}
-      />
-
-      {/* EDIT GUEST — shared CustomerDrawer in edit mode (all fields editable) */}
-      <CustomerDrawer
-        open={!!editGuest}
-        initial={editGuest}
-        salonId={salonId}
-        getAuthHeaders={authHeaders}
-        onClose={() => setEditGuest(null)}
-        onSaved={() => { setEditGuest(null); fetchAll({ silent: true }); toast.success('Guest updated'); }}
-        source="owner"
       />
 
       {/* ADD GUEST — shared CustomerDrawer (same form as ribbon → Add Guest) */}
@@ -549,7 +536,10 @@ function KpiTile({ chip, icon, val, label }) {
 const FAMILY_RELATIONS = ['Spouse', 'Son', 'Daughter', 'Father', 'Mother', 'Brother', 'Sister', 'Friend', 'Other'];
 
 // -------------------- Guest profile drawer (React portal) --------------------
-function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged, onEdit }) {
+const GP_EDIT_LBL = { display: 'flex', flexDirection: 'column', gap: 5, fontSize: 11.5, fontWeight: 700, color: 'var(--muted)' };
+const GP_EDIT_INP = { padding: '9px 11px', borderRadius: 10, border: '1px solid #E4E1F0', fontSize: 13.5, fontWeight: 600, color: '#2B2B3A', background: '#fff', outline: 'none', width: '100%', boxSizing: 'border-box' };
+
+function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged }) {
   const [tab, setTab] = useState('overview');
   const [bookings, setBookings] = useState([]);
   const [membership, setMembership] = useState(null);
@@ -565,14 +555,28 @@ function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged, o
   const [walletTx, setWalletTx] = useState([]);
   const [onlineBlocked, setOnlineBlocked] = useState(false);
   const [togglingBlock, setTogglingBlock] = useState(false);
+  // Inline edit of guest details (replaces the stacked CustomerDrawer).
+  const [editing, setEditing] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [barbers, setBarbers] = useState([]);
+  const [editForm, setEditForm] = useState({
+    first: '', last: '', code: '+91', phone: '', email: '',
+    gender: 'Female', dob: '', anniversary: '', preferred_barber_id: '',
+  });
 
   useEffect(() => {
     if (!guest) return;
     setTab('overview');
+    setEditing(false);
     setNotes(guest.notes || '');
     setOnlineBlocked(!!guest.online_booking_blocked);
     setFamName(''); setFamPhone(''); setFamRelation('Spouse'); setFamCustom('');
     (async () => {
+      try {
+        const rb = await axios.get(`${API}/salons/${salonId}/barbers`, { headers: authHeaders() });
+        const list = Array.isArray(rb.data) ? rb.data : (rb.data?.barbers || []);
+        setBarbers(list.filter((b) => b.is_active !== false));
+      } catch { setBarbers([]); }
       try {
         const r1 = await axios.get(`${API}/salons/${salonId}/customers/${encodeURIComponent(guest.phone)}/bookings`, { headers: authHeaders() });
         setBookings(r1.data?.bookings || r1.data || []);
@@ -650,6 +654,31 @@ function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged, o
       finally { setSavingNotes(false); }
     };
 
+    const saveEdit = async () => {
+      const first = (editForm.first || '').trim();
+      if (!first) { toast.error('First name is required'); return; }
+      const cleaned = (editForm.phone || '').replace(/\D/g, '');
+      if (cleaned.length < 10) { toast.error('Enter a valid 10-digit mobile'); return; }
+      setSavingEdit(true);
+      try {
+        const fullPhone = `${editForm.code}${cleaned.slice(-10)}`;
+        const putPhone = String(guest.phone || '').replace(/^\+?91/, '').trim();
+        await axios.put(`${API}/salons/${salonId}/customers/${encodeURIComponent(putPhone)}`, {
+          name: `${editForm.first} ${editForm.last}`.trim(),
+          phone: fullPhone,
+          gender: editForm.gender,
+          email: editForm.email || null,
+          date_of_birth: editForm.dob || null,
+          anniversary: editForm.anniversary || null,
+          preferred_barber_id: editForm.preferred_barber_id || null,
+        }, { headers: authHeaders() });
+        toast.success('Guest updated');
+        setEditing(false);
+        onChanged?.();
+      } catch (e) { toast.error(e.response?.data?.detail || 'Save failed'); }
+      finally { setSavingEdit(false); }
+    };
+
     const bookingDisplay = (b) => {
       const date = b.date || b.appointment_date || b.created_at;
       let dd = '?';
@@ -705,7 +734,22 @@ function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged, o
                 window.dispatchEvent(new CustomEvent('salon:open-new-appointment', { detail: { guest: g } }));
                 onClose?.();
               }}><Ico.cal /> Book</button>
-              <button className="btn-ghost" data-testid="guest-edit-btn" onClick={() => onEdit?.(guest)}><Ico.edit /> Edit</button>
+              <button className={`btn-ghost ${editing ? 'on' : ''}`} data-testid="guest-edit-btn" onClick={() => {
+                if (editing) { setEditing(false); return; }
+                setEditForm({
+                  first: guest._first || '',
+                  last: guest._last || '',
+                  code: '+91',
+                  phone: String(guest.phone || '').replace(/^\+?91/, '').trim(),
+                  email: guest.email || '',
+                  gender: guest.gender || 'Female',
+                  dob: guest.date_of_birth || guest.dob || '',
+                  anniversary: guest.anniversary || '',
+                  preferred_barber_id: guest.preferred_barber_id || '',
+                });
+                setTab('overview');
+                setEditing(true);
+              }}><Ico.edit /> {editing ? 'Cancel edit' : 'Edit'}</button>
               <button className="btn-ghost" onClick={() => toast.info('Wallet top-up via UPI — coming soon')}><Ico.wallet /> Wallet</button>
             </div>
             <div className="gp-stats">
@@ -732,11 +776,51 @@ function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged, o
           <div className="gp-body">
             {tab === 'overview' && (
               <div>
-                <div className="row-line"><span className="k">Mobile</span><span className="v">{guest.phone || '—'}</span></div>
-                <div className="row-line"><span className="k">Email</span><span className="v">{guest.email || '—'}</span></div>
-                <div className="row-line"><span className="k">Gender</span><span className="v">{guest.gender || '—'}</span></div>
-                <div className="row-line"><span className="k">Birthday</span><span className="v">{guest.date_of_birth ? new Date(guest.date_of_birth).toLocaleDateString('en-IN', {day:'numeric', month:'short'}) : '—'}</span></div>
-                <div className="row-line"><span className="k">Anniversary</span><span className="v">{guest.anniversary ? new Date(guest.anniversary).toLocaleDateString('en-IN', {day:'numeric', month:'short'}) : '—'}</span></div>
+                {editing ? (
+                  <div data-testid="guest-inline-edit" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, margin: '4px 0 16px' }}>
+                    <label style={GP_EDIT_LBL}>First name
+                      <input style={GP_EDIT_INP} value={editForm.first} onChange={(e) => setEditForm((f) => ({ ...f, first: e.target.value }))} data-testid="guest-edit-first" />
+                    </label>
+                    <label style={GP_EDIT_LBL}>Last name
+                      <input style={GP_EDIT_INP} value={editForm.last} onChange={(e) => setEditForm((f) => ({ ...f, last: e.target.value }))} data-testid="guest-edit-last" />
+                    </label>
+                    <label style={GP_EDIT_LBL}>Mobile
+                      <input style={GP_EDIT_INP} inputMode="numeric" value={editForm.phone} onChange={(e) => setEditForm((f) => ({ ...f, phone: e.target.value }))} data-testid="guest-edit-phone" />
+                    </label>
+                    <label style={GP_EDIT_LBL}>Email
+                      <input style={GP_EDIT_INP} type="email" value={editForm.email} onChange={(e) => setEditForm((f) => ({ ...f, email: e.target.value }))} data-testid="guest-edit-email" />
+                    </label>
+                    <label style={GP_EDIT_LBL}>Gender
+                      <select style={GP_EDIT_INP} value={editForm.gender} onChange={(e) => setEditForm((f) => ({ ...f, gender: e.target.value }))} data-testid="guest-edit-gender">
+                        <option>Female</option><option>Male</option><option>Other</option>
+                      </select>
+                    </label>
+                    <label style={GP_EDIT_LBL}>Preferred staff
+                      <select style={GP_EDIT_INP} value={editForm.preferred_barber_id} onChange={(e) => setEditForm((f) => ({ ...f, preferred_barber_id: e.target.value }))} data-testid="guest-edit-barber">
+                        <option value="">— No preference —</option>
+                        {barbers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                      </select>
+                    </label>
+                    <label style={GP_EDIT_LBL}>Date of birth
+                      <input style={GP_EDIT_INP} type="date" value={editForm.dob ? String(editForm.dob).slice(0, 10) : ''} onChange={(e) => setEditForm((f) => ({ ...f, dob: e.target.value }))} data-testid="guest-edit-dob" />
+                    </label>
+                    <label style={GP_EDIT_LBL}>Anniversary
+                      <input style={GP_EDIT_INP} type="date" value={editForm.anniversary ? String(editForm.anniversary).slice(0, 10) : ''} onChange={(e) => setEditForm((f) => ({ ...f, anniversary: e.target.value }))} data-testid="guest-edit-anniversary" />
+                    </label>
+                    <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 2 }}>
+                      <button className="btn-ghost" onClick={() => setEditing(false)} disabled={savingEdit}>Cancel</button>
+                      <button className="btn-primary" onClick={saveEdit} disabled={savingEdit} data-testid="guest-edit-save">{savingEdit ? 'Saving…' : 'Save details'}</button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="row-line"><span className="k">Mobile</span><span className="v">{guest.phone || '—'}</span></div>
+                    <div className="row-line"><span className="k">Email</span><span className="v">{guest.email || '—'}</span></div>
+                    <div className="row-line"><span className="k">Gender</span><span className="v">{guest.gender || '—'}</span></div>
+                    <div className="row-line"><span className="k">Birthday</span><span className="v">{guest.date_of_birth ? new Date(guest.date_of_birth).toLocaleDateString('en-IN', {day:'numeric', month:'short'}) : '—'}</span></div>
+                    <div className="row-line"><span className="k">Anniversary</span><span className="v">{guest.anniversary ? new Date(guest.anniversary).toLocaleDateString('en-IN', {day:'numeric', month:'short'}) : '—'}</span></div>
+                  </>
+                )}
                 <div className="row-line"><span className="k">Membership</span><span className="v" data-testid="guest-membership-value">{membership?.membership_name || guest.membership_name || '—'}</span></div>
                 {membership?.membership_name && (
                   <div data-testid="guest-membership-detail" style={{ margin: '2px 0 8px', padding: '10px 12px', borderRadius: 12, border: `1px solid ${(membership.color || '#a855f7')}44`, background: `linear-gradient(160deg, ${(membership.color || '#a855f7')}12, ${(membership.color || '#a855f7')}04)` }}>
@@ -754,7 +838,7 @@ function GuestProfileDrawer({ guest, salonId, authHeaders, onClose, onChanged, o
                     </div>
                   </div>
                 )}
-                <div className="row-line"><span className="k">Preferred staff</span><span className="v">{guest.preferred_barber_name || guest.preferred_barber_id || '—'}</span></div>
+                {!editing && <div className="row-line"><span className="k">Preferred staff</span><span className="v">{guest.preferred_barber_name || guest.preferred_barber_id || '—'}</span></div>}
                 <div className="row-line"><span className="k">Source</span><span className="v">{guest.source || '—'}</span></div>
                 <div className="row-line"><span className="k">Consent (WhatsApp)</span><span className="v" style={{color:'var(--green)'}}>Opted in ✓</span></div>
                 <div className="row-line" data-testid="guest-online-block-row">

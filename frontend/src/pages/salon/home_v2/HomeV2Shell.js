@@ -38,6 +38,7 @@ import NotificationsDrawer from './NotificationsDrawer';
 import MessagesDrawer from './MessagesDrawer';
 import SalonLogoControl from './SalonLogoControl';
 import OrdersDrawer from '@/components/ops/OrdersDrawer';
+import QuickAttendanceDrawer from './QuickAttendanceDrawer';
 
 // ---- Rail items — Home is provided by the logo click at top ----
 export const RAIL_ITEMS = [
@@ -117,6 +118,7 @@ export default function HomeV2Shell({
   const [notifOpen, setNotifOpen] = useState(false);
   const [messagesOpen, setMessagesOpen] = useState(false);
   const [ordersOpen, setOrdersOpen] = useState(false);
+  const [attOpen, setAttOpen] = useState(false);
   const [notifCount, setNotifCount] = useState(unreadNotifCount || 0);
   useEffect(() => { setNotifCount(unreadNotifCount || 0); }, [unreadNotifCount]);
 
@@ -237,7 +239,7 @@ export default function HomeV2Shell({
         <button className="ribbon__btn ribbon__cta" data-tip="New Appointment" onClick={() => openAppt(null)}><I.plus /></button>
         <button className="ribbon__btn" data-tip="Add Guest" onClick={() => setGuestOpen(true)}><I.guestAdd /></button>
         <button className="ribbon__btn" data-tip="Mark Attendance" data-testid="ribbon-attendance-btn"
-                onClick={() => { try { sessionStorage.setItem('open_attendance', '1'); } catch (e) { /* noop */ } navigate('/salon/dashboard?tab=staff'); setTimeout(() => { try { window.dispatchEvent(new CustomEvent('open-attendance')); } catch (e) { /* noop */ } }, 400); }}>
+                onClick={() => setAttOpen(true)}>
           <I.attendance />
         </button>
         <button className="ribbon__btn" data-tip="Retail Sale" onClick={() => navigate('/salon/dashboard?tab=inventory')}><I.cart /></button>
@@ -397,6 +399,14 @@ export default function HomeV2Shell({
         salonId={salonId}
         getAuthHeaders={getAuthHeaders}
         onUnreadChange={setMsgCount}
+      />
+
+      {/* Quick attendance drawer — opens from ribbon (no navigation to Staff). */}
+      <QuickAttendanceDrawer
+        open={attOpen}
+        onClose={() => setAttOpen(false)}
+        salonId={salonId}
+        getAuthHeaders={getAuthHeaders}
       />
     </div>
   );
