@@ -399,3 +399,6 @@ backend_test*.py
 test_customer_view_*.py
 test_is_barber_available.py
 check_sold_memberships.py
+.env
+.env.*
+*.env
