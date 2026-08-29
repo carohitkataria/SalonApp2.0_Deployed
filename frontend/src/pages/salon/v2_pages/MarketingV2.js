@@ -334,6 +334,91 @@ function NewSegmentDrawer({ open, onClose, salonId, authHeaders, initial, onSave
 // ============================================================
 // MAIN COMPONENT
 // ============================================================
+function SalonHubReviewsPanel({ salonId, authHeaders }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    if (!salonId) return;
+    setLoading(true);
+    try {
+      const res = await axios.get(`${API}/salons/${salonId}/ratings?limit=100`, { headers: authHeaders() });
+      setData(res.data);
+    } catch (e) {
+      setData({ average_rating: 0, total_reviews: 0, reviews: [] });
+    } finally { setLoading(false); }
+  }, [salonId, authHeaders]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const reviews = data?.reviews || [];
+  const avg = data?.average_rating || 0;
+  const total = data?.total_reviews || 0;
+  const fiveStar = reviews.filter((r) => r.rating === 5).length;
+  const lowStar = reviews.filter((r) => r.rating <= 2).length;
+  const fmtDate = (d) => {
+    try { return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }); }
+    catch { return ''; }
+  };
+  const stars = (n) => '★'.repeat(n) + '☆'.repeat(5 - n);
+
+  return (
+    <div>
+      <div className="mk-kpis" style={{ gridTemplateColumns: 'repeat(4,1fr)' }}>
+        <KpiTile chip="amber" icon={<Ico.star />} val={avg ? avg.toFixed(1) : '—'} label="Avg rating (SalonHub)" />
+        <KpiTile chip="wa" icon={<Ico.chat />} val={total} label="Total reviews" />
+        <KpiTile chip="green" icon={<Ico.trending />} val={fiveStar} label="5-star reviews" />
+        <KpiTile chip="rose" icon={<Ico.info />} val={lowStar} label="Needs attention (≤2★)" />
+      </div>
+
+      <div className="card">
+        <div className="card__h">
+          <div className="t">
+            <Ico.star /> SalonHub reviews
+            <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, background: 'var(--green-bg,#E4F6ED)', color: 'var(--green,#1F8F52)', padding: '2px 7px', borderRadius: 20, letterSpacing: .3 }}>LIVE</span>
+          </div>
+          <button className="btn-ghost" onClick={load} data-testid="reviews-refresh">Refresh</button>
+        </div>
+
+        <div className="clist" data-testid="salonhub-reviews-list">
+          {loading && <div style={{ padding: 18, color: 'var(--muted)', fontSize: 13 }}>Loading reviews…</div>}
+          {!loading && reviews.length === 0 && (
+            <div style={{ padding: '26px 18px', textAlign: 'center', color: 'var(--muted)' }}>
+              <div style={{ fontSize: 34, marginBottom: 6 }}>⭐</div>
+              <div style={{ fontWeight: 800, color: 'var(--ink,#2B2B3A)', marginBottom: 4 }}>No reviews yet</div>
+              <div style={{ fontSize: 12.5 }}>Every completed service sends the customer a WhatsApp review link. Reviews will appear here automatically.</div>
+            </div>
+          )}
+          {!loading && reviews.map((r) => (
+            <div className="crow" key={r.id} data-testid={`review-row-${r.id}`}>
+              <div className="rev-avatar" style={{ background: r.rating >= 4 ? '#F5A623' : (r.rating <= 2 ? '#C33C5F' : '#9298AA') }}>{r.rating}</div>
+              <div className="cn" style={{ flex: 1, minWidth: 0 }}>
+                <b>{r.user_name || 'Customer'} · <span style={{ color: '#F5A623' }}>{stars(r.rating)}</span></b>
+                <span>{r.review ? `"${r.review}"` : <i style={{ color: 'var(--muted)' }}>No comment</i>}</span>
+                <span style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+                  {r.barber_name ? `Served by ${r.barber_name} · ` : ''}{fmtDate(r.created_at)}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 14, opacity: .85 }}>
+        <div className="card__h">
+          <div className="t">
+            <Ico.star /> Google · JustDial
+            <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, background: 'var(--amber-bg)', color: 'var(--amber)', padding: '2px 7px', borderRadius: 20, letterSpacing: .3 }}>API COMING SOON</span>
+          </div>
+        </div>
+        <div style={{ padding: '16px 18px', color: 'var(--muted)', fontSize: 13 }}>
+          Google &amp; JustDial review sync will appear here once connected. For now, your SalonHub reviews above are collected directly from customers after every completed service.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function MarketingV2({ salonId, getAuthHeaders, salon }) {
   useV2Styles();
 
@@ -858,38 +943,9 @@ export default function MarketingV2({ salonId, getAuthHeaders, salon }) {
         </div>
       )}
 
-      {/* ===== REPUTATION (seeded/demo) ===== */}
+      {/* ===== REPUTATION (SalonHub live reviews + Google/JustDial preview) ===== */}
       {tab === 'reputation' && (
-        <div>
-          <div className="mk-kpis" style={{gridTemplateColumns:'repeat(4,1fr)'}}>
-            <KpiTile chip="amber" icon={<Ico.star />} val="4.8" label="Avg rating" />
-            <KpiTile chip="wa" icon={<Ico.chat />} val="210" label="Review requests" />
-            <KpiTile chip="green" icon={<Ico.trending />} val="+38" label="New reviews" />
-            <KpiTile chip="rose" icon={<Ico.info />} val="3" label="Needs reply" />
-          </div>
-          <div className="card">
-            <div className="card__h">
-              <div className="t"><Ico.star /> Recent reviews · Google · JustDial <span style={{marginLeft:6, fontSize:10, fontWeight:800, background:'var(--amber-bg)', color:'var(--amber)', padding:'2px 7px', borderRadius:20, letterSpacing:.3}}>DEMO · API COMING SOON</span></div>
-              <button className="btn-primary" onClick={() => toast.info('Review requests are coming soon — this section is a preview')}><Ico.plus />Request reviews</button>
-            </div>
-            <div className="clist">
-              {[
-                {who:'Rahul V.', stars:5, text:'Imran is fantastic, great fade. Booked via WhatsApp in seconds.'},
-                {who:'Sana K.',  stars:4, text:'Lovely spa, slightly long wait. Will return.'},
-                {who:'Neha G.',  stars:5, text:'Amazing hair spa experience. Loved the ambiance.'},
-              ].map((r, i) => (
-                <div className="crow" key={i}>
-                  <div className="rev-avatar">★</div>
-                  <div className="cn">
-                    <b>{r.who} · {'★'.repeat(r.stars)}{'☆'.repeat(5-r.stars)}</b>
-                    <span>"{r.text}"</span>
-                  </div>
-                  <button className="btn-ghost" onClick={() => toast.info('Reviews integration coming soon')}>Reply</button>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+        <SalonHubReviewsPanel salonId={salonId} authHeaders={authHeaders} />
       )}
 
       {/* ===== MEDIA (renamed from Gallery) ===== */}

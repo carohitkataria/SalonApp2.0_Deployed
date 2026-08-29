@@ -3256,7 +3256,7 @@ async def send_meta_invoice_template(token_data: dict, salon: dict, invoice_id: 
 
     template_name = os.environ.get("META_WA_INVOICE_TEMPLATE_NAME") or "invoice_generated"
     lang_code = os.environ.get("META_WA_INVOICE_TEMPLATE_LANG") or "en_US"
-    review_path_tpl = os.environ.get("META_WA_INVOICE_REVIEW_PATH") or "salon/{salon_id}/ratings"
+    review_path_tpl = os.environ.get("META_WA_INVOICE_REVIEW_PATH") or "review/{token_id}"
 
     public_base = (os.environ.get("PUBLIC_BASE_URL")
                    or os.getenv("REACT_APP_BACKEND_URL")
@@ -3282,7 +3282,8 @@ async def send_meta_invoice_template(token_data: dict, salon: dict, invoice_id: 
 
     # Button — dynamic URL suffix for the review page (base URL lives in the template).
     review_suffix = review_path_tpl.format(salon_id=salon_id, invoice_id=invoice_id,
-                                           invoice_no=invoice_no, phone=str(phone).lstrip('+'))
+                                           invoice_no=invoice_no, phone=str(phone).lstrip('+'),
+                                           token_id=token_data.get('id', ''))
     button_params = [{
         "type": "button",
         "sub_type": "url",
@@ -16248,6 +16249,114 @@ async def create_rating(rating_data: RatingCreate):
         )
     
     return RatingResponse(**rating_dict)
+
+# ============ CUSTOMER REVIEW PAGE (public — opened from WhatsApp invoice button) ============
+
+@api_router.get("/reviews/booking/{token_id}")
+async def get_review_booking(token_id: str):
+    """Public: booking summary shown on the customer SalonHub review page."""
+    token = await db.tokens.find_one({"id": token_id}, {"_id": 0})
+    if not token:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    salon = await db.salons.find_one({"id": token.get("salon_id")}, {"_id": 0}) or {}
+    barber = None
+    if token.get("barber_id"):
+        barber = await db.barbers.find_one({"id": token.get("barber_id")}, {"_id": 0})
+    service_names = []
+    for sa in (token.get("service_assignments") or []):
+        n = sa.get("service_name") or sa.get("name")
+        if n:
+            service_names.append(n)
+    if not service_names:
+        for s in (token.get("services") or []):
+            if isinstance(s, dict):
+                n = s.get("service_name") or s.get("name")
+                if n:
+                    service_names.append(n)
+            elif isinstance(s, str):
+                service_names.append(s)
+    existing = await db.ratings.find_one({"token_id": token_id}, {"_id": 0})
+    return {
+        "token_id": token_id,
+        "salon_id": token.get("salon_id"),
+        "salon_name": salon.get("salon_name", "our salon"),
+        "salon_logo": salon.get("logo_url") or salon.get("logo"),
+        "barber_id": token.get("barber_id"),
+        "barber_name": (barber or {}).get("name") if barber else None,
+        "customer_name": token.get("customer_name") or "Customer",
+        "services": service_names,
+        "date": token.get("completed_at") or token.get("date"),
+        "is_completed": token.get("status") == "completed",
+        "already_rated": bool(existing),
+        "existing_rating": ({"rating": existing.get("rating"), "review": existing.get("review")}
+                            if existing else None),
+    }
+
+
+class PublicReviewSubmit(BaseModel):
+    token_id: str
+    rating: int = Field(..., ge=1, le=5)
+    review: Optional[str] = ""
+
+
+@api_router.post("/reviews/submit")
+async def submit_public_review(payload: PublicReviewSubmit):
+    """Public: submit a SalonHub review from the customer review link."""
+    token = await db.tokens.find_one({"id": payload.token_id}, {"_id": 0})
+    if not token:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    if token.get("status") != "completed":
+        raise HTTPException(status_code=400, detail="Can only review completed services")
+    if await db.ratings.find_one({"token_id": payload.token_id}):
+        raise HTTPException(status_code=400, detail="You have already reviewed this visit")
+    barber_id = token.get("barber_id") or ""
+    barber = await db.barbers.find_one({"id": barber_id}, {"_id": 0}) if barber_id else None
+    salon_id = token.get("salon_id")
+    rating_dict = {
+        "id": str(uuid.uuid4()),
+        "token_id": payload.token_id,
+        "user_id": token.get("user_id", ""),
+        "user_name": token.get("customer_name", "Customer"),
+        "barber_id": barber_id,
+        "barber_name": (barber or {}).get("name", "Team") if barber else "Team",
+        "salon_id": salon_id,
+        "rating": payload.rating,
+        "review": (payload.review or "").strip(),
+        "source": "salonhub",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.ratings.insert_one(rating_dict)
+    if barber_id:
+        try:
+            await update_barber_average_rating(barber_id)
+        except Exception:
+            pass
+    try:
+        pipeline = [
+            {"$match": {"salon_id": salon_id}},
+            {"$group": {"_id": "$salon_id", "avg": {"$avg": "$rating"}, "n": {"$sum": 1}}},
+        ]
+        stats = await db.ratings.aggregate(pipeline).to_list(1)
+        if stats:
+            await db.salons.update_one(
+                {"id": salon_id},
+                {"$set": {"rating": round(stats[0]["avg"], 1), "total_reviews": stats[0]["n"]}},
+            )
+    except Exception:
+        pass
+    try:
+        stars = "⭐" * int(payload.rating)
+        await create_in_app_notification(
+            user_type="salon", user_id=salon_id,
+            title=f"New SalonHub Review ({payload.rating}/5)",
+            message=f"{rating_dict['user_name']} {stars}: {(rating_dict['review'] or '')[:100]}",
+            notification_type="review_added", setting_key="review_added",
+            salon_id=salon_id, related_id=rating_dict["id"],
+        )
+    except Exception:
+        pass
+    return {"success": True, "id": rating_dict["id"], "salon_id": salon_id}
+
 
 async def update_barber_average_rating(barber_id: str):
     """Update barber's average rating after a new review, and also update the salon-level aggregate."""

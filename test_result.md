@@ -10792,3 +10792,142 @@ agent_communication:
       NOTE: Meta API returned HTTP 400 (phone number ID doesn't exist or lacks permissions). This is EXPECTED in test environment and does NOT indicate a bug. The user will test actual delivery manually with their registered Meta template. The critical requirement is that the API does not crash and the invoice is persisted - both requirements are MET.
       
       NO CRITICAL ISSUES FOUND. The invoice generation + Meta WhatsApp delivery feature is production-ready and fully functional.
+
+#====================================================================================================
+# APPENDED TASK — SalonHub Reviews (customer review page + salon reputation section)
+#====================================================================================================
+backend:
+  - task: "Public customer review endpoints (SalonHub reviews)"
+    implemented: true
+    working: true
+    file: "server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Added two PUBLIC endpoints (no auth):
+          1. GET /api/reviews/booking/{token_id} — returns booking summary for the review page
+             (salon_name, barber_name, services, customer_name, is_completed, already_rated, existing_rating).
+             404 for unknown token.
+          2. POST /api/reviews/submit {token_id, rating(1-5), review?} — creates a rating in db.ratings
+             (source=salonhub), resolves salon/barber from the token server-side, updates barber+salon
+             aggregates, notifies salon in-app. Rejects: 404 unknown token, 400 if token not completed,
+             400 if already reviewed.
+          The Meta invoice review button now links to /review/{token_id} (META_WA_INVOICE_REVIEW_PATH).
+          Existing GET /api/salons/{salon_id}/ratings powers the salon-side Reputation section.
+        -working: true
+        -agent: "testing"
+        -comment: |
+          ✅ PUBLIC REVIEW ENDPOINTS FULLY TESTED AND WORKING (18/18 tests passed): Comprehensive testing completed successfully for SalonHub public review endpoints. Test environment: MongoDB salonhub database with completed token 789610bd-a751-4513-bc67-5fea4acae744 (salon: 909b8e81-ed8d-4c1c-9305-7545d1d4ce44, Glam Central37).
+          
+          TEST RESULTS:
+          1) GET /api/reviews/booking/{token_id} - VALID COMPLETED TOKEN - ✅ PASS (7/7 tests)
+             - HTTP 200 status returned
+             - All required fields present: salon_name, services, is_completed, already_rated, customer_name
+             - Field types verified: salon_name='Glam Central37' (string), services=[] (list), is_completed=true (boolean), already_rated=false (boolean), customer_name='Rohit' (string)
+             - Response includes additional fields: token_id, salon_id, salon_logo, barber_id, barber_name, date, existing_rating
+          
+          2) GET /api/reviews/booking/{token_id} - UNKNOWN TOKEN - ✅ PASS (1/1 test)
+             - HTTP 404 status correctly returned for unknown token 'does-not-exist-123'
+             - Proper error handling verified
+          
+          3) POST /api/reviews/submit - VALID COMPLETED TOKEN (FIRST SUBMISSION) - ✅ PASS (4/4 tests)
+             - HTTP 200 status returned
+             - Response contains success=true and rating id
+             - Rating persisted in db.ratings collection with correct fields
+             - source='salonhub' verified in database
+             - salon_id='909b8e81-ed8d-4c1c-9305-7545d1d4ce44' correctly set in database
+             - Test payload: {token_id, rating: 5, review: "Great service, loved it"}
+          
+          4) POST /api/reviews/submit - ALREADY REVIEWED TOKEN - ✅ PASS (1/1 test)
+             - HTTP 400 status correctly returned when attempting to review same token twice
+             - Duplicate review prevention working correctly
+          
+          5) POST /api/reviews/submit - UNKNOWN TOKEN - ✅ PASS (1/1 test)
+             - HTTP 404 status correctly returned for unknown token 'unknown-token-xyz-123'
+          
+          6) POST /api/reviews/submit - NON-COMPLETED TOKEN - ✅ PASS (1/1 test)
+             - HTTP 400 status correctly returned for token with status='waiting'
+             - Validation prevents reviewing non-completed bookings
+          
+          7) POST /api/reviews/submit - VALIDATION (RATING OUT OF RANGE) - ✅ PASS (2/2 tests)
+             - Rating=0 correctly rejected with HTTP 422 (validation error)
+             - Rating=6 correctly rejected with HTTP 422 (validation error)
+             - Pydantic validation working correctly (rating must be 1-5)
+          
+          8) REGRESSION: GET /api/salons/{salon_id}/ratings - ✅ PASS (4/4 tests)
+             - HTTP 200 status returned for salon 909b8e81-ed8d-4c1c-9305-7545d1d4ce44
+             - All required fields present: average_rating, total_reviews, reviews
+             - Field types verified: average_rating (numeric), total_reviews (integer), reviews (array)
+             - Endpoint still working correctly after new review submission
+          
+          CRITICAL REQUIREMENTS MET:
+          ✅ GET /api/reviews/booking/{token_id} is PUBLIC (no auth required)
+          ✅ Returns all required fields: salon_name, services, is_completed, already_rated, customer_name
+          ✅ Returns 404 for unknown token_id
+          ✅ POST /api/reviews/submit is PUBLIC (no auth required)
+          ✅ Creates rating in db.ratings with source='salonhub'
+          ✅ Sets salon_id correctly in rating document
+          ✅ Returns 200 with success=true on successful submission
+          ✅ Returns 400 when token already reviewed (duplicate prevention)
+          ✅ Returns 404 for unknown token_id
+          ✅ Returns 400 for non-completed token (status != 'completed')
+          ✅ Validates rating range (1-5), rejects 0 and 6 with 422
+          ✅ REGRESSION: GET /api/salons/{salon_id}/ratings still returns 200 with average_rating, total_reviews, reviews[]
+          
+          TEST SUITE: /app/test_review_endpoints.py with 18 comprehensive test cases covering all specified scenarios including positive cases, negative cases, validation, and regression testing. NO CRITICAL ISSUES FOUND. All endpoints are production-ready and fully functional. WhatsApp delivery was not tested as per instructions.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Please test the new PUBLIC review endpoints (no auth token needed):
+      1. GET /api/reviews/booking/{token_id} for a COMPLETED token (pick one from db.tokens where
+         status=completed). Assert 200 + fields salon_name, services (list), is_completed=true,
+         already_rated (bool). Also assert 404 for a random/unknown token_id.
+      2. POST /api/reviews/submit for a COMPLETED token that has NOT been rated yet:
+         body {"token_id": "<id>", "rating": 5, "review": "Great service"} -> assert 200 success,
+         and a doc appears in db.ratings with source=salonhub and salon_id set.
+         Then POST again with the SAME token_id -> assert 400 (already reviewed).
+         POST with a non-completed / unknown token_id -> assert 400/404 respectively.
+      3. Regression: GET /api/salons/{salon_id}/ratings still returns 200 with average_rating,
+         total_reviews, reviews[] (for salon 1a28bde8-b6e7-4722-b8d9-922b87021493 or any salon).
+      Admin login (if needed for salon endpoints): mobile 9876543210 / password salon123.
+      Do NOT test WhatsApp delivery. Focus on the HTTP contracts + db.ratings persistence above.
+    -agent: "testing"
+    -message: |
+      ✅ PUBLIC REVIEW ENDPOINTS TESTING COMPLETE - ALL TESTS PASSED (18/18): Comprehensive backend testing completed successfully for the new SalonHub public review endpoints. Test environment: MongoDB salonhub database, salon 909b8e81-ed8d-4c1c-9305-7545d1d4ce44 (Glam Central37), completed token 789610bd-a751-4513-bc67-5fea4acae744. Test suite: /app/test_review_endpoints.py with 18 comprehensive test cases.
+      
+      SUMMARY OF TESTS:
+      ✅ TEST 1: GET /api/reviews/booking/{token_id} - Valid completed token (7/7 PASS)
+         - Returns 200 with all required fields: salon_name, services, is_completed, already_rated, customer_name
+         - All field types correct (string, list, boolean)
+      
+      ✅ TEST 2: GET /api/reviews/booking/{token_id} - Unknown token (1/1 PASS)
+         - Correctly returns 404 for unknown token_id
+      
+      ✅ TEST 3: POST /api/reviews/submit - Valid completed token (4/4 PASS)
+         - Returns 200 with success=true
+         - Rating persisted in db.ratings with source='salonhub' and salon_id set
+         - Database verification confirmed correct persistence
+      
+      ✅ TEST 4: POST /api/reviews/submit - Already reviewed token (1/1 PASS)
+         - Correctly returns 400 when attempting duplicate review
+      
+      ✅ TEST 5: POST /api/reviews/submit - Unknown token (1/1 PASS)
+         - Correctly returns 404 for unknown token_id
+      
+      ✅ TEST 6: POST /api/reviews/submit - Non-completed token (1/1 PASS)
+         - Correctly returns 400 for token with status='waiting'
+      
+      ✅ TEST 7: POST /api/reviews/submit - Validation (2/2 PASS)
+         - Rating=0 rejected with 422 (validation error)
+         - Rating=6 rejected with 422 (validation error)
+      
+      ✅ TEST 8: REGRESSION - GET /api/salons/{salon_id}/ratings (4/4 PASS)
+         - Returns 200 with average_rating, total_reviews, reviews[]
+         - All field types correct, endpoint still working after new review submission
+      
+      NO CRITICAL ISSUES FOUND. All endpoints are production-ready and fully functional. WhatsApp delivery was not tested as per instructions.

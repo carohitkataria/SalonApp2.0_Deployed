@@ -28,6 +28,7 @@ import ServicesBrowser from '@/pages/ServicesBrowser';
 import SalonMenuPage from '@/pages/SalonMenuPage';
 import BarberProfilePage from '@/pages/BarberProfilePage';
 import SalonRatingsPage from '@/pages/SalonRatingsPage';
+import CustomerReviewPage from '@/pages/CustomerReviewPage';
 import CustomerWalletPage from '@/pages/CustomerWalletPage';
 import CustomerNotificationsPage from '@/pages/CustomerNotificationsPage';
 import CustomerProfilePage from '@/pages/CustomerProfilePage';
@@ -89,6 +90,7 @@ function App() {
                   <Route path="/login" element={<UserLoginPage />} />
                   <Route path="/privacy" element={<PrivacyPolicyPage />} />
                   <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
+                  <Route path="/review/:tokenId" element={<CustomerReviewPage />} />
                   <Route path="/data-deletion" element={<PrivacyPolicyPage />} />
                   <Route path="/user/login" element={<Navigate to="/login" replace />} />
                   <Route path="/auth/callback" element={<AuthCallback />} />
