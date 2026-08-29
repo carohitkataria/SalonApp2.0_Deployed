@@ -103,8 +103,10 @@ async def _meta_post(payload: Dict[str, Any]) -> Dict[str, Any]:
                 msg_id = None
             return {"status": "sent", "provider": "meta", "message_id": msg_id, "raw": data}
         else:
-            logger.error(f"[Meta WA] send failed HTTP {resp.status_code}: {resp.text[:400]}")
-            return {"status": "failed", "provider": "meta", "http_status": resp.status_code, "body": resp.text[:400]}
+            logger.error(
+                f"[Meta WA] send FAILED HTTP {resp.status_code} — full response body: {resp.text}"
+            )
+            return {"status": "failed", "provider": "meta", "http_status": resp.status_code, "body": resp.text}
     except Exception as e:
         logger.error(f"[Meta WA] send exception: {e}")
         return {"status": "failed", "provider": "meta", "error": str(e)}

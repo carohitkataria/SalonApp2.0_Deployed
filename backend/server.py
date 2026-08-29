@@ -3311,7 +3311,12 @@ async def send_meta_invoice_template(token_data: dict, salon: dict, invoice_id: 
         await record_whatsapp_send(salon_id, 'booking_completed', phone, result, salon)
     except Exception:
         pass
-    logger.info(f"[Meta invoice] template '{template_name}' -> {phone}, status={result.get('status')}")
+    if (result or {}).get("status") == "sent":
+        logger.info(f"[Meta invoice] template '{template_name}' SENT to {phone} "
+                    f"(msg_id={result.get('message_id')}) pdf={pdf_link}")
+    else:
+        logger.error(f"[Meta invoice] template '{template_name}' to {phone} did NOT send — "
+                     f"full result: {result} | pdf_link={pdf_link} | review_suffix={review_suffix}")
     return result
 
 
