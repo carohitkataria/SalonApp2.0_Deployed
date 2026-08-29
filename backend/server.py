@@ -3227,6 +3227,93 @@ async def check_and_notify_nearby_tokens(salon_id: str, barber_id: str, date: st
     except Exception as e:
         logger.error(f"Failed to check nearby tokens: {str(e)}")
 
+
+async def send_meta_invoice_template(token_data: dict, salon: dict, invoice_id: str,
+                                     invoice_no: str, amount) -> dict:
+    """Send the invoice-delivery WhatsApp message via the Meta Cloud API template.
+
+    Uses the approved Meta template (name from META_WA_INVOICE_TEMPLATE_NAME).
+    Components:
+      * header  → DOCUMENT attachment = the invoice PDF
+                  ({PUBLIC_BASE_URL}/api/invoices/{invoice_id}/pdf)
+      * body    → {{1}} customer name, {{2}} salon name, {{3}} invoice #, {{4}} amount
+      * button  → dynamic URL suffix (review page): completes https://salonhub.in/{{1}}
+
+    Honours the same salon + customer opt-out checks as booking_completed.
+    """
+    phone = token_data.get('phone')
+    salon_id = token_data.get('salon_id', '')
+    if not phone:
+        return {"status": "skipped", "reason": "no_phone"}
+
+    # Respect salon master/per-event toggle + customer preference (same keys as booking_completed).
+    if not await should_send_salon_whatsapp(salon_id, 'whatsapp_booking_completed'):
+        logger.info(f"[Meta invoice] suppressed by salon settings for {phone} (salon {salon_id})")
+        return {"status": "suppressed", "reason": "salon_setting_off"}
+    if not await should_send_customer_whatsapp(phone, 'whatsapp_booking_status_change'):
+        logger.info(f"[Meta invoice] suppressed by customer settings for {phone}")
+        return {"status": "suppressed", "reason": "customer_setting_off"}
+
+    template_name = os.environ.get("META_WA_INVOICE_TEMPLATE_NAME") or "invoice_generated"
+    lang_code = os.environ.get("META_WA_INVOICE_TEMPLATE_LANG") or "en_US"
+    review_path_tpl = os.environ.get("META_WA_INVOICE_REVIEW_PATH") or "salon/{salon_id}/ratings"
+
+    public_base = (os.environ.get("PUBLIC_BASE_URL")
+                   or os.getenv("REACT_APP_BACKEND_URL")
+                   or "").rstrip("/")
+    pdf_link = f"{public_base}/api/invoices/{invoice_id}/pdf" if public_base else ""
+
+    # Body variables — plain values (₹ symbol lives in the template text itself).
+    try:
+        amt = float(amount or 0)
+        amount_str = str(int(amt)) if amt.is_integer() else f"{amt:.2f}"
+    except Exception:
+        amount_str = str(amount or 0)
+    customer_name = token_data.get('customer_name') or 'Customer'
+    salon_name = (salon or {}).get('salon_name') or 'our salon'
+
+    # Header — DOCUMENT attachment (the invoice PDF).
+    header_params = None
+    if pdf_link:
+        header_params = [{
+            "type": "document",
+            "document": {"link": pdf_link, "filename": f"Invoice_{invoice_no}.pdf"},
+        }]
+
+    # Button — dynamic URL suffix for the review page (base URL lives in the template).
+    review_suffix = review_path_tpl.format(salon_id=salon_id, invoice_id=invoice_id,
+                                           invoice_no=invoice_no, phone=str(phone).lstrip('+'))
+    button_params = [{
+        "type": "button",
+        "sub_type": "url",
+        "index": "0",
+        "parameters": [{"type": "text", "text": review_suffix}],
+    }]
+
+    body_params = [customer_name, salon_name, str(invoice_no), amount_str]
+
+    try:
+        from whatsapp_service import send_meta_template
+        result = await send_meta_template(
+            to=phone,
+            template_name=template_name,
+            lang_code=lang_code,
+            body_params=body_params,
+            header_params=header_params,
+            button_params=button_params,
+        )
+    except Exception as e:
+        logger.warning(f"[Meta invoice] send failed: {e}")
+        result = {"status": "failed", "error": str(e)}
+
+    try:
+        await record_whatsapp_send(salon_id, 'booking_completed', phone, result, salon)
+    except Exception:
+        pass
+    logger.info(f"[Meta invoice] template '{template_name}' -> {phone}, status={result.get('status')}")
+    return result
+
+
 async def generate_and_send_invoice(token_id: str):
     """Generate invoice PDF and send via WhatsApp"""
     try:
@@ -3535,20 +3622,14 @@ async def generate_and_send_invoice(token_id: str):
         except Exception as _pdf_err:
             logger.warning(f"PDF generation skipped: {_pdf_err}")
 
-        # Notify the customer via the APPROVED 'booking_completed' Content template
-        # (TWILIO_BOOKING_COMPLETED_TEMPLATE_SID = HXa417403d8b7ff32ce17fcadc6fe1c19a).
-        # Previously this sent a FREE-TEXT invoice message which Twilio rejects
-        # outside the 24h session window ("not a template"). Routing through
-        # send_booking_notification reuses the template + customer/salon opt-out checks.
+        # Notify the customer. When WHATSAPP_PROVIDER=meta, deliver the invoice
+        # through the Meta Cloud API template (PDF attachment + review button).
+        # Otherwise fall back to the approved Twilio 'booking_completed' template.
+        # NOTE: the invoice record is stored FIRST so the PDF attachment URL
+        # (/api/invoices/{id}/pdf) resolves when Meta fetches it.
         _ = invoice_link  # link is available for the in-app/PDF invoice view
-        try:
-            await send_booking_notification(token, 'booking_completed')
-            result = {"status": "template_sent"}
-        except Exception as _wa_err:
-            logger.warning(f"booking_completed template send failed: {_wa_err}")
-            result = {"status": "failed"}
-        
-        # Store invoice record
+
+        # Store invoice record (before sending, so the PDF link is live)
         invoice_record = {
             "id": invoice_id,
             "token_id": token_id,
@@ -3561,12 +3642,31 @@ async def generate_and_send_invoice(token_id: str):
             "pdf_base64": pdf_base64,
             "amount": total,
             "sent_at": datetime.now(timezone.utc).isoformat(),
-            "sent_status": result.get('status'),
+            "sent_status": "pending",
             "created_at": datetime.now(timezone.utc).isoformat()
         }
-        
         await db.invoices.insert_one(invoice_record)
-        
+
+        try:
+            from whatsapp_service import get_active_provider
+            _provider = get_active_provider()
+            if _provider == "meta":
+                _res = await send_meta_invoice_template(
+                    token, salon, invoice_id, invoice_no, grand_total,
+                )
+                result = {"status": _res.get("status") or "sent"}
+            else:
+                await send_booking_notification(token, 'booking_completed')
+                result = {"status": "template_sent"}
+        except Exception as _wa_err:
+            logger.warning(f"invoice WhatsApp send failed: {_wa_err}")
+            result = {"status": "failed"}
+
+        # Update stored status after send
+        await db.invoices.update_one(
+            {"id": invoice_id}, {"$set": {"sent_status": result.get('status')}}
+        )
+
         # Update token with invoice_id
         await db.tokens.update_one(
             {"id": token_id},
@@ -17410,6 +17510,37 @@ async def view_invoice(invoice_id: str):
     render_inv = _legacy_render_from_invoice(invoice)
     html_str = render_invoice_html(render_inv)
     return Response(content=html_str, media_type="text/html")
+
+@api_router.get("/invoices/{invoice_id}/pdf")
+async def invoice_pdf(invoice_id: str):
+    """Serve the invoice as a real PDF (application/pdf).
+
+    Used as the DOCUMENT attachment link in the Meta WhatsApp invoice template.
+    Serves the stored PDF when available, else regenerates it from invoice_data.
+    """
+    invoice = await db.invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    import base64
+    pdf_bytes = None
+    b64 = invoice.get("pdf_base64")
+    if b64:
+        try:
+            pdf_bytes = base64.b64decode(b64)
+        except Exception:
+            pdf_bytes = None
+    if not pdf_bytes:
+        try:
+            pdf_bytes = generate_invoice_pdf(invoice.get("invoice_data") or {})
+        except Exception as _e:
+            raise HTTPException(status_code=500, detail="Invoice PDF unavailable")
+    filename = f"Invoice_{invoice.get('invoice_no', invoice_id)}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename={filename}"},
+    )
+
 
 @api_router.get("/invoices/{invoice_id}/download")
 async def download_invoice(invoice_id: str):
